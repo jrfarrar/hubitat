@@ -14,6 +14,9 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
+ *
+ *  2018-11-11: Modified for Hubitat and switch for debug and txt logging
+ *
  *  2018-06-20: Modified tile layout. Update firmware version reporting. Bug fix.
  * 
  *  2018-06-08: Remove communication method check from updated().
