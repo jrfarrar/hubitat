@@ -20,6 +20,7 @@
  *
  *	Changelog:
  *
+ *	1.2     Modified for Hubitat and Lux to 0 - jrf
  *	1.0	Initial Version
  *
  *
@@ -28,11 +29,11 @@
  
 metadata {
 	definition (name: "FLS100+ Motion Sensor(outdoor)(homeseer)", namespace: "homeseer", author: "support@homeseer.com") {
-		capability "Switch"
-		capability "Motion Sensor"
-		capability "Sensor"
-		capability "Polling"
-		capability "Refresh"
+	capability "Switch"
+	capability "Motion Sensor"
+	capability "Sensor"
+	capability "Polling"
+	capability "Refresh"
         capability "Configuration"
         capability "Illuminance Measurement"
         
