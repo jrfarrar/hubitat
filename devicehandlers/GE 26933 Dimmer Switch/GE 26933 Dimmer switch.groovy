@@ -24,19 +24,19 @@
  *
  */
 metadata {
-	definition (name: "GE Motion Dimmer Switch 26933 (MODIFIED JRF)", namespace: "JRF", author: "Michael Struck") {
-		capability "Motion Sensor"
+	definition (name: "GE Motion Dimmer Switch 26933", namespace: "jrfarrar", author: "jrfarrar") {
+	capability "Motion Sensor"
         capability "Actuator"
- 		capability "Switch"
+ 	capability "Switch"
         capability "Switch Level"
-		capability "Polling"
-		capability "Refresh"
-		capability "Sensor"
-		capability "Health Check"
-		capability "Light"
+	capability "Polling"
+	capability "Refresh"
+	capability "Sensor"
+	capability "Health Check"
+	capability "Light"
         capability "PushableButton"
         
-		command "toggleMode"
+	command "toggleMode"
         command "occupancy"
         command "occupied"
         command "vacancy"
@@ -48,7 +48,7 @@ metadata {
         command "setMotionSenseHigh"
         command "setMotionSenseOff"
         command "lightSenseOn"
-		command "lightSenseOff"
+	command "lightSenseOff"
         command "setTimeout5Seconds"
         command "setTimeout1Minute"
         command "setTimeout5Minutes"
