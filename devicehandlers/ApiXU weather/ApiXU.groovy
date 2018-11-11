@@ -38,6 +38,9 @@ public static String version()      {  return "v4.0.1"  }
 
 /***********************************************************************************************************************
 *
+*
+*   11/11/2018  added debug logging switch for less logging unless wanted
+*
 * Version: 4.0.1
 *   10/14/2018: removed logging of weather data.
 *
