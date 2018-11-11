@@ -10,11 +10,16 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
+ *
+ *  2018/11/11 - Modified for Hubitat and added debug and decriptive txt logging
+ *               Turn detailed txt logging on to see the Heat/Idle state details (it's frequent)
+ *
+ *
  */
 
 
 metadata {
-  definition (name: "Stelpro STZW402+", namespace: "JoshConley", author: "Josh Conley") {
+    definition (name: "Stelpro STZW402+", namespace: "JoshConley", author: "Josh Conley") {
     capability "Actuator"
     capability "Temperature Measurement"
     capability "Thermostat"
