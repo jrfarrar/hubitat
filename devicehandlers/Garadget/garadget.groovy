@@ -14,6 +14,7 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
+ * 11/11/2018 V1.9 adding logging and txt logging function to keeps Hubitat Logs Clean-jrf
  * 21/03/2018 V1.8 Report Door Control and Garage Door Control state -RBoy
  * 14/02/2018 V1.7 Support Door Control capability for expanded compatibility with SmartApps -RBoy
  * 04/02/2018 V1.6 Updated Door Status response parsing to be more resilient to changes in format from Garadget, and fixed bug resulting from latest Garadget response format change. -btrenbeath
@@ -41,40 +42,40 @@ preferences {
 metadata {
 	definition (name: "Garadget", namespace: "fuzzysb", author: "Stuart Buchanan") {
 
-    capability "Switch"
-		capability "Contact Sensor"
-    capability "Signal Strength"
-		capability "Actuator"
-		capability "Sensor"
-    capability "Refresh"
-    capability "Polling"
-		capability "Configuration"
-		capability "Garage Door Control"
-		capability "Door Control"
+    	capability "Switch"
+	capability "Contact Sensor"
+    	capability "Signal Strength"
+	capability "Actuator"
+	capability "Sensor"
+    	capability "Refresh"
+    	capability "Polling"
+	capability "Configuration"
+	capability "Garage Door Control"
+	capability "Door Control"
 
-    attribute "reflection", "string"
-    attribute "status", "string"
-    attribute "time", "string"
-    attribute "lastAction", "string"
-    attribute "reflection", "string"
-    attribute "ver", "string"
+    	attribute "reflection", "string"
+    	attribute "status", "string"
+    	attribute "time", "string"
+    	attribute "lastAction", "string"
+    	attribute "reflection", "string"
+    	attribute "ver", "string"
 
-    command "stop"
-		command "statusCommand"
-		command "setConfigCommand"
-		command "doorConfigCommand"
-		command "netConfigCommand"
+    	command "stop"
+	command "statusCommand"
+	command "setConfigCommand"
+	command "doorConfigCommand"
+	command "netConfigCommand"
 	}
 }
 
 // handle commands
 def poll() {
-	if (logEnable) log.debug "Executing 'poll' - Device Manager poll"
+if (logEnable) log.debug "Executing 'poll' - Device Manager poll"
     refresh()
 }
 
 def refresh() {
-	if (logEnable) log.debug "Executing 'refresh'"
+if (logEnable) log.debug "Executing 'refresh'"
     statusCommand()
     netConfigCommand()
     doorConfigCommand()
