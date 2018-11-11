@@ -3,7 +3,9 @@
  *
  *	Author: Matt lebaugh (@mlebaugh)
  *
- * Copyright (C) Matt LeBaugh
+ *     Copyright (C) Matt LeBaugh
+ *
+ *  Version 1.1.0 11/11/18 - Modified for Hubitat - jrf
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -17,18 +19,17 @@
  */
 
 metadata {
-	definition (name: "GE Motion Switch 26931(MODIFIED JRF)", namespace: "JRF", author: "JRF-Matt LeBaugh") {
-		capability "Motion Sensor"
+	definition (name: "GE Motion Switch 26931", namespace: "jrfarrar", author: "jrfarrar") {
+	capability "Motion Sensor"
         capability "Actuator"
- 		capability "Switch"
-		capability "Polling"
-		capability "Refresh"
-		capability "Sensor"
-		capability "Health Check"
-		capability "Light"
+ 	capability "Switch"
+	capability "Polling"
+	capability "Refresh"
+	capability "Sensor"
+	capability "Health Check"
+	capability "Light"
         capability "PushableButton"
-
-		//command "toggleMode"
+	//command "toggleMode"
         command "Occupancy"
         command "Vacancy"
         command "Manual"
