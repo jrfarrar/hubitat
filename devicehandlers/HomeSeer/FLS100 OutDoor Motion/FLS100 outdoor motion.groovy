@@ -186,18 +186,22 @@ def refresh() {
     configure()
 }
 
+//
+//THIS IS NOT WORKING PROPERLY YET
+//
 def zwaveEvent(hubitat.zwave.commands.associationv2.AssociationReport cmd) {
 	if (logEnable) log.debug "---CONFIGURATION REPORT V1--- ${device.displayName} sent ${cmd}"
 	def config = cmd.scaledConfigurationValue
+	//config = zwave.configurationV1.configurationGet(parameterNumber: 2)
 	def result = []
 	if (cmd.parameterNumber == 1) {
 		def value = config
-		result << createEvent([name:"TimeoutDuration", value: value, displayed:true, isStateChange:true])
+		result << sendEvent([name:"TimeoutDuration", value: value, displayed:true])
     } else if (cmd.parameterNumber == 2) {
 		if (config == 0 ) {
-        	result << createEvent([name:"operatingMode", value: "Manual", displayed:true, isStateChange:true])
+        	result << sendEvent([name:"operatingMode", value: "Manual", displayed:true])
 		} else {
-			result << createEvent([name:"operatingMode", value: "Auto", displayed:true, isStateChange:true])
+			result << sendEvent([name:"operatingMode", value: "Auto", displayed:true])
 		}	
 	return result
 	}
@@ -283,6 +287,7 @@ def manual() {
 	if (logEnable) log.debug "Setting operating mode to: Manual"
 	def cmds = []
 	cmds << zwave.configurationV1.configurationSet(parameterNumber:2, size:2, scaledConfigurationValue: 0 ).format()
+	sendEvent(name:"operatingMode", value: "manual")
 	return cmds
 }
 
@@ -291,6 +296,7 @@ def auto() {
 	def cmds = []
 	def luxDisableValue = Math.max(Math.min(luxDisableValue, 200), 0)
 	cmds << zwave.configurationV1.configurationSet(parameterNumber:2, size:2, scaledConfigurationValue: luxDisableValue ).format()
+	sendEvent(name:"operatingMode", value: "auto")
 	return cmds
 }
 
