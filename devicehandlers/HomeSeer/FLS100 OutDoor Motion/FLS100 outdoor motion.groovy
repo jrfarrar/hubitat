@@ -201,7 +201,8 @@ def setFirmwareVersion() {
 }
 
 def configure() {
-if (logEnable) log.info "On"log.debug ("configure() called")
+	if (logEnable) log.info "On"
+	if (logEnable) log.debug ("configure() called")
 
 sendEvent(name: "numberOfButtons", value: 12, displayed: false)
 def cmds = []
@@ -209,7 +210,8 @@ def cmds = []
 cmds = setPrefs()
 cmds << zwave.manufacturerSpecificV1.manufacturerSpecificGet().format()
 cmds << zwave.versionV1.versionGet().format()
-if (logEnable) log.info "On"log.debug ("cmds: " + cmds)
+if (logEnable) log.info "On"
+if (logEnable) log.debug ("cmds: " + cmds)
 delayBetween(cmds,500)
 }
 
