@@ -29,15 +29,19 @@
  
 metadata {
 	definition (name: "FLS100+ Motion Sensor(outdoor)(homeseer)", namespace: "homeseer", author: "support@homeseer.com") {
-	capability "Switch"
-	capability "Motion Sensor"
-	capability "Sensor"
-	capability "Polling"
-	capability "Refresh"
+		capability "Switch"
+		capability "Motion Sensor"
+		capability "Sensor"
+		capability "Polling"
+		capability "Refresh"
         capability "Configuration"
         capability "Illuminance Measurement"
         
+		command "manual"
+        command "auto"
         
+		attribute "operatingMode", "enum", ["Manual", "Auto"]
+        attribute "defaultLevel", "number"        
         
         fingerprint mfr: "000C", prod: "0201", model: "000B"
 }
@@ -52,7 +56,7 @@ metadata {
 //	}
 
     preferences {            
-       input ( "onTime", "number", title: "Press Configuration button after changing preferences\n\nOn Time: Duration (8-720 seconds) [default: 15]", defaultValue: 15,range: "8..720", required: false)
+       input ( "onTime", "number", title: "Press Configuration button after changing preferences\n\n   On Time: Duration (8-720 seconds) [default: 15]", defaultValue: 15,range: "8..720", required: false)
        input ( "luxDisableValue", "number", title: "Lux Value to Disable Sensor: (0-200 lux)(0 Disables lux from motion) [default: 50]", defaultValue: 50, range: "0..200", required: false)       
        input ( "luxReportInterval", "number", title: "Lux Report Interval: (0-1440 minutes) [default 10]", defaultValue: 10, range: "0..1440", required: false)
        input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: true
@@ -182,6 +186,26 @@ def refresh() {
     configure()
 }
 
+//
+//THIS IS NOT WORKING PROPERLY YET
+//
+def zwaveEvent(hubitat.zwave.commands.associationv2.AssociationReport cmd) {
+	if (logEnable) log.debug "---CONFIGURATION REPORT V1--- ${device.displayName} sent ${cmd}"
+	def config = cmd.scaledConfigurationValue
+	//config = zwave.configurationV1.configurationGet(parameterNumber: 2)
+	def result = []
+	if (cmd.parameterNumber == 1) {
+		def value = config
+		result << sendEvent([name:"TimeoutDuration", value: value, displayed:true])
+    } else if (cmd.parameterNumber == 2) {
+		if (config == 0 ) {
+        	result << sendEvent([name:"operatingMode", value: "Manual", displayed:true])
+		} else {
+			result << sendEvent([name:"operatingMode", value: "Auto", displayed:true])
+		}	
+	return result
+	}
+}
 
 def setFirmwareVersion() {
    def versionInfo = ''
@@ -204,7 +228,7 @@ def configure() {
 	if (logEnable) log.info "On"
 	if (logEnable) log.debug ("configure() called")
 
-sendEvent(name: "numberOfButtons", value: 12, displayed: false)
+//sendEvent(name: "numberOfButtons", value: 12, displayed: false)
 def cmds = []
 //cmds << setPrefs()
 cmds = setPrefs()
@@ -257,3 +281,22 @@ cmds << zwave.versionV1.versionGet().format()
 delayBetween(cmds, 500)
 
 }
+
+
+def manual() {
+	if (logEnable) log.debug "Setting operating mode to: Manual"
+	def cmds = []
+	cmds << zwave.configurationV1.configurationSet(parameterNumber:2, size:2, scaledConfigurationValue: 0 ).format()
+	sendEvent(name:"operatingMode", value: "manual")
+	return cmds
+}
+
+def auto() {
+	if (logEnable) log.debug "Setting operating mode to: Auto"
+	def cmds = []
+	def luxDisableValue = Math.max(Math.min(luxDisableValue, 200), 0)
+	cmds << zwave.configurationV1.configurationSet(parameterNumber:2, size:2, scaledConfigurationValue: luxDisableValue ).format()
+	sendEvent(name:"operatingMode", value: "auto")
+	return cmds
+}
+
