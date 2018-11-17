@@ -1,4 +1,4 @@
-﻿/**
+/**
  *  GE Motion Dimmer Switch (Model 26933) DTH
  *
  *  Copyright © 2018 Michael Struck
@@ -32,7 +32,7 @@ metadata {
 	capability "Polling"
 	capability "Refresh"
 	capability "Sensor"
-	capability "Health Check"
+	//capability "Health Check"
 	capability "Light"
         capability "PushableButton"
         
@@ -175,21 +175,26 @@ metadata {
 def parse(String description) {
     def result = null
 	if (description != "updated") {
-		if (logEnable) log.debug "parse() >> zwave.parse($description)"
+		//if (logEnable) log.debug "parse() >> zwave.parse($description)"
         def cmd = zwave.parse(description, [0x20: 1, 0x25: 1, 0x56: 1, 0x70: 2, 0x72: 2, 0x85: 2, 0x71: 3, 0x56: 1])
 		if (cmd) {
 			result = zwaveEvent(cmd)
         }
 	}
     if (!result) { log.warn "Parse returned ${result} for $description" }
-    else {if (logEnable) log.debug "Parse returned ${result}"}
-	return result
-	if (result?.name == 'hail' && hubFirmwareLessThan("000.011.00602")) {
-		result = [result, response(zwave.basicV1.basicGet())]
-		if (logEnable) log.debug "Was hailed: requesting state update"
+    else {
+		if (logEnable) log.debug "Parse returned ${result}"
 	}
+	
 	return result
+	
+//	if (result?.name == 'hail' && hubFirmwareLessThan("000.011.00602")) {
+//		result = [result, response(zwave.basicV1.basicGet())]
+//		if (logEnable) log.debug "Was hailed: requesting state update"
+//	}
+//	return result
 }
+
 def zwaveEvent(hubitat.zwave.commands.crc16encapv1.Crc16Encap cmd) {
 	if (logEnable) log.debug("zwaveEvent(): CRC-16 Encapsulation Command received: ${cmd}")
 	def encapsulatedCommand = zwave.commandClass(cmd.commandClass)?.command(cmd.command)?.parse(cmd.data)
@@ -320,7 +325,7 @@ def zwaveEvent(hubitat.zwave.commands.hailv1.Hail cmd) {
 	createEvent([name: "hail", value: "hail", descriptionText: "Switch button was pressed", displayed: false])
 }
 def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd){
-    if (logEnable) log.debug "---NOTIFICATION REPORT V3--- ${device.displayName} sent ${cmd}"
+    //if (logEnable) log.debug "---NOTIFICATION REPORT V3--- ${device.displayName} sent ${cmd}"
 	def result = []
     def cmds = []
 	if (cmd.notificationType == 0x07) {
@@ -357,8 +362,9 @@ private dimmerEvents(hubitat.zwave.Command cmd) {
         def cmds=[],timeoutValue = timeoutduration ? timeoutduration.toInteger() : 5
         cmds << zwave.configurationV1.configurationSet(configurationValue: [timeoutValue], parameterNumber: 1, size: 1)
        	cmds << zwave.configurationV1.configurationGet(parameterNumber: 1)
-        sendHubCommand(cmds.collect{ new hubitat.device.HubAction(it.format()) }, 1000)
-        showDashboard(timeoutValue, "", "", "", "")
+        //sendHubCommand(cmds.collect{ new hubitat.device.HubAction(it.format()) }, 1000)
+		delayBetween([cmds],500)
+        //showDashboard(timeoutValue, "", "", "", "")
     }
     if (cmd.value && cmd.value <= 100) {
 		result << createEvent(name: "level", value: cmd.value, unit: "%")
