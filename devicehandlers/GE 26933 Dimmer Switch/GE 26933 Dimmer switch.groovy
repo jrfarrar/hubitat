@@ -6,6 +6,7 @@
  *
  *  Based off of the Dimmer Switch under Templates in the IDE 
  *
+ *  Version 1.1.1 12/4/18 - bug fixes, refresh now updates all settings, fix setlevel when not on
  *  Version 1.1.0 11/11/18 - Modified for Hubitat - jrf
  *
  *  Version 1.0.3 (8/21/18) - Changed the setLevel mode to boolean
@@ -787,5 +788,5 @@ private commands(commands, delay=500) {
     delayBetween(commands.collect{ command(it) }, delay)
 }
 
-def showVersion() { sendEvent (name: "about", value:"DTH Version 1.1.0 (11/11/18)") }
+def showVersion() { sendEvent (name: "about", value:"DTH Version 1.1.1 (12/4/18)") }
 
