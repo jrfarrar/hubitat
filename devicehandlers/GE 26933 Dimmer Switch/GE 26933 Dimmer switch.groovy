@@ -26,15 +26,14 @@
 metadata {
 	definition (name: "GE Motion Dimmer Switch 26933", namespace: "jrfarrar", author: "jrfarrar") {
 	capability "Motion Sensor"
-        capability "Actuator"
+    capability "Actuator"
  	capability "Switch"
-        capability "Switch Level"
+    capability "Switch Level"
 	capability "Polling"
 	capability "Refresh"
 	capability "Sensor"
-	//capability "Health Check"
 	capability "Light"
-        capability "PushableButton"
+    capability "PushableButton"
         
 	command "toggleMode"
         command "occupancy"
@@ -48,7 +47,7 @@ metadata {
         command "setMotionSenseHigh"
         command "setMotionSenseOff"
         command "lightSenseOn"
-	command "lightSenseOff"
+		command "lightSenseOff"
         command "setTimeout5Seconds"
         command "setTimeout1Minute"
         command "setTimeout5Minutes"
@@ -386,17 +385,19 @@ def setLevel(value) {
     	if (device.currentValue("switch") == "on") {
             if (txtEnable) log.info "light already on setting level ${level}"
             sendEvent(name: "level", value: level, unit: "%")
-            cmds << zwave.configurationV1.configurationSet(configurationValue: [level] , parameterNumber: 17, size: 1)
-            cmds << zwave.basicV1.basicSet(value: level)
-            cmds << zwave.configurationV1.configurationGet(parameterNumber: 17)
-            cmds << zwave.switchMultilevelV3.switchMultilevelGet()
+			return delayBetween([
+				secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: level , parameterNumber: 17, size: 1)),
+				secureCmd(zwave.basicV1.basicSet(value: level)),
+            	secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 17)),
+				secureCmd(zwave.switchMultilevelV3.switchMultilevelGet())
+			],500)
         } else if (device.currentValue("switch") == "off") {
             if (txtEnable) log.info "light is off setting level ${level}"
-            cmds << zwave.configurationV1.configurationSet(configurationValue: [level] , parameterNumber: 17, size: 1)
-            cmds << zwave.configurationV1.configurationGet(parameterNumber: 17)
+			return delayBetween([
+				secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: level , parameterNumber: 17, size: 1)),
+            	secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 17))
+			],500)
         }        
-        //sendHubCommand(cmds.collect{ new hubitat.device.HubAction(it.format()) }, 500)
-        return delayBetween([cmds],1000)
     } else {
         if (txtEnable) log.info "setlevel activates light - level ${level}"
     	sendEvent(name: "level", value: level, unit: "%")
@@ -410,24 +411,46 @@ def setLevel(value, duration) {
     sendEvent(name: "level", value: level, unit: "%")
 	zwave.switchMultilevelV2.switchMultilevelSet(value: level, dimmingDuration: dimmingDuration).format()
 }
-def poll() { zwave.switchMultilevelV3.switchMultilevelGet().format() }
+def poll() { refresh() }
 def ping() { refresh() }
+
 def refresh() {
-    log.info "refresh() is called"
-    delayBetween([
-    	zwave.notificationV3.notificationGet(notificationType: 7).format(),
-        zwave.switchMultilevelV3.switchMultilevelGet().format()
-	],100)
-    showVersion()
-    
-    //get params
-    //def cmds = []
-    //0.upto(20, {
-	//    cmds.add(secureCmd(zwave.configurationV1.configurationGet(parameterNumber: it)))	
-	//})
-    //return cmds
-    
+    if (logEnable) log.debug "refresh()"
+    def cmds = []
+		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 1))
+		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 3))
+		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 5))
+		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 6))
+		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 13))
+		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 14))
+		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15))
+		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 16))
+		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 17))
+		cmds <<	secureCmd(zwave.switchBinaryV1.switchBinaryGet())
+        cmds <<	secureCmd(zwave.switchMultilevelV1.switchMultilevelGet())
+		cmds <<	secureCmd(zwave.notificationV3.notificationGet(notificationType: 7))
+		cmds <<	secureCmd(zwave.switchMultilevelV3.switchMultilevelGet())
+    return cmds
 }
+
+//def refresh() {
+//    log.info "refresh() is called"
+//    delayBetween([
+//    	zwave.notificationV3.notificationGet(notificationType: 7).format(),
+//        zwave.switchMultilevelV3.switchMultilevelGet().format()
+//	],100)
+//    showVersion()
+//    
+//    //get params
+//    //def cmds = []
+//    //0.upto(20, {
+//	//    cmds.add(secureCmd(zwave.configurationV1.configurationGet(parameterNumber: it)))	
+//	//})
+//    //return cmds
+//}
+
+
+
 def toggleMode() {
 	if (logEnable) log.debug("Toggling Mode") 
     def cmds = []
@@ -447,12 +470,11 @@ def setTimeoutMinutes(value){
     else if (value==5) newTimeOut="5 minutes"
     else if (value==15) newTimeOut="15 minutes"
     else if (value==30) newTimeOut="30 minutes"
-
-    cmds << secureCmd(zwave.configurationV1.configurationSet(configurationValue: [value], parameterNumber: 1, size: 1))
-	cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 1))
-
-    if (logEnable) log.debug "Setting timeout duration to: ${newTimeOut}"
-    return delayBetween([cmds],1000)        
+	if (logEnable) log.debug "Setting timeout duration to: ${newTimeOut}"	
+	return delayBetween([	
+     	secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: value, parameterNumber: 1, size: 1)),
+	 	secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 1))
+	],500) 
 }
 def occupied() { occupancy() }
 def occupancy() {
@@ -493,15 +515,19 @@ def setMotionSensitivity(value) {
       if (value>0){
       	def mode=value==1 ? "High" : value==2 ? "Medium" : "Low"
       	if (logEnable) log.debug("Setting motion sensitivity to: ${mode}")
-          cmds << secureCmd(zwave.configurationV1.configurationSet(configurationValue: [1], parameterNumber: 6, size: 1))
-	      cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 6))
-          cmds << secureCmd(zwave.configurationV1.configurationSet(configurationValue: [value], parameterNumber: 13, size: 1))
-	      cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 13))
+		  return delayBetween([
+           secureCmd(zwave.configurationV1.configurationSet(configurationValue: [1], parameterNumber: 6, size: 1)),
+	       secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 6)),
+           secureCmd(zwave.configurationV1.configurationSet(configurationValue: [value], parameterNumber: 13, size: 1)),
+	       secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 13))
+		  ],500)
       }
       else if (value==0){
       	if (logEnable) log.debug("Turning off motion sensor")
-          cmds << secureCmd(zwave.configurationV1.configurationSet(configurationValue: [0], parameterNumber: 6, size: 1))
-	      cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 6))
+		  return delayBetween([
+           secureCmd(zwave.configurationV1.configurationSet(configurationValue: [0], parameterNumber: 6, size: 1)),
+	       secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 6))
+		  ],500)
      }
     return delayBetween([cmds],500)    
 }
@@ -749,6 +775,16 @@ private secureCmd(cmd) {
     } else {
 	return cmd.format()
     }	
+}
+private command(hubitat.zwave.Command cmd) {
+    if (state.sec) {
+        zwave.securityV1.securityMessageEncapsulation().encapsulate(cmd).format()
+    } else {
+        cmd.format()
+    }
+}
+private commands(commands, delay=500) {
+    delayBetween(commands.collect{ command(it) }, delay)
 }
 
 def showVersion() { sendEvent (name: "about", value:"DTH Version 1.1.0 (11/11/18)") }
