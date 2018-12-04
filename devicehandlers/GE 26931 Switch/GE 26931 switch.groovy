@@ -256,8 +256,8 @@ def zwaveEvent(hubitat.zwave.commands.configurationv1.ConfigurationReport cmd) {
     	def value = config == 0 ? "Disabled" : "Enabled"
     	result << createEvent([name:"MotionSensor", value: value, displayed:true, isStateChange:true])
     } else if (cmd.parameterNumber == 5) {
-    	def value = config == 0 ? "Normal" : "Inverted"
-    	result << createEvent([name:"SwitchOrientation", value: config, displayed:true, isStateChange:true])
+    	def value = config == 1 ? "Inverted" : "Normal"
+    	result << createEvent([name:"SwitchOrientation", value: value, displayed:true, isStateChange:true])
     }
    return result
 }
