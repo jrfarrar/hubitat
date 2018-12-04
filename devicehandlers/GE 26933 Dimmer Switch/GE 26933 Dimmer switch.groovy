@@ -36,7 +36,7 @@ metadata {
 	capability "Light"
     capability "PushableButton"
         
-	command "toggleMode"
+		command "toggleMode"
         command "occupancy"
         command "occupied"
         command "vacancy"
@@ -417,21 +417,21 @@ def ping() { refresh() }
 
 def refresh() {
     if (logEnable) log.debug "refresh()"
-    def cmds = []
-		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 1))
-		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 3))
-		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 5))
-		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 6))
-		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 13))
-		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 14))
-		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15))
-		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 16))
-		cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 17))
-		cmds <<	secureCmd(zwave.switchBinaryV1.switchBinaryGet())
-        cmds <<	secureCmd(zwave.switchMultilevelV1.switchMultilevelGet())
-		cmds <<	secureCmd(zwave.notificationV3.notificationGet(notificationType: 7))
-		cmds <<	secureCmd(zwave.switchMultilevelV3.switchMultilevelGet())
-    return cmds
+	return delayBetween([
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 1)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 3)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 5)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 6)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 13)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 14)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 16)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 17)),
+		 secureCmd(zwave.switchBinaryV1.switchBinaryGet()),
+         secureCmd(zwave.switchMultilevelV1.switchMultilevelGet()),
+		 secureCmd(zwave.notificationV3.notificationGet(notificationType: 7)),
+		 secureCmd(zwave.switchMultilevelV3.switchMultilevelGet())
+    ],500)
 }
 
 //def refresh() {
