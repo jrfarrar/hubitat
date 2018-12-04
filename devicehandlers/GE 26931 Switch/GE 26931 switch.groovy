@@ -5,6 +5,7 @@
  *
  *     Copyright (C) Matt LeBaugh
  *
+ *  Version 1.1.0 12/4/18 - bug fixes and refresh update
  *  Version 1.1.0 11/11/18 - Modified for Hubitat - jrf
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
@@ -21,15 +22,14 @@
 metadata {
 	definition (name: "GE Motion Switch 26931", namespace: "jrfarrar", author: "jrfarrar") {
 	capability "Motion Sensor"
-        capability "Actuator"
+    capability "Actuator"
  	capability "Switch"
 	capability "Polling"
 	capability "Refresh"
 	capability "Sensor"
 	capability "Health Check"
 	capability "Light"
-        capability "PushableButton"
-	//command "toggleMode"
+	capability "PushableButton"
         command "Occupancy"
         command "Vacancy"
         command "Manual"
@@ -115,16 +115,16 @@ metadata {
                 ],
                 required: false
             )
-            input (
-                name: "invertSwitch",
-                title: "Switch Orientation",
-                type: "enum",
-                options: [
-                    "0" : "Normal",
-                    "1" : "Inverted",
-                ],
-                required: false
-            )
+//            input (
+//                name: "invertSwitch",
+//                title: "Switch Orientation",
+//                type: "enum",
+//                options: [
+//                    "0" : "Normal",
+//                    "1" : "Inverted",
+//                ],
+//                required: false
+//            )
             input (
                 name: "resetcycle",
                 title: "Reset Cycle",
@@ -257,7 +257,7 @@ def zwaveEvent(hubitat.zwave.commands.configurationv1.ConfigurationReport cmd) {
     	result << createEvent([name:"MotionSensor", value: value, displayed:true, isStateChange:true])
     } else if (cmd.parameterNumber == 5) {
     	def value = config == 0 ? "Normal" : "Inverted"
-    	result << createEvent([name:"SwitchOrientation", value: value, displayed:true, isStateChange:true])
+    	result << createEvent([name:"SwitchOrientation", value: config, displayed:true, isStateChange:true])
     }
    return result
 }
@@ -344,19 +344,29 @@ def ping() {
 
 def refresh() {
 	log.info "refresh() is called"
-    delayBetween([
-        zwave.switchBinaryV1.switchBinaryGet().format(),
-		zwave.notificationV3.notificationGet(notificationType: 7).format()
-	],100)
+    def cmds = []
+	return delayBetween([
+	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 1)),
+	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 3)),
+	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 5)),
+	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 6)),
+	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 13)),
+	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 14)),
+	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15)),
+	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 16)),
+	 secureCmd(zwave.switchBinaryV1.switchBinaryGet()),
+     secureCmd(zwave.switchMultilevelV1.switchMultilevelGet()),
+	 secureCmd(zwave.notificationV3.notificationGet(notificationType: 7)),
+	 secureCmd(zwave.switchMultilevelV3.switchMultilevelGet())
+    ],1000)
 }
 
 def SetModeNumber(value) {
 	if (logEnable) log.debug("Setting mode by number: ${value}")
-    def cmds = []
-    	cmds << zwave.configurationV1.configurationSet(configurationValue: [value] , parameterNumber: 3, size: 1)
-  		cmds << zwave.configurationV1.configurationGet(parameterNumber: 3)
-    //sendHubCommand(cmds.collect{ new hubitat.device.HubAction(it.format()) }, 1000)
-	return delayBetween([cmds],500)
+	return delayBetween([
+		secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: value , parameterNumber: 3, size: 1)),
+  		secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 3))
+	],500)
 }
 
 def Occupancy() {
@@ -479,41 +489,41 @@ def updated() {
 	def cmds = []
 	//switch and dimmer settings
         if (settings.timeoutduration) {cmds << zwave.configurationV1.configurationSet(configurationValue: [settings.timeoutduration.toInteger()], parameterNumber: 1, size: 1)}
-        cmds << zwave.configurationV1.configurationGet(parameterNumber: 1)
+        cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 1))
         if (settings.motionsensitivity) {cmds << zwave.configurationV1.configurationSet(configurationValue: [settings.motionsensitivity.toInteger()], parameterNumber: 13, size: 1)}
-        cmds << zwave.configurationV1.configurationGet(parameterNumber: 13)
+        cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 13))
         if (settings.lightsense) {cmds << zwave.configurationV1.configurationSet(configurationValue: [settings.lightsense.toInteger()], parameterNumber: 14, size: 1)}
-        cmds << zwave.configurationV1.configurationGet(parameterNumber: 14)
+        cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 14))
         if (settings.resetcycle) {cmds << zwave.configurationV1.configurationSet(configurationValue: [settings.resetcycle.toInteger()], parameterNumber: 15, size: 1)}
-        cmds << zwave.configurationV1.configurationGet(parameterNumber: 15)
+        cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15))
         if (settings.operationmode) {cmds << zwave.configurationV1.configurationSet(configurationValue: [settings.operationmode.toInteger()], parameterNumber: 3, size: 1)}
-        cmds << zwave.configurationV1.configurationGet(parameterNumber: 3)
+        cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 3))
         if (settings.motion) {cmds << zwave.configurationV1.configurationSet(configurationValue: [settings.motion.toInteger()], parameterNumber: 6, size: 1)}
-        cmds << zwave.configurationV1.configurationGet(parameterNumber: 6)
-        if (settings.invertSwitch) {cmds << zwave.configurationV1.configurationSet(configurationValue: [settings.invertSwitch.toInteger()], parameterNumber: 5, size: 1)}
-        cmds << zwave.configurationV1.configurationGet(parameterNumber: 5)
+        cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 6))
+        if (settings.invertSwitch) {cmds << zwave.configurationV1.configurationSet(scaledConfigurationValue: invertSwitch, parameterNumber: 5, size: 1)}
+        cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 5))
 		
         // Make sure lifeline is associated - was missing on a dimmer:
-		cmds << zwave.associationV1.associationSet(groupingIdentifier:0, nodeId:zwaveHubNodeId)
-        cmds << zwave.associationV1.associationSet(groupingIdentifier:1, nodeId:zwaveHubNodeId)
-		cmds << zwave.associationV1.associationSet(groupingIdentifier:2, nodeId:zwaveHubNodeId)
-		cmds << zwave.associationV1.associationSet(groupingIdentifier:3, nodeId:zwaveHubNodeId)
+		cmds << secureCmd(zwave.associationV1.associationSet(groupingIdentifier:0, nodeId:zwaveHubNodeId))
+        cmds << secureCmd(zwave.associationV1.associationSet(groupingIdentifier:1, nodeId:zwaveHubNodeId))
+		cmds << secureCmd(zwave.associationV1.associationSet(groupingIdentifier:2, nodeId:zwaveHubNodeId))
+		cmds << secureCmd(zwave.associationV1.associationSet(groupingIdentifier:3, nodeId:zwaveHubNodeId))
         
         //association groups
 		def nodes = []
 		if (settings.requestedGroup2 != state.currentGroup2) {
     	    nodes = parseAssocGroupList(settings.requestedGroup2, 2)
-        	cmds << zwave.associationV2.associationRemove(groupingIdentifier: 2, nodeId: [])
-        	cmds << zwave.associationV2.associationSet(groupingIdentifier: 2, nodeId: nodes)
-        	cmds << zwave.associationV2.associationGet(groupingIdentifier: 2)
+        	cmds << secureCmd(zwave.associationV2.associationRemove(groupingIdentifier: 2, nodeId: []))
+        	cmds << secureCmd(zwave.associationV2.associationSet(groupingIdentifier: 2, nodeId: nodes))
+        	cmds << secureCmd(zwave.associationV2.associationGet(groupingIdentifier: 2))
         	state.currentGroup2 = settings.requestedGroup2
     	}
 
     	if (settings.requestedGroup3 != state.currentGroup3) {
         	nodes = parseAssocGroupList(settings.requestedGroup3, 3)
-        	cmds << zwave.associationV2.associationRemove(groupingIdentifier: 3, nodeId: [])
-        	cmds << zwave.associationV2.associationSet(groupingIdentifier: 3, nodeId: nodes)
-        	cmds << zwave.associationV2.associationGet(groupingIdentifier: 3)
+        	cmds << secureCmd(zwave.associationV2.associationRemove(groupingIdentifier: 3, nodeId: []))
+        	cmds << secureCmd(zwave.associationV2.associationSet(groupingIdentifier: 3, nodeId: nodes))
+        	cmds << secureCmd(zwave.associationV2.associationGet(groupingIdentifier: 3))
         	state.currentGroup3 = settings.requestedGroup3
     	}
         
