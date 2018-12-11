@@ -422,11 +422,16 @@ def refresh() {
 		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 3)),
 		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 5)),
 		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 6)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 7)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 8)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 9)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 10)),
 		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 13)),
 		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 14)),
 		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15)),
 		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 16)),
 		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 17)),
+		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 18)),
 		 secureCmd(zwave.switchBinaryV1.switchBinaryGet()),
          secureCmd(zwave.switchMultilevelV1.switchMultilevelGet()),
 		 secureCmd(zwave.notificationV3.notificationGet(notificationType: 7)),
@@ -503,7 +508,7 @@ def manual() {
 def setDefaultLevel(value) {
 	if (logEnable) log.debug("Setting default level: ${value}%") 
     return delayBetween([
-	    secureCmd(zwave.configurationV1.configurationSet(configurationValue: [value.toInteger()], parameterNumber: 17, size: 1)),
+	    secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: value, parameterNumber: 17, size: 1)),
 	    secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 17))
 	],500) 
 }
