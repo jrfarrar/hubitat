@@ -110,8 +110,10 @@ def configure() {
 def sensorValueEvent(value) {
 	if (value) {
 		createEvent(name: "contact", value: "open", descriptionText: "$device.displayName is open")
+		if (txtEnable) log.info "$device.displayName is open"
 	} else {
 		createEvent(name: "contact", value: "closed", descriptionText: "$device.displayName is closed")
+		if (txtEnable) log.info "$device.displayName is closed"
 	}
 }
 
