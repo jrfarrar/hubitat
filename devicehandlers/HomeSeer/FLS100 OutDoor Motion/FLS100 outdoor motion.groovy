@@ -183,6 +183,7 @@ zwave.commands.switchbinaryv1.SwitchBinaryGet
 
 def refresh() {
 	log.info "refresh() called"
+	createEvent(name:"motion", value: "inactive", isStateChange: true)
     configure()
 }
 
