@@ -17,7 +17,7 @@
  */
 
 metadata {
-	definition (name: "Aeon/Enerwave Recessed Door Sensor", namespace: "Hubitat", author: "keltymd", ocfDeviceType: "x.com.st.d.sensor.contact") {
+	definition (name: "Aeon/Enerwave contact Sensor", namespace: "Hubitat", author: "keltymd", ocfDeviceType: "x.com.st.d.sensor.contact") {
 		capability "Contact Sensor"
 		capability "Sensor"
 		capability "Battery"
