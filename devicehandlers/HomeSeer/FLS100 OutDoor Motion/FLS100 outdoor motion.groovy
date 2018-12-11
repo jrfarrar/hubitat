@@ -91,11 +91,11 @@ def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd) {
 	if (cmd.notificationType == 0x07) {
 		switch (cmd.event) {
 			case 0:
-				if (txtEnable) log.info "NO MOTION"	
+				if (txtEnable) log.info "Motion Inactive"	
                 createEvent(name:"motion", value: "inactive", isStateChange: true)
 				break
 			case 8:
-				if (txtEnable) log.info "MOTION"
+				if (txtEnable) log.info "Motion Active"
 				createEvent(name:"motion", value: "active", isStateChange: true)
 				break
 			default:
@@ -111,6 +111,7 @@ def zwaveEvent(hubitat.zwave.commands.sensormultilevelv5.SensorMultilevelReport 
     def lval = cmd.scaledSensorValue
     
     createEvent(name:"illuminance", value: lval)
+	if (txtEnable) log.info "Illuminance: "+lval
 }
 
 def zwaveEvent(hubitat.zwave.commands.manufacturerspecificv2.ManufacturerSpecificReport cmd) {
@@ -183,7 +184,6 @@ zwave.commands.switchbinaryv1.SwitchBinaryGet
 
 def refresh() {
 	log.info "refresh() called"
-	createEvent(name:"motion", value: "inactive", isStateChange: true)
     configure()
 }
 
