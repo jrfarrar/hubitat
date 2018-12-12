@@ -302,7 +302,7 @@ def zwaveEvent(hubitat.zwave.commands.configurationv1.ConfigurationReport cmd) {
 def zwaveEvent(hubitat.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd) {
     def sstate = cmd.value ? "on" : "off"
     if (logEnable) log.debug "---BINARY SWITCH REPORT V1--- ${device.displayName} sent ${cmd}"
-    if (txtEnable) log.info "Switch is: "+sstate
+	if (txtEnable) log.info "Switch is ${sstate} digital"   
     sendEvent(name: "switch", value: cmd.value ? "on" : "off", type: "digital")
 }
 def zwaveEvent(hubitat.zwave.commands.manufacturerspecificv2.ManufacturerSpecificReport cmd) {
@@ -367,17 +367,17 @@ private dimmerEvents(hubitat.zwave.Command cmd) {
         //showDashboard(timeoutValue, "", "", "", "")
     }
     if (cmd.value && cmd.value <= 100) {
-		if (txtEnable) log.info "Level is: "+cmd.value
+		if (txtEnable) log.info "Level is: ${cmd.value} physical"
 		result << createEvent(name: "level", value: cmd.value, unit: "%")
 	}
 	return result
 }
 def on() {
-	if (txtEnable) log.info "Digital On"
+	//if (txtEnable) log.info "Digital On"
     delayBetween([zwave.basicV1.basicSet(value: 0xFF).format(), zwave.switchMultilevelV3.switchMultilevelGet().format()], 5000) 
 }
 def off() {
-	if (txtEnable) log.info "Digital Off"
+	//if (txtEnable) log.info "Digital Off"
 	delayBetween ([zwave.basicV1.basicSet(value: 0x00).format(), zwave.switchMultilevelV3.switchMultilevelGet().format()], 5000)
 }
 def setLevel(value) {
