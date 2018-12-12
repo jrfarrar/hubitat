@@ -197,6 +197,8 @@ def zwaveEvent(hubitat.zwave.commands.crc16encapv1.Crc16Encap cmd) {
 }
 
 def zwaveEvent(hubitat.zwave.commands.basicv1.BasicReport cmd) {
+	def sstate = cmd.value ? "on" : "off"
+	if (txtEnable) log.info "Switch is: "+sstate+" physical"
 	[name: "switch", value: cmd.value ? "on" : "off", type: "physical"]
 }
 
@@ -265,7 +267,7 @@ def zwaveEvent(hubitat.zwave.commands.configurationv1.ConfigurationReport cmd) {
 def zwaveEvent(hubitat.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd) {
 	def sstate = cmd.value ? "on" : "off"
     if (logEnable) log.debug "---BINARY SWITCH REPORT V1--- ${device.displayName} sent ${cmd}"
-    if (txtEnable) log.info "${sstate}"
+    if (txtEnable) log.info "Switch is: "+sstate+" digital"
     createEvent([name: "switch", value: cmd.value ? "on" : "off", type: "digital"])
 }
 
@@ -291,10 +293,8 @@ def zwaveEvent(hubitat.zwave.commands.hailv1.Hail cmd) {
 	[name: "hail", value: "hail", descriptionText: "Switch button was pressed", displayed: false]
 }
 
-
-def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd)
-{
-	if (logEnable) log.debug "---NOTIFICATION REPORT V3--- ${device.displayName} sent ${cmd}"
+def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd) {
+	//if (logEnable) log.debug "---NOTIFICATION REPORT V3--- ${device.displayName} sent ${cmd}"
 	def result = []
 	if (cmd.notificationType == 0x07) {
 		if ((cmd.event == 0x00)) {
@@ -353,7 +353,6 @@ def refresh() {
 	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 13)),
 	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 14)),
 	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15)),
-	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 16)),
 	 secureCmd(zwave.switchBinaryV1.switchBinaryGet()),
      secureCmd(zwave.switchMultilevelV1.switchMultilevelGet()),
 	 secureCmd(zwave.notificationV3.notificationGet(notificationType: 7)),
@@ -482,7 +481,7 @@ def installed() {
 }
 
 def updated() {
-	sendEvent(name: "checkInterval", value: 2 * 15 * 60 + 2 * 60, displayed: false, data: [protocol: "zwave", hubHardwareId: device.hub.hardwareID])
+	//sendEvent(name: "checkInterval", value: 2 * 15 * 60 + 2 * 60, displayed: false, data: [protocol: "zwave", hubHardwareId: device.hub.hardwareID])
     if (state.lastUpdated && now() <= state.lastUpdated + 3000) return
     state.lastUpdated = now()
 
