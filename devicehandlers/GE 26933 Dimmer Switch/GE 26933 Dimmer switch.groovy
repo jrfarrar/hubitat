@@ -367,7 +367,7 @@ private dimmerEvents(hubitat.zwave.Command cmd) {
         //showDashboard(timeoutValue, "", "", "", "")
     }
     if (cmd.value && cmd.value <= 100) {
-		if (txtEnable) log.info "Level is: ${cmd.value} physical"
+		if (txtEnable) log.info "Level is: ${cmd.value}"
 		result << createEvent(name: "level", value: cmd.value, unit: "%")
 	}
 	return result
