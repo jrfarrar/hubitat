@@ -107,11 +107,11 @@ def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd) {
 def zwaveEvent(hubitat.zwave.commands.sensormultilevelv5.SensorMultilevelReport cmd) {
 	if (logEnable) log.debug("sensor multilevel report")
     if (logEnable) log.debug "cmd:  ${cmd}"
-    
+	if (txtEnable) log.info "Illuminance: ${cmd.scaledSensorValue}"
+	
     def lval = cmd.scaledSensorValue
     
     createEvent(name:"illuminance", value: lval)
-	if (txtEnable) log.info "Illuminance: "+lval
 }
 
 def zwaveEvent(hubitat.zwave.commands.manufacturerspecificv2.ManufacturerSpecificReport cmd) {
@@ -190,23 +190,23 @@ def refresh() {
 //
 //THIS IS NOT WORKING PROPERLY YET
 //
-def zwaveEvent(hubitat.zwave.commands.associationv2.AssociationReport cmd) {
-	if (logEnable) log.debug "---CONFIGURATION REPORT V1--- ${device.displayName} sent ${cmd}"
-	def config = cmd.scaledConfigurationValue
-	//config = zwave.configurationV1.configurationGet(parameterNumber: 2)
-	def result = []
-	if (cmd.parameterNumber == 1) {
-		def value = config
-		result << sendEvent([name:"TimeoutDuration", value: value, displayed:true])
-    } else if (cmd.parameterNumber == 2) {
-		if (config == 0 ) {
-        	result << sendEvent([name:"operatingMode", value: "Manual", displayed:true])
-		} else {
-			result << sendEvent([name:"operatingMode", value: "Auto", displayed:true])
-		}	
-	return result
-	}
-}
+//def zwaveEvent(hubitat.zwave.commands.associationv2.AssociationReport cmd) {
+//	if (logEnable) log.debug "---CONFIGURATION REPORT V1--- ${device.displayName} sent ${cmd}"
+//	//def config = cmd.scaledConfigurationValue
+//	config = zwave.configurationV1.configurationGet(parameterNumber: 2)
+//	def result = []
+//	if (cmd.parameterNumber == 1) {
+//		def value = config
+//		result << sendEvent([name:"TimeoutDuration", value: value, displayed:true])
+//    } else if (cmd.parameterNumber == 2) {
+//		if (config == 0 ) {
+//        	result << sendEvent([name:"operatingMode", value: "Manual", displayed:true])
+//		} else {
+//			result << sendEvent([name:"operatingMode", value: "Auto", displayed:true])
+//		}	
+//	return result
+//	}
+//}
 
 def setFirmwareVersion() {
    def versionInfo = ''
