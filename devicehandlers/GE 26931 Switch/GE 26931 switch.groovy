@@ -198,7 +198,8 @@ def zwaveEvent(hubitat.zwave.commands.crc16encapv1.Crc16Encap cmd) {
 
 def zwaveEvent(hubitat.zwave.commands.basicv1.BasicReport cmd) {
 	def sstate = cmd.value ? "on" : "off"
-	if (txtEnable) log.info "Switch is: "+sstate+" physical"
+	if (txtEnable) log.info "Switch is: ${sstate} physical"
+	
 	[name: "switch", value: cmd.value ? "on" : "off", type: "physical"]
 }
 
@@ -267,7 +268,7 @@ def zwaveEvent(hubitat.zwave.commands.configurationv1.ConfigurationReport cmd) {
 def zwaveEvent(hubitat.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd) {
 	def sstate = cmd.value ? "on" : "off"
     if (logEnable) log.debug "---BINARY SWITCH REPORT V1--- ${device.displayName} sent ${cmd}"
-    if (txtEnable) log.info "Switch is: "+sstate+" digital"
+    if (txtEnable) log.info "Switch is: ${sstate} physical"
     createEvent([name: "switch", value: cmd.value ? "on" : "off", type: "digital"])
 }
 
