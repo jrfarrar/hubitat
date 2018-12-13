@@ -174,7 +174,7 @@ def parse(String description) {
 		def cmd = zwave.parse(description, [0x20: 1, 0x25: 1, 0x56: 1, 0x70: 2, 0x72: 2, 0x85: 2, 0x71: 3])
 		if (cmd) {
 			if (logEnable) log.debug("'$description' parsed to $result")
-			if (txtEnable) log.info("${device.displayName} ${result}")
+			if (logEnable) log.debug("${device.displayName} ${result}")
 			result = zwaveEvent(cmd)
         }
 	}
@@ -200,7 +200,7 @@ def zwaveEvent(hubitat.zwave.commands.crc16encapv1.Crc16Encap cmd) {
 
 def zwaveEvent(hubitat.zwave.commands.basicv1.BasicReport cmd) {
 	def sstate = cmd.value ? "on" : "off"
-	//if (txtEnable) log.info "Switch is: ${sstate} physical"
+	if (txtEnable) log.info "${device.displayName} switch is: ${sstate} physical"
 	
 	[name: "switch", value: cmd.value ? "on" : "off", type: "physical"]
 }
@@ -270,7 +270,7 @@ def zwaveEvent(hubitat.zwave.commands.configurationv1.ConfigurationReport cmd) {
 def zwaveEvent(hubitat.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd) {
 	def sstate = cmd.value ? "on" : "off"
     if (logEnable) log.debug "---BINARY SWITCH REPORT V1--- ${device.displayName} sent ${cmd}"
-    //if (txtEnable) log.info "Switch is: ${sstate} physical"
+    if (txtEnable) log.info "${device.displayName} switch is: ${sstate} physical"
     createEvent([name: "switch", value: cmd.value ? "on" : "off", type: "digital"])
 }
 
@@ -302,10 +302,10 @@ def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd) {
 	if (cmd.notificationType == 0x07) {
 		if ((cmd.event == 0x00)) {
 			result << createEvent(name: "motion", value: "inactive", descriptionText: "$device.displayName motion has stopped")
-            //if (txtEnable) log.info "Motion Inactive"
+            if (txtEnable) log.info "${device.displayName} Motion Inactive"
 		} else if (cmd.event == 0x08) {
 			result << createEvent(name: "motion", value: "active", descriptionText: "$device.displayName detected motion")
-            //if (txtEnable) log.info "Motion Active"
+            if (txtEnable) log.info "${device.displayName} Motion Active"
 		}
 	}
 	result
