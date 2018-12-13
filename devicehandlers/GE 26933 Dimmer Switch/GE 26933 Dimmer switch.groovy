@@ -179,6 +179,8 @@ def parse(String description) {
         def cmd = zwave.parse(description, [0x20: 1, 0x25: 1, 0x56: 1, 0x70: 2, 0x72: 2, 0x85: 2, 0x71: 3, 0x56: 1])
 		if (cmd) {
 			result = zwaveEvent(cmd)
+			if (logEnable) log.debug("'$description' parsed to $result")
+            if (txtEnable) log.info("$result")
         }
 	}
     if (!result) { log.warn "Parse returned ${result} for $description" }
@@ -302,7 +304,7 @@ def zwaveEvent(hubitat.zwave.commands.configurationv1.ConfigurationReport cmd) {
 def zwaveEvent(hubitat.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd) {
     def sstate = cmd.value ? "on" : "off"
     if (logEnable) log.debug "---BINARY SWITCH REPORT V1--- ${device.displayName} sent ${cmd}"
-	if (txtEnable) log.info "${device.displayName} switch is ${sstate} digital"   
+	//if (txtEnable) log.info "${device.displayName} switch is ${sstate} digital"   
     sendEvent(name: "switch", value: cmd.value ? "on" : "off", type: "digital")
 }
 def zwaveEvent(hubitat.zwave.commands.manufacturerspecificv2.ManufacturerSpecificReport cmd) {
@@ -331,10 +333,10 @@ def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd){
 	if (cmd.notificationType == 0x07) {
 		if ((cmd.event == 0x00)) { 
            	result << createEvent(name: "motion", value: "inactive", descriptionText: "$device.displayName motion has stopped")
-            if (txtEnable) log.info "${device.displayName} motion inactive"
+            //if (txtEnable) log.info "${device.displayName} motion inactive"
          } else if (cmd.event == 0x08) {
             result << createEvent(name: "motion", value: "active", descriptionText: "$device.displayName detected motion")
-            if (txtEnable) log.info "${device.displayName} motion active"
+            //if (txtEnable) log.info "${device.displayName} motion active"
         }
     }
 	result  
@@ -367,9 +369,10 @@ private dimmerEvents(hubitat.zwave.Command cmd) {
         //showDashboard(timeoutValue, "", "", "", "")
     }
     if (cmd.value && cmd.value <= 100) {
-		if (txtEnable) log.info "${device.displayName} level is: ${cmd.value}"
+		//if (txtEnable) log.info "${device.displayName} level is: ${cmd.value}"
 		result << createEvent(name: "level", value: cmd.value, unit: "%")
 	}
+	
 	return result
 }
 def on() {
@@ -378,6 +381,7 @@ def on() {
 }
 def off() {
 	//if (txtEnable) log.info "Digital Off"
+	//if (txtEnable) log.info "${device.displayName} light is turning off"
 	delayBetween ([zwave.basicV1.basicSet(value: 0x00).format(), zwave.switchMultilevelV3.switchMultilevelGet().format()], 5000)
 }
 def setLevel(value) {
