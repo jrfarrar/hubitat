@@ -180,7 +180,7 @@ def parse(String description) {
 		if (cmd) {
 			result = zwaveEvent(cmd)
 			if (logEnable) log.debug("'$description' parsed to $result")
-            if (txtEnable) log.info("$result")
+			if (txtEnable) log.info("${device.displayName} ${result}")
         }
 	}
     if (!result) { log.warn "Parse returned ${result} for $description" }
