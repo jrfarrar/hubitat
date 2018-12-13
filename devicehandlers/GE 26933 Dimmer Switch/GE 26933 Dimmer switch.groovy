@@ -302,7 +302,7 @@ def zwaveEvent(hubitat.zwave.commands.configurationv1.ConfigurationReport cmd) {
 def zwaveEvent(hubitat.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd) {
     def sstate = cmd.value ? "on" : "off"
     if (logEnable) log.debug "---BINARY SWITCH REPORT V1--- ${device.displayName} sent ${cmd}"
-	if (txtEnable) log.info "Switch is ${sstate} digital"   
+	if (txtEnable) log.info "${device.displayName} switch is ${sstate} digital"   
     sendEvent(name: "switch", value: cmd.value ? "on" : "off", type: "digital")
 }
 def zwaveEvent(hubitat.zwave.commands.manufacturerspecificv2.ManufacturerSpecificReport cmd) {
@@ -331,10 +331,10 @@ def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd){
 	if (cmd.notificationType == 0x07) {
 		if ((cmd.event == 0x00)) { 
            	result << createEvent(name: "motion", value: "inactive", descriptionText: "$device.displayName motion has stopped")
-            if (txtEnable) log.info "motion inactive"
+            if (txtEnable) log.info "${device.displayName} motion inactive"
          } else if (cmd.event == 0x08) {
             result << createEvent(name: "motion", value: "active", descriptionText: "$device.displayName detected motion")
-            if (txtEnable) log.info "motion active"
+            if (txtEnable) log.info "${device.displayName} motion active"
         }
     }
 	result  
@@ -367,7 +367,7 @@ private dimmerEvents(hubitat.zwave.Command cmd) {
         //showDashboard(timeoutValue, "", "", "", "")
     }
     if (cmd.value && cmd.value <= 100) {
-		if (txtEnable) log.info "Level is: ${cmd.value}"
+		if (txtEnable) log.info "${device.displayName} level is: ${cmd.value}"
 		result << createEvent(name: "level", value: cmd.value, unit: "%")
 	}
 	return result
@@ -385,9 +385,9 @@ def setLevel(value) {
 	def level = Math.min(valueaux, 99)
     def cmds = []    	
     if (settings.setlevelmode){ 
-    	if (txtEnable) log.info "setlevel does not activate light"
+    	if (txtEnable) log.info "${device.displayName} setlevel does not activate light"
     	if (device.currentValue("switch") == "on") {
-            if (txtEnable) log.info "light already on setting level ${level}"
+            if (txtEnable) log.info "${device.displayName} light already on setting level ${level}"
             sendEvent(name: "level", value: level, unit: "%")
 			return delayBetween([
 				secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: level , parameterNumber: 17, size: 1)),
@@ -396,14 +396,14 @@ def setLevel(value) {
 				secureCmd(zwave.switchMultilevelV3.switchMultilevelGet())
 			],500)
         } else if (device.currentValue("switch") == "off") {
-            if (txtEnable) log.info "light is off setting level ${level}"
+            if (txtEnable) log.info "${device.displayName} light is off setting level ${level}"
 			return delayBetween([
 				secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: level , parameterNumber: 17, size: 1)),
             	secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 17))
 			],500)
         }        
     } else {
-        if (txtEnable) log.info "setlevel activates light - level ${level}"
+        if (txtEnable) log.info "${device.displayName} setlevel activates light - level ${level}"
     	sendEvent(name: "level", value: level, unit: "%")
 		delayBetween ([zwave.basicV1.basicSet(value: level).format(), zwave.switchMultilevelV3.switchMultilevelGet().format()], 500)
     }
