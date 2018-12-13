@@ -87,6 +87,7 @@ metadata {
         input "group3way", "bool", title: "Send command on 3-way action", description: "", required: false
         input "group3timer", "bool", title: "Send command on auto off timer", description: "", required: false
         input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: false
+		input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
     }
     /*
     tiles {
@@ -269,7 +270,7 @@ def parse(description) {
         if (cmd) {
             result = zwaveEvent(cmd)
             if (logEnable) log.debug("'$description' parsed to $result")
-            if(description.contains("2603")) log.info("$result")
+			if (logEnable) {if(description.contains("2603")) log.debug("$result")}
         } else {
             if (logEnable) log.debug("Couldn't zwave.parse '$description'")
         }
@@ -306,7 +307,10 @@ private dimmerEvents(hubitat.zwave.Command cmd) {
     def result = [createEvent(name: "switch", value: value)]
     if (cmd.value) {
         result << createEvent(name: "level", value: cmd.value, unit: "%")
-    }
+		if (txtEnable) log.info("${device.displayName} : ${value} at ${cmd.value}")
+	} else {
+		if (txtEnable) log.info("${device.displayName} : ${value}")
+	}	
     return result
 }
 
