@@ -10,7 +10,7 @@
 metadata {
 	// Automatically generated. Make future change here.
 	definition (
-		name: 		"AEON HEM v1 Separate Clamp",
+		name: 		"AEON HEM v1",
 		namespace: 	"jrfarrar",
 		category: 	"HEM",
 		author: 	"J.R. Farrar"
@@ -281,7 +281,7 @@ def zwaveEvent(hubitat.zwave.commands.batteryv1.BatteryReport cmd) {
 	else {
 		map.value = cmd.batteryLevel
 	}
-	log.debug map
+	//log.debug map
 	return map
 }
 
