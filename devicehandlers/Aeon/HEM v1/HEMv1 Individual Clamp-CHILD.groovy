@@ -9,6 +9,6 @@ metadata {
 		capability "Sensor"
         
         attribute "power", "string"
-        attribute "energy", "string"
+        attribute "energy", "string"        
     }
 }
