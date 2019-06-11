@@ -140,7 +140,6 @@ metadata {
 
 def installed() {
 	reset()						// The order here is important
-    createChildDevices()
 	configure()					// Since reports can start coming in even before we finish configure()
 	refresh()
 }
@@ -381,27 +380,4 @@ def configure() {
     
 	log.debug cmd
 	cmd
-}
-
-def recreateChildDevices() {
-    log.debug "recreateChildDevices"
-    deleteChildren()
-    createChildDevices()
-}
-
-def deleteChildren() {
-	log.debug "deleteChildren"
-	def children = getChildDevices()
-    
-    children.each {child->
-  		deleteChildDevice(child.deviceNetworkId)
-    }
-}
-
-private void createChildDevices() {
-    log.debug "createChildDevices"
-    
-    for (i in 1..2) {
-        addChildDevice("jrfarrar", "AEON HEM V1 (Child)", "$device.deviceNetworkId-$i", [name: "ch$i", label: "$device.displayName $i", isComponent: true])
-    }
 }
