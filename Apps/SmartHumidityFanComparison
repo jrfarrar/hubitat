@@ -18,7 +18,8 @@ definition(
     category: "Convenience",
     iconUrl: "https://raw.githubusercontent.com/napalmcsr/SmartThingsStuff/master/smartapps/craig-romei/Bathroom_Fan.jpg",
     iconX2Url: "https://raw.githubusercontent.com/napalmcsr/SmartThingsStuff/master/smartapps/craig-romei/Bathroom_Fan.jpg",
-    iconX3Url: "https://raw.githubusercontent.com/napalmcsr/SmartThingsStuff/master/smartapps/craig-romei/Bathroom_Fan.jpg"
+    iconX3Url: "https://raw.githubusercontent.com/napalmcsr/SmartThingsStuff/master/smartapps/craig-romei/Bathroom_Fan.jpg",
+    importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/SmartHumidityFanComparison.groovy"
 )
 
 preferences {
