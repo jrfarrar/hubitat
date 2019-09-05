@@ -381,7 +381,7 @@ def updateCheck(){
 }
 
 def setVersion(){
-	state.version = "1.0.0" // Version number of this app
+	state.version = "1.0.1" // Version number of this app
 	state.InternalName = "SmartHumidityFanComparison"   // this is the name used in the JSON file for this app
 }
 
