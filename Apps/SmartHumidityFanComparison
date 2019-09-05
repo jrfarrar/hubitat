@@ -29,19 +29,19 @@ def pageConfig()
 	dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval:0) {
 		section("Instructions")
 		{
-			paragraph "Use this to turn on a bathroom fan when humditity in the bathroom rises above humidity of another sensor in the house."  
-            paragraph "The bathroom sensor should report fairly frequently or it will be quite a bit of time before the fan turns on."
-            paragraph "The manual mode is used to turn the fan on for reasons other than humidity and has it's own set turn off delay."
-            paragraph "However if the humidity rises while the fan is on manually the automatic mode will take over."
-            paragraph "This is for the times also when someone remembers to turn the fan on before the shower. The auto mode will kick in and take over and turn off NOT after a set time but when the humidity drops to the prescribed amount."
-            paragraph "The first time you install/run this the baseline humidity is set to 50% until your baseline humidity sensor reports in."
+		    paragraph "Use this to turn on a bathroom fan when humditity in the bathroom rises above humidity of another sensor in the house."  
+		    paragraph "The bathroom sensor should report fairly frequently or it will be quite a bit of time before the fan turns on."
+		    paragraph "The manual mode is used to turn the fan on for reasons other than humidity and has it's own set turn off delay."
+		    paragraph "However if the humidity rises while the fan is on manually the automatic mode will take over."
+		    paragraph "This is for the times also when someone remembers to turn the fan on before the shower. The auto mode will kick in and take over and turn off NOT after a set time but when the humidity drops to the prescribed amount."
+		    paragraph "The first time you install/run this the baseline humidity is set to 50% until your baseline humidity sensor reports in."
 		}
-			section("Bathroom Devices")
+		section("Bathroom Devices")
 		{
 			paragraph "NOTE: The bathroom humidity sensor you select will need to report about 5 min or less. Not important for the baseline sensor."
 			input "HumiditySensor", "capability.relativeHumidityMeasurement", title: "Bathroom Humidity Sensor:", required: true
 			input "FanSwitch", "capability.switch", title: "Fan switch to turn on:", required: true
-            input "CompareHumiditySensor", "capability.relativeHumidityMeasurement", title: "Compare to this baseline Humidity Sensor:", required: true
+           		input "CompareHumiditySensor", "capability.relativeHumidityMeasurement", title: "Compare to this baseline Humidity Sensor:", required: true
 		}
 		section("Fan Activation")
 		{
@@ -50,7 +50,7 @@ def pageConfig()
 		section("Fan Deactivation")
 		{
 			input "HumidityDecreasedBy", "number", title: "When humidity drops below this amount plus the baseline sensor humidity start the turn off delay: ", required: true, defaultValue: 6
-            input "HumidityDropTimeout", "number", title: "How long after the humidity drops below the turn off threshold should the fan turn off (minutes):", required: true, defaultValue:  10
+            		input "HumidityDropTimeout", "number", title: "How long after the humidity drops below the turn off threshold should the fan turn off (minutes):", required: true, defaultValue:  10
 		}
 		section("Manual Activation")
 		{
@@ -93,14 +93,14 @@ def updated()
 
 def initialize()
 {
-    infolog "Initializing"
+	infolog "Initializing"
 	state.AutomaticallyTurnedOn = false
 	state.TurnOffLaterStarted = false
-    subscribe(HumiditySensor, "humidity", HumidityHandler)
-    subscribe(CompareHumiditySensor, "humidity", HumidityHandler)
-    subscribe(FanSwitch, "switch", FanSwitchHandler)
+    	subscribe(HumiditySensor, "humidity", HumidityHandler)
+    	subscribe(CompareHumiditySensor, "humidity", HumidityHandler)
+    	subscribe(FanSwitch, "switch", FanSwitchHandler)
 	subscribe(location, "mode", modeChangeHandler)
-    version()
+    	version()
 	if (!state.baselineHumidity)
 	{
 		state.baselineHumidity = 50
