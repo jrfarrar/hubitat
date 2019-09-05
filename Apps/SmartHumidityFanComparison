@@ -12,8 +12,8 @@
 
 definition(
     name: "Smart Humidity Fan Comparison Version",
-    namespace: "Craig.Romei",
-    author: "Craig Romei",
+    namespace: "J.R. Farrar",
+    author: "J.R. Farrar",
     description: "Control a fan (switch) based on relative humidity difference between a humidity sensor(bathroom) and a baseline humidity sensor(house thermostat or other)",
     category: "Convenience",
     iconUrl: "https://raw.githubusercontent.com/napalmcsr/SmartThingsStuff/master/smartapps/craig-romei/Bathroom_Fan.jpg",
@@ -27,9 +27,14 @@ preferences {
 def pageConfig()
 {
 	dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval:0) {
-		section("Versioning")
+		section("Instructions")
 		{
-			display()
+			paragraph "Use this to turn on a bathroom fan when humditity in the bathroom rises above humidity of another sensor in the house."  
+            paragraph "The bathroom sensor should report fairly frequently or it will be quite a bit of time before the fan turns on."
+            paragraph "The manual mode is used to turn the fan on for reasons other than humidity and has it's own set turn off delay."
+            paragraph "However if the humidity rises while the fan is on manually the automatic mode will take over."
+            paragraph "This is for the times also when someone remembers to turn the fan on before the shower. The auto mode will kick in and take over and turn off NOT after a set time but when the humidity drops to the prescribed amount."
+            paragraph "The first time you install/run this the baseline humidity is set to 50% until your baseline humidity sensor reports in."
 		}
 			section("Bathroom Devices")
 		{
@@ -146,7 +151,7 @@ def HumidityHandler(evt)
     debuglog "Turn ON Humidity threshold: ${state.threshold}"
     debuglog "Turn OFF Humidity threshold: ${state.thresholdOff}"
     
-    infolog "HumidityHandler:running humidity check: ${state.currentHumidity}"
+    //infolog "HumidityHandler:running humidity check: ${state.currentHumidity}"
 	def allModes = settings.modes
 	def modeStop = false
 	
