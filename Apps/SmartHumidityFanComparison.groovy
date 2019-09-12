@@ -171,7 +171,7 @@ def HumidityHandler(evt)
         state.TurnOffLaterStarted = false
         state.AutomaticallyTurnedOnAt = new Date().format("yyyy-MM-dd HH:mm")
         infolog "HumidityHandler:Automatic mode took over manual mode due to humidity increase"
-	infolog "Value exceeded: ${state.thresholdOff}, Current humidity: ${state.currentHumidity}"
+	infolog "Value exceeded: ${state.threshold}, Current humidity: ${state.currentHumidity}"
     }
     
     
