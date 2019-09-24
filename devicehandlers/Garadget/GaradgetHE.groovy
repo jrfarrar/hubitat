@@ -90,6 +90,7 @@ def configure() {
 
 // Parse incoming device messages to generate events
 private parseDoorStatusResponse(resp, data) {                                  //added:   ,data
+  if(resp.getStatus() == 200 || resp.getStatus() == 207) {                     //added to make sure we got data
     response = parseJson(resp.data)                                            //added this line
     if (logEnable) log.debug("Executing parseDoorStatusResponse: "+resp.data)
     if (logEnable) log.debug("Output status: "+resp.status)
@@ -116,8 +117,9 @@ private parseDoorStatusResponse(resp, data) {                                  /
     }else if(resp.status == 201){
         if (logEnable) log.debug("Something was created/updated")
     }
-}
 
+  }
+}
 private parseDoorConfigResponse(resp) {
     if (logEnable) log.debug("Executing parseResponse: "+resp.data)
     if (logEnable) log.debug("Output status: "+resp.status)
