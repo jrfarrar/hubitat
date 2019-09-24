@@ -14,6 +14,7 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
+ * 09/24/2019 V2.0 added extra params nme, tzo, aev, sys -jrf
  * 11/11/2018 V1.9 adding logging and txt logging function to keeps Hubitat Logs Clean-jrf
  * 21/03/2018 V1.8 Report Door Control and Garage Door Control state -RBoy
  * 14/02/2018 V1.7 Support Door Control capability for expanded compatibility with SmartApps -RBoy
@@ -167,6 +168,22 @@ private parseDoorConfigResponse(resp) {
                     case "ane": def ane = resultValue[1];
                     			if (logEnable) log.debug ("GARADGET: Alert for night time end in minutes from midnight: " +ane );
                                 break;
+                    
+                    case "nme": def nme = resultValue[1];
+                    			if (logEnable) log.debug ("GARADGET: Door Name: " +nme );
+                                break;
+                    
+                    case "tzo": def tzo = resultValue[1];
+                    			if (logEnable) log.debug ("GARADGET: TZO: " +tzo );
+                                break;
+                    
+                    case "aev": def aev = resultValue[1];
+                    			if (logEnable) log.debug ("GARADGET: AEV: " +aev );
+                                break;                    
+                    
+                    case "sys": def sys = resultValue[1];
+                    			if (logEnable) log.debug ("GARADGET: System Firmware: " +sys );
+                                break;                    
 
                     default : log.debug ("GARADGET UNUSED CONFIG: " +resultValue[0] +" value of " +resultValue[1])
                 }
