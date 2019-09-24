@@ -5,6 +5,7 @@
  *
  *     Copyright (C) Matt LeBaugh
  *
+ *  Version 1.1.1 09/24/19 - fixed refresh 
  *  Version 1.1.0 12/4/18 - bug fixes and refresh update
  *  Version 1.1.0 11/11/18 - Modified for Hubitat - jrf
  *
@@ -358,7 +359,7 @@ def refresh() {
 	 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15)),
 	 secureCmd(zwave.switchBinaryV1.switchBinaryGet()),
      secureCmd(zwave.switchMultilevelV1.switchMultilevelGet()),
-	 secureCmd(zwave.notificationV3.notificationGet(notificationType: 7)),
+	 //secureCmd(zwave.notificationV3.notificationGet(notificationType: 7)),
 	 secureCmd(zwave.switchMultilevelV3.switchMultilevelGet())
     ],1000)
 }
