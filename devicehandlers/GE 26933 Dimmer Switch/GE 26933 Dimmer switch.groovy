@@ -441,7 +441,7 @@ def refresh() {
 		 secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 18)),
 		 secureCmd(zwave.switchBinaryV1.switchBinaryGet()),
          secureCmd(zwave.switchMultilevelV1.switchMultilevelGet()),
-		 secureCmd(zwave.notificationV3.notificationGet(notificationType: 7)),
+		 //secureCmd(zwave.notificationV3.notificationGet(notificationType: 7)),
 		 secureCmd(zwave.switchMultilevelV3.switchMultilevelGet())
     ],500)
 }
