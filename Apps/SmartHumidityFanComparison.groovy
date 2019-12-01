@@ -78,6 +78,7 @@ def pageConfig()
 				,defaultValue : "10"
 				)  
 		}
+        section() {label title: "Enter a name for this automation", required: false}
 	}
 }
 
@@ -202,7 +203,8 @@ def HumidityHandler(evt)
             else
             {
 				infolog "HumidityHandler:Turn Fan off in ${HumidityDropTimeout} minutes."
-		    	infolog "Humidity: ${state.currentHumidity}"
+                infolog "${CompareHumiditySensor.device} : ${state.baselineHumidity}"
+                infolog "${HumiditySensor.device} : ${state.currentHumidity}"
 				state.TurnOffLaterStarted = true
 				runIn(60 * HumidityDropTimeout.toInteger(), TurnOffFanSwitchCheckHumidity)
 				debuglog "HumidityHandler: state.TurnOffLaterStarted = ${state.TurnOffLaterStarted}"
