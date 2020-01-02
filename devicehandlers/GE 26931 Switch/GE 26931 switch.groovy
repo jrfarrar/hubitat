@@ -45,7 +45,14 @@ metadata {
         command "MotionSenseLow"
         command "MotionSenseEnable"
         command "MotionSenseDisable"
-
+        command "ResetCycleDisabled"
+        command "ResetCycle10s"
+        command "ResetCycle20s"
+        command "ResetCycle30s"
+        command "ResetCycle45s"
+        command "ResetCycle27m"
+        
+        
         attribute "operatingMode", "enum", ["Manual", "Vacancy", "Occupancy"]
 
 		fingerprint mfr:"0063", prod:"494D", model: "3032", deviceJoinName: "GE Z-Wave Plus Motion Wall Switch"
@@ -53,7 +60,7 @@ metadata {
 
 
 	preferences {
-        	input title: "", description: "Select your prefrences here, they will be sent to the device once updated.\n\nTo verify the current settings of the device, they will be shown in the 'recently' page once any setting is updated", displayDuringSetup: false, type: "paragraph", element: "paragraph"
+        /*	input title: "", description: "Select your prefrences here, they will be sent to the device once updated.\n\nTo verify the current settings of the device, they will be shown in the 'recently' page once any setting is updated", displayDuringSetup: false, type: "paragraph", element: "paragraph"
 			input (
                 name: "operationmode",
                 title: "Operating Mode",
@@ -161,7 +168,7 @@ metadata {
             	title: "Association Group 3 Members (Max of 4):",
             	type: "text",
             	required: false
-        	)
+        	) */
            
           input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: false
           input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
@@ -479,6 +486,52 @@ def MotionSenseDisable() {
 	],500)
 }
 
+def ResetCycleDisabled() {
+	if (logEnable) log.debug("Setting Reset Cycle to 0 sec")
+	return delayBetween([
+        secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: 0, parameterNumber: 15, size: 2)),
+       	secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15))
+	],500)
+}
+
+def ResetCycle10s() {
+	if (logEnable) log.debug("Setting Reset Cycle to 10 sec")
+	return delayBetween([
+        secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: 1, parameterNumber: 15, size: 2)),
+       	secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15))
+	],500)
+}
+
+def ResetCycle20s() {
+	if (logEnable) log.debug("Setting Reset Cycle to 20 sec")
+	return delayBetween([
+        secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: 2, parameterNumber: 15, size: 2)),
+       	secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15))
+	],500)
+}
+
+def ResetCycle30s() {
+	if (logEnable) log.debug("Setting Reset Cycle to 30 sec")
+	return delayBetween([
+        secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: 3, parameterNumber: 15, size: 2)),
+       	secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15))
+	],500)
+}
+def ResetCycle45s() {
+	if (logEnable) log.debug("Setting Reset Cycle to 45 sec")
+	return delayBetween([
+        secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: 4, parameterNumber: 15, size: 2)),
+       	secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15))
+	],500)
+}
+def ResetCycle27ms() {
+	if (logEnable) log.debug("Setting Reset Cycle to 27 min")
+	return delayBetween([
+        secureCmd(zwave.configurationV1.configurationSet(scaledConfigurationValue: 110, parameterNumber: 15, size: 2)),
+       	secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15))
+	],500)
+}
+
 def installed() {
 	// Device-Watch simply pings if no device events received for 32min(checkInterval)
 	//sendEvent(name: "checkInterval", value: 2 * 15 * 60 + 2 * 60, displayed: false, data: [protocol: "zwave", hubHardwareId: //device.hub.hardwareID])
@@ -497,7 +550,7 @@ def updated() {
         cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 13))
         if (settings.lightsense) {cmds << zwave.configurationV1.configurationSet(configurationValue: [settings.lightsense.toInteger()], parameterNumber: 14, size: 1)}
         cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 14))
-        if (settings.resetcycle) {cmds << zwave.configurationV1.configurationSet(configurationValue: [settings.resetcycle.toInteger()], parameterNumber: 15, size: 1)}
+        if (settings.resetcycle) {cmds << zwave.configurationV1.configurationSet(configurationValue: [settings.resetcycle.toInteger()], parameterNumber: 15, size: 2)}
         cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 15))
         if (settings.operationmode) {cmds << zwave.configurationV1.configurationSet(configurationValue: [settings.operationmode.toInteger()], parameterNumber: 3, size: 1)}
         cmds << secureCmd(zwave.configurationV1.configurationGet(parameterNumber: 3))
