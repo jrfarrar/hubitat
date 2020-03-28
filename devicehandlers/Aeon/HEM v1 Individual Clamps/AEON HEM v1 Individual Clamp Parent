@@ -140,7 +140,7 @@ metadata {
 
 def installed() {
 	reset()						// The order here is important
-    createChildDevices()
+    //createChildDevices()
 	configure()					// Since reports can start coming in even before we finish configure()
 	refresh()
 }
@@ -257,10 +257,15 @@ def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
                         childDevices.each {
 							childDevice ->
                					if (childDevice.deviceNetworkId == "$device.deviceNetworkId-1") {
-                    			childDevice.sendEvent(name: "power", value: newValue, descriptionText: "L1 Power: ${newValue} Watts")
+                   			childDevice.sendEvent(name: "power", value: newValue, descriptionText: "L1 Power: ${newValue} Watts")
                 			}						
 						}
                         /* */
+                state.powerValue = state.powerL1 + state.powerL2
+                [name: "power", value: state.powerValue, unit: "W", descriptionText: "Total Power: ${formattedValue} Watts"]
+                dispValue = "Total\n"+state.powerValue+"\nWatts"	// Total watts label
+                sendEvent(name: "powerDisp", value: dispValue as String, unit: "", descriptionText: "Display Power: ${state.powerValue} Watts", displayed: false)                        
+                        
 					}
 				}
 				else if (encapsulatedCommand.scale == 0 ){
@@ -292,7 +297,10 @@ def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
                 			}						
 						}
                         /* */
-                        
+                state.powerValue = state.powerL1 + state.powerL2
+                [name: "power", value: state.powerValue, unit: "W", descriptionText: "Total Power: ${formattedValue} Watts"]
+                dispValue = "Total\n"+state.powerValue+"\nWatts"	// Total watts label
+                sendEvent(name: "powerDisp", value: dispValue as String, unit: "", descriptionText: "Display Power: ${state.powerValue} Watts", displayed: false)                         
 					}
 				}
 				else if (encapsulatedCommand.scale == 0 ){
