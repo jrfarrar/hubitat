@@ -253,6 +253,7 @@ def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
 						state.powerL1 = newValue
 						[name: "powerOne", value: newValue, unit: "", descriptionText: "L1 Power: ${newValue} Watts"]
                         sendEvent(name: "powerOne", value: state.powerL1, unit: "W")
+                        
                         /* */
                         childDevices.each {
 							childDevice ->
@@ -264,7 +265,8 @@ def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
                 state.powerValue = state.powerL1 + state.powerL2
                 [name: "power", value: state.powerValue, unit: "W", descriptionText: "Total Power: ${formattedValue} Watts"]
                 dispValue = "Total\n"+state.powerValue+"\nWatts"	// Total watts label
-                sendEvent(name: "powerDisp", value: dispValue as String, unit: "", descriptionText: "Display Power: ${state.powerValue} Watts", displayed: false)                        
+                sendEvent(name: "powerDisp", value: dispValue as String, unit: "", descriptionText: "Display Power: ${state.powerValue} Watts", displayed: false)
+                sendEvent(name: "power", value: state.powerValue, unit: "W")
                         
 					}
 				}
@@ -290,6 +292,7 @@ def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
 						state.powerL2 = newValue
 						[name: "powerTwo", value: newValue, unit: "", descriptionText: "L2 Power: ${newValue} Watts"]
                         sendEvent(name: "powerTwo", value: state.powerL2, unit: "W")
+                        
                         /* */
                         childDevices.each {
 							childDevice ->
@@ -301,7 +304,8 @@ def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
                 state.powerValue = state.powerL1 + state.powerL2
                 [name: "power", value: state.powerValue, unit: "W", descriptionText: "Total Power: ${formattedValue} Watts"]
                 dispValue = "Total\n"+state.powerValue+"\nWatts"	// Total watts label
-                sendEvent(name: "powerDisp", value: dispValue as String, unit: "", descriptionText: "Display Power: ${state.powerValue} Watts", displayed: false)                         
+                sendEvent(name: "powerDisp", value: dispValue as String, unit: "", descriptionText: "Display Power: ${state.powerValue} Watts", displayed: false)
+                sendEvent(name: "power", value: state.powerValue, unit: "W")
 					}
 				}
 				else if (encapsulatedCommand.scale == 0 ){
@@ -368,6 +372,7 @@ def resetDisplay() {
     sendEvent(name: "power2Disp", value: c2Name + "\n" + state.powerL2 + "\nWatts", unit: "W")
     sendEvent(name: "energy2Disp", value: c2Name + "\n" + state.energyL2 + "\nkWh", unit: "kWh")
     sendEvent(name: "powerTwo", value: state.powerL2, unit: "W")
+    sendEvent(name: "power", value: state.powerL1 + state.powerL2, unit: "W")
 }
 
 def reset() {
@@ -379,6 +384,7 @@ def reset() {
     state.energyL2 = ""
     state.powerL1 = ""
     state.powerL2 = ""
+    
 	
     resetDisplay()
     
