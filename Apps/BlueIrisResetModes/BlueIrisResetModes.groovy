@@ -15,7 +15,7 @@ definition(
   iconUrl: "",
   iconX2Url: "",
   iconX3Url: "",
-  //importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/Blue%20Iris%20Trigger/Blue%20Iris%20Event%20on%20Trigger%20Child.groovy"
+  importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/BlueIrisResetModes/BlueIrisResetModes.groovy"
 )
 
 
