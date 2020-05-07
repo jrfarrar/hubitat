@@ -31,7 +31,7 @@ def mainPage() {
         }
         else {
         	section("Create a new BlueIris Triggers Instance.") {
-            	app(name: "childApps", appName: "Blue Iris Trigger Child", namespace: "jrfarrar", title: "New Blue Iris Trigger Instance", multiple: true)
+            	app(name: "childApps", appName: "BlueIris Event on Trigger Child", namespace: "jrfarrar", title: "New Blue Iris Trigger Instance", multiple: true)
         	}
     	}
     }
