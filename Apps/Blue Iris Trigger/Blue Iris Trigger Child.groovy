@@ -1,5 +1,14 @@
+/*
+ *	BlueIris Event on Trigger (Child)
+ *
+ *	Author: J.R. Farrar
+ * 
+ * 
+ * 
+ */
+
 definition(
-  name: "Blue Iris Trigger Child",
+  name: "BlueIris Event on Trigger Child",
   namespace: "jrfarrar",
   author: "J.R. Farrar",
   description: "Trigger BlueIris for an Event",
