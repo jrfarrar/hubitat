@@ -104,10 +104,10 @@ def subscribeToEvents() {
     subscribe(motionSensor, "motion.active", eventHandler)
     }
     if (useRunSwitchOn && runSwitch) {
-        subscribe(runSwitch, "switch.on", switchOnHandler)
+        subscribe(runSwitch, "switch.on", eventHandler)
     }
     if (useRunSwitchOff && runSwitch) {
-        subscribe(runSwitch, "switch.off", switchOffHandler)
+        subscribe(runSwitch, "switch.off", eventHandler)
     }
     if (sunriseEnable) {
         subscribe(location, "sunrise", sunHandler)    
@@ -122,27 +122,6 @@ def subscribeToEvents() {
 
 def eventHandler(evt) {
     debuglog "eventHandler called"
-    if (contactSensor) {
-        infolog "${contactSensor} - Triggered"
-    } 
-    if (motionSensor) {
-        infolog "${motionSensor} - Triggered"
-    }
-    
-    if (canWeRun()) {
-        sendHttp()
-    }    
-}
-
-def switchOnHandler(evt) {
-    debuglog "switchOnHandler called"
-    if (canWeRun()) {
-        sendHttp()
-    }    
-}
-
-def switchOffHandler(evt) {
-    debuglog "switchOffHandler called"  
     if (canWeRun()) {
         sendHttp()
     }    
@@ -166,7 +145,7 @@ def sunHandler(evt){
 
 def modeHandler(evt){
     if (runModes.contains(location.mode)) {
-        infolog "Mode " + location.mode + " - running commands"
+        infolog "Mode: " + location.mode + " - running commands"
         if (canWeRun()) {
                sendHttp()
         }
@@ -360,7 +339,7 @@ def canWeRun(){
             debuglog "Mode " + location.mode + " - RESTRICED MODE"
         } else {
             isModeOk = true
-            debuglog "Mode " + location.mode + " - not restriced"
+            debuglog "Mode " + location.mode + " - NOT RESTRICED"
         }
     } else {
         isModeOk = true
