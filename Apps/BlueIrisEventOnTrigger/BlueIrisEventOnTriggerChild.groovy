@@ -61,7 +61,7 @@ dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval
           input "BIcommand4ad", "text", title: "BlueIris http command to send"
     }
     section(getFormat("header-green", "LOGGING")){                       
-			input(name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum",options: getLogLevels(),submitOnChange : false,defaultValue : "10")
+			input(name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum",options: getLogLevels(),submitOnChange : false,defaultValue : "1")
     }
     section(getFormat("header-green", "APP NAME")){
         input "thisName", "text", title: "App Name", submitOnChange: true
