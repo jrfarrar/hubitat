@@ -29,42 +29,42 @@ dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval
     
   section(getFormat("header-green", "TRIGGERS")) {
 		  paragraph "- These are the triggers that will trigger the below commands. One or Multiples can be used."
-	      input "contactSensor", "capability.contactSensor", title: "Contact Sensors", submitOnChange: true, multiple: true
-          input "motionSensor", "capability.motionSensor", title: "Motion Sensors", submitOnChange: true, multiple: true
-          input "runSwitch", "capability.switch", title: "Switch to use as trigger", submitOnChange: true, multiple: false
+	      input (name: "contactSensor", type: "capability.contactSensor", title: "Contact Sensors", submitOnChange: true, multiple: true)
+          input (name: "motionSensor", type: "capability.motionSensor", title: "Motion Sensors", submitOnChange: true, multiple: true)
+          input (name: "runSwitch", type: "capability.switch", title: "Switch to use as trigger", submitOnChange: true, multiple: false)
           input (name: "useRunSwitchOn", type: "bool", defaultValue: "false", title: "Use the switch above as a trigger for ON?", submitOnChange: true)
           input (name: "useDarkSwitchOff", type: "bool", defaultValue: "false", title: "Use the switch above as a trigger for OFF?", submitOnChange: true) 
-          input "runModes", "mode", title: "When Modes changes to these modes - run commands", submitOnChange: true, multiple: true
+          input (name: "runModes", type: "mode", title: "When Modes changes to these modes - run commands", submitOnChange: true, multiple: true)
           input (name: "sunriseEnable", type: "bool", defaultValue: "false", title: "Run at sunrise?", submitOnChange: true)
           input (name: "sunsetEnable", type: "bool", defaultValue: "false", title: "Run at sunset?", submitOnChange: true)
     }
     section(getFormat("header-green", "RESTRICTIONS")) {
 		  paragraph "- These restrict the above triggers based on what's set here."
-          input "darkSwitch", "capability.switch", title: "Day/Night Switch Determines when it's dark out(Dark when on)", submitOnChange: true, multiple: false
+          input (name: "darkSwitch", type: "capability.switch", title: "Day/Night Switch Determines when it's dark out(Dark when on)", submitOnChange: true, multiple: false)
           input (name: "daySwitch", type: "bool", defaultValue: "false", title: "Only run if Daylight?", submitOnChange: true)
           input (name: "nightSwitch", type: "bool", defaultValue: "false", title: "Only run if Dark?", submitOnChange: true)
-          input "noRunModes", "mode", title: "Select Mode NOT to run in", submitOnChange: true, multiple: true
+          input (name: "noRunModes", type: "mode", title: "Select Mode NOT to run in", submitOnChange: true, multiple: true)
     }
     section(getFormat("header-green", "COMMANDS TO SEND")){
 		  paragraph "- These are the HTTP commands to send when triggered."          
-          input "BIcommand1", "text", title: "BlueIris http command to send(http://192.168.1.1:81/admin....)", required: true
-          input "BIcommand2", "text", title: "BlueIris http command to send"
-          input "BIcommand3", "text", title: "BlueIris http command to send"
-          input "BIcommand4", "text", title: "BlueIris http command to send"
+          input (name: "BIcommand1", type: "text", title: "BlueIris http command to send(http://192.168.1.1:81/admin....)", required: true)
+          input (name: "BIcommand2", type: "text", title: "BlueIris http command to send")
+          input (name: "BIcommand3", type: "text", title: "BlueIris http command to send")
+          input (name: "BIcommand4", type: "text", title: "BlueIris http command to send")
     }
     section(getFormat("header-green", "COMMANDS TO SEND AFTER A DELAY")){
 		  paragraph "- These are additional commands you can send after a delay from the first set. Useful for resetting say a PTZ camera."           
-          input "Delay", "number", title: "Delay (Min)", description: "Delay in Minutes"
-          input "BIcommand1ad", "text", title: "BlueIris http command to send"
-          input "BIcommand2ad", "text", title: "BlueIris http command to send"
-          input "BIcommand3ad", "text", title: "BlueIris http command to send"
-          input "BIcommand4ad", "text", title: "BlueIris http command to send"
+          input (name: "Delay", type: "number", title: "Delay (Min)", description: "Delay in Minutes")
+          input (name: "BIcommand1ad", type: "text", title: "BlueIris http command to send")
+          input (name: "BIcommand2ad", type: "text", title: "BlueIris http command to send")
+          input (name: "BIcommand3ad", type: "text", title: "BlueIris http command to send")
+          input (name: "BIcommand4ad", type: "text", title: "BlueIris http command to send")
     }
     section(getFormat("header-green", "LOGGING")){                       
 			input(name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum",options: getLogLevels(),submitOnChange : false,defaultValue : "1")
     }
     section(getFormat("header-green", "APP NAME")){
-        input "thisName", "text", title: "App Name", submitOnChange: true
+        input (name: "thisName", type: "text", title: "App Name", submitOnChange: true)
 			if(thisName) app.updateLabel("$thisName") else app.updateSetting("thisName", "BIT - Child")
     }
   }  
@@ -98,7 +98,7 @@ def uninstalled() {
 def subscribeToEvents() {
     if (contactSensor) {
 	subscribe(contactSensor, "contact.open", eventHandler)
-    subscribe(contactSensor, "contact.closed", eventHandler)    
+    //subscribe(contactSensor, "contact.closed", eventHandler)    
     }
     if (motionSensor) {
     subscribe(motionSensor, "motion.active", eventHandler)
