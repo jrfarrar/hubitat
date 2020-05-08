@@ -27,14 +27,23 @@ page(name: "pageConfig")
 def pageConfig() {
 dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval:0) { 
     
-  section("") {
+  section("Settings to react to") {
 	      input "contactSensor", "capability.contactSensor", title: "Contact Sensors", submitOnChange: true, multiple: true
           input "motionSensor", "capability.motionSensor", title: "Motion Sensors", submitOnChange: true, multiple: true
-          input (name: "switchEnable", type: "bool", defaultValue: "false", title: "Only run if switch is on", submitOnChange: true)
-          input "killSwitch", "capability.switch", title: "Switch", submitOnChange: true, multiple: false
-      } 
+          input (name: "useDarkSwitchOn", type: "bool", defaultValue: "false", title: "Use the switch below as a trigger for ON?", submitOnChange: true)
+          input (name: "useDarkSwitchOff", type: "bool", defaultValue: "false", title: "Use the switch below as a trigger for OFF?", submitOnChange: true) 
+          input "darkSwitch", "capability.switch", title: "Day/Night Switch(Dark when on)", submitOnChange: true, multiple: false
+          input "runModes", "mode", title: "When Modes changes to these modes - run commands", submitOnChange: true, multiple: true
+          input (name: "sunriseEnable", type: "bool", defaultValue: "false", title: "Run at sunrise?", submitOnChange: true)
+          input (name: "sunsetEnable", type: "bool", defaultValue: "false", title: "Run at sunset?", submitOnChange: true)
+    }
+    section("Restrictions") {
+          input (name: "daySwitch", type: "bool", defaultValue: "false", title: "Only run if Daylight?", submitOnChange: true)
+          input (name: "nightSwitch", type: "bool", defaultValue: "false", title: "Only run if Dark?", submitOnChange: true)
+          input "noRunModes", "mode", title: "Select Mode NOT to run in", submitOnChange: true, multiple: true
+    }
     section("Commands to Send"){
-          input "BIcommand1", "text", title: "BlueIris http command to send", required: true
+          input "BIcommand1", "text", title: "BlueIris http command to send(http://192.168.1.1:81/admin....)", required: true
           input "BIcommand2", "text", title: "BlueIris http command to send"
           input "BIcommand3", "text", title: "BlueIris http command to send"
           input "BIcommand4", "text", title: "BlueIris http command to send"
@@ -82,109 +91,157 @@ def uninstalled() {
 }
 
 def subscribeToEvents() {
+    if (contactSensor) {
 	subscribe(contactSensor, "contact.open", eventHandler)
-	subscribe(contactSensor, "contact.closed", eventHandler)
+    subscribe(contactSensor, "contact.closed", eventHandler)    
+    }
+    if (motionSensor) {
     subscribe(motionSensor, "motion.active", eventHandler)
+    }
+    if (useDarkSwitchOn && darkSwitch) {
+        subscribe(darkSwitch, "switch.on", switchOnHandler)
+    }
+    if (useDarkSwitchOff && darkSwitch) {
+        subscribe(darkSwitch, "switch.off", switchOffHandler)
+    }
+    if (sunriseEnable) {
+        subscribe(location, "sunrise", sunHandler)    
+    }
+    if (sunsetEnable) {
+        subscribe(location, "sunset", sunHandler)    
+    }
+    if (runModes) {
+        subscribe(location, "mode", modeHandler)
+    }
 }
 
 def eventHandler(evt) {
     debuglog "eventHandler called"
-    
     if (contactSensor) {
-    infolog "${contactSensor} - Triggered"
-    } else {
-        if (motionSensor) {
-            infolog "${motionSensor} - Triggered"
-         }
+        infolog "${contactSensor} - Triggered"
+    } 
+    if (motionSensor) {
+        infolog "${motionSensor} - Triggered"
     }
-    //Test for killswitch
-    if (switchEnable) {
-        if(killSwitch.currentValue('switch').contains('on')) {
-            debuglog "switchEnable is ON and killSwitch is ON - run commands"
-            sendHttp()
-        } else {
-            debuglog "switchEnable is ON and killSwitch is OFF - do nothing"
-        }
-    } else {
+    
+    if (canWeRun()) {
         sendHttp()
+    }    
+}
+
+def switchOnHandler(evt) {
+    debuglog "switchOnHandler called"
+    if (canWeRun()) {
+        sendHttp()
+    }    
+}
+
+def switchOffHandler(evt) {
+    debuglog "switchOffHandler called"  
+    if (canWeRun()) {
+        sendHttp()
+    }    
+}
+
+def sunHandler(evt){
+        if (sunriseEnable){
+            infolog "Sunrise - running commands" 
+            if (canWeRun()) {
+                sendHttp()
+            }
+         }
+
+         if (sunsetEnable) {
+            infolog "Sunset - running commands"
+            if (canWeRun()) {
+                sendHttp()
+            }
+         }
+}
+
+def modeHandler(evt){
+    if (runModes.contains(location.mode)) {
+        infolog "Mode " + location.mode + " - running commands"
+        if (canWeRun()) {
+               sendHttp()
+        }
     }
 }
 
 def sendHttp() {
     debuglog "sendHttp"
       
-    debuglog "Command #1"
     def myString1 = "${settings.BIcommand1}"
     myString1 = myString1?.trim()
     if (myString1 != "null") {
         def params = [uri: "${settings.BIcommand1}"]
         try {
-        httpGet(params) {
-            resp -> resp.headers.each {
-                //debuglog "Response: ${it.name} : ${it.value}"
-            }
-        } // End try    
-        } catch (e) {
-            log.error "something went wrong: $e"
+            debuglog "Command #1"    
+            httpGet(params) {
+                resp -> resp.headers.each {
+                    //debuglog "Response: ${it.name} : ${it.value}"
+                    }
+                } // End try    
+            } catch (e) {
+                log.error "something went wrong: $e"
             }
      }
     
-    debuglog "Command #2"
     def myString2 = "${settings.BIcommand2}"
     myString2 = myString2?.trim()
     if (myString2 != "null") {
         def params = [uri: "${settings.BIcommand2}"]
         try {
-        httpGet(params) {
-            resp -> resp.headers.each {
-                debuglog "Response: ${it.name} : ${it.value}"
-            }
-        } // End try    
-        } catch (e) {
-            log.error "something went wrong: $e"
+            debuglog "Command #2"
+            httpGet(params) {
+                resp -> resp.headers.each {
+                    debuglog "Response: ${it.name} : ${it.value}"
+                    }
+                }     
+            } catch (e) {
+                log.error "something went wrong: $e"
             }
      } else {
         debuglog "no command 2"
     }
-    
-    debuglog "Command #3"
+
     def myString3 = "${settings.BIcommand3}"
     myString3 = myString3?.trim()
     if (myString3 != "null") {
         def params = [uri: "${settings.BIcommand3}"]
         try {
-        httpGet(params) {
-            resp -> resp.headers.each {
-                debuglog "Response: ${it.name} : ${it.value}"
-            }
-        } // End try    
-        } catch (e) {
-            log.error "something went wrong: $e"
+            debuglog "Command #3"
+            httpGet(params) {
+                resp -> resp.headers.each {
+                    debuglog "Response: ${it.name} : ${it.value}"
+                    }
+                }    
+            } catch (e) {
+                log.error "something went wrong: $e"
             }
      } else {
         debuglog "no command 3"
     }
     
-    debuglog "Command #4"
     def myString4 = "${settings.BIcommand4}"
     myString4 = myString4?.trim()
     if (myString4 != "null") {
         def params = [uri: "${settings.BIcommand4}"]
         try {
-        httpGet(params) {
-            resp -> resp.headers.each {
-                debuglog "Response: ${it.name} : ${it.value}"
-            }
-        } // End try    
-        } catch (e) {
-            log.error "something went wrong: $e"
-            }
+               debuglog "Command #4"
+                httpGet(params) {
+                    resp -> resp.headers.each {
+                        debuglog "Response: ${it.name} : ${it.value}"
+                    }
+                }     
+            } catch (e) {
+                log.error "something went wrong: $e"
+                }
     } else {
         debuglog "no command 4"
     }
     
-    
-    
+// determine if there are delayed commands to run
     if (settings.Delay) {
         debuglog "Delay time in Min: ${settings.Delay}"
         def int delayTime = settings.Delay * 60
@@ -207,7 +264,7 @@ def timeOut() {
         try {
         httpGet(params) {
             resp -> resp.headers.each {
-                debuglog "Response: ${it.name} : ${it.value}"
+                //debuglog "Response: ${it.name} : ${it.value}"
             }
         } // End try    
         } catch (e) {
@@ -225,7 +282,7 @@ def timeOut() {
         try {
         httpGet(params) {
             resp -> resp.headers.each {
-                debuglog "Response: ${it.name} : ${it.value}"
+                //debuglog "Response: ${it.name} : ${it.value}"
             }
         } // End try    
         } catch (e) {
@@ -243,7 +300,7 @@ def timeOut() {
         try {
         httpGet(params) {
             resp -> resp.headers.each {
-                debuglog "Response: ${it.name} : ${it.value}"
+                //debuglog "Response: ${it.name} : ${it.value}"
             }
         } // End try    
         } catch (e) {
@@ -261,7 +318,7 @@ def timeOut() {
         try {
         httpGet(params) {
             resp -> resp.headers.each {
-                debuglog "Response: ${it.name} : ${it.value}"
+                //debuglog "Response: ${it.name} : ${it.value}"
             }
         } // End try    
         } catch (e) {
@@ -271,6 +328,45 @@ def timeOut() {
         debuglog "no command 4 after delay"
     }   
     
+}
+
+def canWeRun(){
+    def isItDayLight
+    def isItNightTime
+    def isModeOk
+    
+    if (daySwitch && darkSwitch.currentValue('switch').contains('on')) {
+        isItDayLight = false
+        debuglog "Only Run in Day is on and Day/Night switch is ON"
+    } else { 
+        isItDayLight = true 
+    }
+    
+    if (nightSwitch && darkSwitch.currentValue('switch').contains('off')) {
+        isItNightTime = false
+        debuglog "Only Run in Dark is on and Day/Night Switch is OFF"
+    } else { 
+        isItNightTime = true 
+    }
+
+    if (noRunModes) {
+        if (noRunModes.contains(location.mode)) {
+            isModeOk = false
+            debuglog "Mode " + location.mode + " - RESTRICED MODE"
+        } else {
+            isModeOk = true
+            debuglog "Mode " + location.mode + " - not restriced"
+        }
+    } else {
+        isModeOk = true
+        debuglog "No Restriced Modes Selected"
+    }
+    
+    if (isItDayLight && isItNightTime && isModeOk) {
+        return true
+    } else {
+        return false
+    }
 }
 
 def debuglog(statement)
