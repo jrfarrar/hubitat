@@ -28,7 +28,10 @@ def pageConfig() {
 dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval:0) { 
     
   section("") {
-	      input "contactSensor", "capability.contactSensor", title: "Contact Sensor", submitOnChange: true, multiple: true 
+	      input "contactSensor", "capability.contactSensor", title: "Contact Sensors", submitOnChange: true, multiple: true
+          input "motionSensor", "capability.motionSensor", title: "Motion Sensors", submitOnChange: true, multiple: true
+          input (name: "switchEnable", type: "bool", defaultValue: "false", title: "Only run if switch is on", submitOnChange: true)
+          input "killSwitch", "capability.switch", title: "Switch", submitOnChange: true, multiple: false
       } 
     section("Commands to Send"){
           input "BIcommand1", "text", title: "BlueIris http command to send", required: true
@@ -81,17 +84,35 @@ def uninstalled() {
 def subscribeToEvents() {
 	subscribe(contactSensor, "contact.open", eventHandler)
 	subscribe(contactSensor, "contact.closed", eventHandler)
+    subscribe(motionSensor, "motion.active", eventHandler)
 }
 
 def eventHandler(evt) {
-    debuglog "eventHandler"
-	sendHttp()
+    debuglog "eventHandler called"
+    
+    if (contactSensor) {
+    infolog "${contactSensor} - Triggered"
+    } else {
+        if (motionSensor) {
+            infolog "${motionSensor} - Triggered"
+         }
+    }
+    //Test for killswitch
+    if (switchEnable) {
+        if(killSwitch.currentValue('switch').contains('on')) {
+            debuglog "switchEnable is ON and killSwitch is ON - run commands"
+            sendHttp()
+        } else {
+            debuglog "switchEnable is ON and killSwitch is OFF - do nothing"
+        }
+    } else {
+        sendHttp()
+    }
 }
 
 def sendHttp() {
-    debuglog "sendHttp"    
-    infolog "${contactSensor} - Triggered"
-    
+    debuglog "sendHttp"
+      
     debuglog "Command #1"
     def myString1 = "${settings.BIcommand1}"
     myString1 = myString1?.trim()
@@ -100,7 +121,7 @@ def sendHttp() {
         try {
         httpGet(params) {
             resp -> resp.headers.each {
-                debuglog "Response: ${it.name} : ${it.value}"
+                //debuglog "Response: ${it.name} : ${it.value}"
             }
         } // End try    
         } catch (e) {
