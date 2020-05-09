@@ -33,7 +33,7 @@ dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval
           input (name: "motionSensor", type: "capability.motionSensor", title: "Motion Sensors", submitOnChange: true, multiple: true)
           input (name: "runSwitch", type: "capability.switch", title: "Switch to use as trigger", submitOnChange: true, multiple: false)
           input (name: "useRunSwitchOn", type: "bool", defaultValue: "false", title: "Use the switch above as a trigger for ON?", submitOnChange: true)
-          input (name: "useDarkSwitchOff", type: "bool", defaultValue: "false", title: "Use the switch above as a trigger for OFF?", submitOnChange: true) 
+          input (name: "useRunSwitchOff", type: "bool", defaultValue: "false", title: "Use the switch above as a trigger for OFF?", submitOnChange: true) 
           input (name: "runModes", type: "mode", title: "When Modes changes to these modes - run commands", submitOnChange: true, multiple: true)
           input (name: "sunriseEnable", type: "bool", defaultValue: "false", title: "Run at sunrise?", submitOnChange: true)
           input (name: "sunsetEnable", type: "bool", defaultValue: "false", title: "Run at sunset?", submitOnChange: true)
@@ -123,21 +123,22 @@ def subscribeToEvents() {
 def eventHandler(evt) {
     debuglog "eventHandler called"
     if (canWeRun()) {
+        infolog "Switch or sensor: " + evt.device + " - running commands"
         sendHttp()
     }    
 }
 
 def sunHandler(evt){
         if (sunriseEnable){
-            infolog "Sunrise - running commands" 
             if (canWeRun()) {
+                infolog "Sunrise - running commands" 
                 sendHttp()
             }
          }
 
-         if (sunsetEnable) {
-            infolog "Sunset - running commands"
+         if (sunsetEnable) { 
             if (canWeRun()) {
+                infolog "Sunset - running commands"
                 sendHttp()
             }
          }
@@ -145,9 +146,9 @@ def sunHandler(evt){
 
 def modeHandler(evt){
     if (runModes.contains(location.mode)) {
-        infolog "Mode: " + location.mode + " - running commands"
         if (canWeRun()) {
-               sendHttp()
+            infolog "Mode: " + location.mode + " - running commands"
+            sendHttp()
         }
     }
 }
@@ -321,14 +322,14 @@ def canWeRun(){
     
     if (daySwitch && darkSwitch.currentValue('switch').contains('on')) {
         isItDayLight = false
-        debuglog "Only Run in Day is on and Day/Night switch is ON"
+        debuglog "Only Run during Daylight is on and Day/Night switch is ON(dark)"
     } else { 
         isItDayLight = true 
     }
     
     if (nightSwitch && darkSwitch.currentValue('switch').contains('off')) {
         isItNightTime = false
-        debuglog "Only Run in Dark is on and Day/Night Switch is OFF"
+        debuglog "Only Run while Dark is on and Day/Night Switch is OFF(light)"
     } else { 
         isItNightTime = true 
     }
