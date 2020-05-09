@@ -15,7 +15,7 @@ definition(
   iconUrl: "",
   iconX2Url: "",
   iconX3Url: "",
-  importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/"
+  importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/humidityTurnOnOff.groovy"
 )
 
 
