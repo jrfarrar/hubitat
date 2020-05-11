@@ -241,7 +241,7 @@ def receivedToken() {
 	render contentType: 'text/html', data: html
 }
 
-def getDeviceList() {
+def pollDeviceList() {
 	def garadgetDevices = []
     def requestParams =
         [
@@ -252,6 +252,21 @@ def getDeviceList() {
     
     asynchttpGet("getHandler",requestParams)
 	return garadgetDevices.sort()
+}
+
+def getDeviceList() {
+	def garadgetDevices = []
+
+    httpGet(uri: "${apiUrl()}/v1/devices?access_token=${state.garadgetAccessToken}"){ resp ->
+    	def restDevices = resp.data
+		restDevices.each { garadget ->
+        	if (garadget.connected == true)
+                garadgetDevices << ["${garadget.id}|${garadget.name}":"${garadget.name}"]
+            }
+
+	}
+	return garadgetDevices.sort()
+
 }
 
 def getHandler(resp, data) {
@@ -388,7 +403,7 @@ private parseResponse(resp) {
 
 def poll() {
 	//log.debug "Executing - Service Manager - poll() - "
-	getDeviceList();
+	pollDeviceList();
 	getAllChildDevices().each {
         it.statusCommand()
 	}
