@@ -122,10 +122,13 @@ def subscribeToEvents() {
 
 def eventHandler(evt) {
     debuglog "eventHandler called"
+    infolog "Switch or sensor: " + evt.device + " triggered"
     if (canWeRun()) {
-        infolog "Switch or sensor: " + evt.device + " - running commands"
+        debuglog "Success"
         sendHttp()
-    }    
+    } else {
+        debuglog "Failed tests"
+    }
 }
 
 def sunHandler(evt){
