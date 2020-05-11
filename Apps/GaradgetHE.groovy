@@ -12,6 +12,7 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
+ * 05/11/2020 v1.7 updated to only use asynch during polling and httpget during setup
  * 09/24/2019 V1.6 updated httpget to asynchttpGet for better performance in Hubitat
  * 12/12/2017 V1.5 fixed bug introduced in v1.4 on initialize function.
  * 12/12/2017 V1.4 debug logging changes. - btrenbeath
@@ -54,7 +55,7 @@ preferences {
 	page(name: "startPage", title: "Garadget Integration", content: "startPage", install: false)
 	page(name: "Credentials", title: "Fetch OAuth2 Credentials", content: "authPage", install: false)
   page(name: "mainPage", title: "Garadget Integration", content: "mainPage")
-  page(name: "completePage", title: "${getVendorName()} is now connected to SmartThings!", content: "completePage")
+  page(name: "completePage", title: "${getVendorName()} is now connected to Hubitat!", content: "completePage")
 	page(name: "listDevices", title: "Garadget Devices", content: "listDevices", install: false)
   page(name: "badCredentials", title: "Invalid Credentials", content: "badAuthPage", install: false)
 }
@@ -232,7 +233,7 @@ def receivedToken() {
             <div class="container">
                 <img src=""" + getVendorIcon() + """ alt="Vendor icon" />
                 <img src="https://s3.amazonaws.com/smartapp-icons/Partner/support/connected-device-icn%402x.png" alt="connected device icon" />
-                <img src="https://s3.amazonaws.com/smartapp-icons/Partner/support/st-logo%402x.png" alt="SmartThings logo" />
+                <img src="https://s3.amazonaws.com/smartapp-icons/Partner/support/st-logo%402x.png" alt="logo" />
                 <p>Tap 'Done' to continue to Devices.</p>
 			</div>
         </body>
