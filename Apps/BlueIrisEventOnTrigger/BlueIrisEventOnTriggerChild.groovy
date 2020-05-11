@@ -337,10 +337,10 @@ def canWeRun(){
     if (noRunModes) {
         if (noRunModes.contains(location.mode)) {
             isModeOk = false
-            debuglog "Mode " + location.mode + " - RESTRICED MODE"
+            debuglog "Mode " + location.mode + " - RESTRICTED MODE"
         } else {
             isModeOk = true
-            debuglog "Mode " + location.mode + " - NOT RESTRICED"
+            debuglog "Mode " + location.mode + " - NOT RESTRICTED"
         }
     } else {
         isModeOk = true
