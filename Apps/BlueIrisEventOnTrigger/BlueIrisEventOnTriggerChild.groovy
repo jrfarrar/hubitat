@@ -122,12 +122,11 @@ def subscribeToEvents() {
 
 def eventHandler(evt) {
     debuglog "eventHandler called"
-    infolog "Switch or sensor: " + evt.device + " triggered"
     if (canWeRun()) {
-        debuglog "Success"
+        infolog "Switch or sensor: " + evt.device + " triggered"
         sendHttp()
     } else {
-        debuglog "Failed tests"
+        infolog "Switch or sensor: " + evt.device + ": Restrictions - not running"
     }
 }
 
@@ -136,6 +135,8 @@ def sunHandler(evt){
             if (canWeRun()) {
                 infolog "Sunrise - running commands" 
                 sendHttp()
+            } else {
+                infolog "Sunrise - Restrictions - not running"
             }
          }
 
@@ -143,6 +144,8 @@ def sunHandler(evt){
             if (canWeRun()) {
                 infolog "Sunset - running commands"
                 sendHttp()
+            } else {
+                 infolog "Sunset - Restrictions - not running"
             }
          }
 }
@@ -152,6 +155,8 @@ def modeHandler(evt){
         if (canWeRun()) {
             infolog "Mode: " + location.mode + " - running commands"
             sendHttp()
+        } else {
+            infolog "Mode: " + location.mode + "Restrictions - not running"
         }
     }
 }
