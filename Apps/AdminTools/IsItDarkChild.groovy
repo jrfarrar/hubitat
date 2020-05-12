@@ -81,6 +81,7 @@ def initialize() {
             subscribe(location, "position", locationPositionChange)
 		    subscribe(location, "sunriseTime", sunriseSunsetTimeHandler)
 		    subscribe(location, "sunsetTime", sunriseSunsetTimeHandler)
+            astroCheck()
         }
         if (lightSensor.currentIlluminance?.toInteger() >= illumLight) {
             debuglog "${lightSensor}" + "'s current reading is:" + lightSensor.currentIlluminance?.toInteger() + " which is higher than the current setting of: " + illumLight
@@ -130,7 +131,7 @@ def illuminanceHandler(evt) {
         if (timeBetweenSunriseSunset()) {
             checkIllumincation()
         } else {
-            infolog "Time between sunset and sunrise, turning switch off"
+            debuglog "Time between sunset and sunrise, turning switch off"
             switchOff()
             state.isItDark = true
         }
@@ -148,7 +149,7 @@ def checkIllumincation(){
         debuglog "unschedule"
         unschedule()
         if (delayMinutes) {
-            infolog "$evt.name: $evt.value went above $illumLight delay for $delayMinutes min"
+            infolog "$crntLux went above $illumLight delay for $delayMinutes min"
             runIn(delayMinutes*60, switchOn, [overwrite: true])
         } else {
             switchOn()
@@ -160,7 +161,7 @@ def checkIllumincation(){
         debuglog "unschedule"
         unschedule()
         if (delayMinutes) {
-            infolog "$evt.name: $evt.value went below $illumDark delay for $delayMinutes min"
+            infolog "$crntLux went above $illumLight delay for $delayMinutes min"
             runIn(delayMinutes*60, switchOff, [overwrite: true])
         } else {
             switchOff()
