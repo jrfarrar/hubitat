@@ -40,7 +40,7 @@ dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval
     }
     section(getFormat("header-green", "RESTRICTIONS")) {
 		  paragraph "- These restrict the above triggers based on what's set here."
-          input (name: "darkSwitch", type: "capability.switch", title: "Day/Night Switch Determines when it's dark out(Dark when on)", submitOnChange: true, multiple: false)
+          input (name: "darkSwitch", type: "capability.switch", title: "Day/Night Switch Determines when it's dark out(Dark when off)", submitOnChange: true, multiple: false)
           input (name: "daySwitch", type: "bool", defaultValue: "false", title: "Only run if Daylight?", submitOnChange: true)
           input (name: "nightSwitch", type: "bool", defaultValue: "false", title: "Only run if Dark?", submitOnChange: true)
           input (name: "noRunModes", type: "mode", title: "Select Mode NOT to run in", submitOnChange: true, multiple: true)
@@ -328,14 +328,14 @@ def canWeRun(){
     def isItNightTime
     def isModeOk
     
-    if (daySwitch && darkSwitch.currentValue('switch').contains('on')) {
+    if (daySwitch && darkSwitch.currentValue('switch').contains('off')) {
         isItDayLight = false
         debuglog "Only Run during Daylight is on and Day/Night switch is ON(dark)"
     } else { 
         isItDayLight = true 
     }
     
-    if (nightSwitch && darkSwitch.currentValue('switch').contains('off')) {
+    if (nightSwitch && darkSwitch.currentValue('switch').contains('on')) {
         isItNightTime = false
         debuglog "Only Run while Dark is on and Day/Night Switch is OFF(light)"
     } else { 
