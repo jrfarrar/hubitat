@@ -29,7 +29,7 @@ dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval
 	      section("Reset Mode after BlurIris restart"){
           paragraph "<b>Notes:</b>"
 		  paragraph "- Sometimes BlueIris restarts when that happens it defaults to away mode which is not always correct. This checks for proper mode every x minutes"
-          input "darkOutside", "capability.switch", title: "Is it dark outside switch", submitOnChange: true, required: true
+          input "darkOutside", "capability.switch", title: "Is it dark outside switch(off = dark)", submitOnChange: true, required: true
           input (name: "awayModes", type: "mode", title: "Modes when BI should be in AWAY mode", submitOnChange: true, multiple: true)
           input "BItimer", "number", title: "Reset mode every how many Minutes?", description: "Delay in Minutes", defaultValue : "30"
           input "BIcommandNight", "text", title: "BlueIris http command to send for Night Mode"
@@ -93,7 +93,7 @@ def eventHandler(evt) {
 def goTime() {
     debuglog "SWITCH " + darkOutside + " IS " + darkOutside.currentValue("switch")
     
-    if (darkOutside.currentValue("switch") == "on"){
+    if (darkOutside.currentValue("switch") == "off"){
             infolog "Setting BlueIris to Night mode"
             def myString1 = "${settings.BIcommandNight}"
             myString1 = myString1?.trim()
@@ -136,11 +136,7 @@ def goTime() {
             } catch (e) {log.error "something went wrong: $e"}
          }           
     }    
-        
-    
-    
-    
-    
+
     if (settings.BItimer) {
         debuglog "Delay time in Min: ${settings.BItimer}"
         def int delayTime = settings.BItimer * 60
