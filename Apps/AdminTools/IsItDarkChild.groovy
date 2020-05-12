@@ -110,10 +110,10 @@ def sunriseSunsetTimeHandler(evt) {
     def t = now()
     if (!lightSensor) {
         if (t < state.riseTime || t > state.setTime) {
-            infolog "Sunset turning switch off"
+            infolog "Sunset..."
             switchOff()
         } else {
-            infolog "Sunrise turning switch on"
+            infolog "Sunrise..."
             switchOn()
         }   
     } else {
@@ -170,12 +170,20 @@ def checkIllumincation(){
 }
 
 def switchOff() {
-    infolog "Turning switch off"
-    mySwitch.off()
+    if (mySwitch.currentValue("switch") == "on") {
+        infolog "Turning switch off"
+        mySwitch.off()
+    } else {
+        debuglog "Switch already off"
+    }
 }
 def switchOn() {
-    infolog "Turning switch on"
-    mySwitch.on()
+    if (mySwitch.currentValue("switch") == "off") {
+        infolog "Turning switch on"
+        mySwitch.on()
+    } else {
+        debuglog "Switch already on"
+    }
 }
 
 /*
