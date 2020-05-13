@@ -124,7 +124,7 @@ def sunriseSunsetTimeHandler(evt) {
 
 
 def illuminanceHandler(evt) {
-	debuglog "$evt.name: $evt.value, isItDark: $state.isItDark"
+	//debuglog "isItDark: $state.isItDark"
     //debuglog "onlyRunDuringDay: " + onlyRunDuringDay + "  timebetween... " + timeBetweenSunriseSunset()
     
     if (onlyRunDuringDay) {
