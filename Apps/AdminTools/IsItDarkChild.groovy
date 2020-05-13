@@ -124,8 +124,7 @@ def sunriseSunsetTimeHandler(evt) {
 
 
 def illuminanceHandler(evt) {
-	//debuglog "isItDark: $state.isItDark"
-    //debuglog "onlyRunDuringDay: " + onlyRunDuringDay + "  timebetween... " + timeBetweenSunriseSunset()
+    if (evt) debuglog "${evt.device} ${evt.name} value: ${evt.value}"
     
     if (onlyRunDuringDay) {
         if (timeBetweenSunriseSunset()) {
@@ -225,10 +224,8 @@ private enabled() {
 def timeBetweenSunriseSunset(){
     def t = now()
     if (t < state.riseTime || t > state.setTime) {
-        debuglog "time between sunset and sunrise"
         return false  
     } else { 
-        debuglog "time between sunrise and sunset"
         return true
     }
 }
