@@ -85,9 +85,11 @@ def initialize() {
         }
         if (lightSensor.currentIlluminance?.toInteger() >= illumLight) {
             debuglog "${lightSensor}" + "'s current reading is:" + lightSensor.currentIlluminance?.toInteger() + " which is higher than the current setting of: " + illumLight
+            switchOn()
             state.isItDark = false
         } else {
             debuglog "${lightSensor}" + "'s current reading is:" + lightSensor.currentIlluminance?.toInteger() + " which is lower than the current setting of: " + illumLight
+            switchOff()
             state.isItDark = true
         }
 	}
