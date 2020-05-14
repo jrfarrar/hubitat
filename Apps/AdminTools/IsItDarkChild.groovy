@@ -153,6 +153,7 @@ def checkIllumincation(){
             infolog "$crntLux went above $illumLight delay for $delayMinutes min"
             runIn(delayMinutes*60, switchOn, [overwrite: true])
         } else {
+            infolog "$crntLux went above $illumLight"
             switchOn()
         }
         state.isItDark = false
@@ -165,6 +166,7 @@ def checkIllumincation(){
             infolog "$crntLux went below $illumDark delay for $delayMinutes min"
             runIn(delayMinutes*60, switchOff, [overwrite: true])
         } else {
+            infolog "$crntLux went below $illumDark"
             switchOff()
         }
         state.isItDark = true
