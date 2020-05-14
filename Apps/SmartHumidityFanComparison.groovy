@@ -203,8 +203,8 @@ def HumidityHandler(evt)
             else
             {
 				infolog "HumidityHandler:Turn Fan off in ${HumidityDropTimeout} minutes."
-                infolog "${CompareHumiditySensor.device} : ${state.baselineHumidity}"
-                infolog "${HumiditySensor.device} : ${state.currentHumidity}"
+                infolog "${CompareHumiditySensor} : ${state.baselineHumidity}"
+                infolog "${HumiditySensor} : ${state.currentHumidity}"
 				state.TurnOffLaterStarted = true
 				runIn(60 * HumidityDropTimeout.toInteger(), TurnOffFanSwitchCheckHumidity)
 				debuglog "HumidityHandler: state.TurnOffLaterStarted = ${state.TurnOffLaterStarted}"
@@ -386,4 +386,3 @@ def setVersion(){
 	state.version = "1.0.0" // Version number of this app
 	state.InternalName = "SmartHumidityFanComparison"   // this is the name used in the JSON file for this app
 }
-
