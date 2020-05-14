@@ -35,7 +35,6 @@ def pageConfig()
 		    paragraph "The manual mode is used to turn the fan on for reasons other than humidity and has it's own set turn off delay."
 		    paragraph "However if the humidity rises while the fan is on manually the automatic mode will take over."
 		    paragraph "This is for the times also when someone remembers to turn the fan on before the shower. The auto mode will kick in and take over and turn off NOT after a set time but when the humidity drops to the prescribed amount."
-		    paragraph "The first time you install/run this the baseline humidity is set to 50% until your baseline humidity sensor reports in."
 		}
 		section("Bathroom Devices")
 		{
@@ -105,7 +104,9 @@ def initialize()
     version()
 	if (!state.baselineHumidity)
 	{
-		state.baselineHumidity = 50
+        def myHumid = CompareHumiditySensor.currentState("humidity")
+        infolog "${CompareHumiditySensor} currently: ${myHumid.value}"
+		state.baselineHumidity = myHumid.value
 	}
 }
 
@@ -172,7 +173,7 @@ def HumidityHandler(evt)
         state.TurnOffLaterStarted = false
         state.AutomaticallyTurnedOnAt = new Date().format("yyyy-MM-dd HH:mm")
         infolog "HumidityHandler:Automatic mode took over manual mode due to humidity increase"
-	infolog "Value exceeded: ${state.threshold}, Current humidity: ${state.currentHumidity}"
+	    infolog "Value exceeded: ${state.threshold}, Current humidity: ${state.currentHumidity}"
     }
     
     
