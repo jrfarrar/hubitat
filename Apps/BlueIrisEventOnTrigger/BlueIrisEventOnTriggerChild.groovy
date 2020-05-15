@@ -156,7 +156,7 @@ def modeHandler(evt){
             infolog "Mode: " + location.mode + " - running commands"
             sendHttp()
         } else {
-            infolog "Mode: " + location.mode + "Restrictions - not running"
+            infolog "Mode: " + location.mode + " - Restrictions - not running"
         }
     }
 }
