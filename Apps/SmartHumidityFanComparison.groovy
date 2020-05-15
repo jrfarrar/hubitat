@@ -16,9 +16,9 @@ definition(
     author: "J.R. Farrar",
     description: "Control a fan (switch) based on relative humidity difference between a humidity sensor(bathroom) and a baseline humidity sensor(house thermostat or other)",
     category: "Convenience",
-    iconUrl: "https://raw.githubusercontent.com/napalmcsr/SmartThingsStuff/master/smartapps/craig-romei/Bathroom_Fan.jpg",
-    iconX2Url: "https://raw.githubusercontent.com/napalmcsr/SmartThingsStuff/master/smartapps/craig-romei/Bathroom_Fan.jpg",
-    iconX3Url: "https://raw.githubusercontent.com/napalmcsr/SmartThingsStuff/master/smartapps/craig-romei/Bathroom_Fan.jpg",
+    iconUrl: "",
+    iconX2Url: "",
+    iconX3Url: "",
     importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/SmartHumidityFanComparison.groovy"
 )
 
@@ -121,11 +121,6 @@ def modeChangeHandler(evt)
 			TurnOffFanSwitch()
 		}
 	} 
-	else
-	{	
-		debuglog "modeChangeHandler: Entered a disable mode, turning off the Fan"
-		TurnOffFanSwitch()
-	}
 }
 
 def HumidityHandler(evt)
