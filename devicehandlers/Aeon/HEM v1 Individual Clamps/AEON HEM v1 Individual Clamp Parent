@@ -250,24 +250,25 @@ def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
 					//dispValue = "${c1Name}\n${formattedValue}\nWatts"	// L1 Watts Label
                     dispValue = "${newValue}"	// L1 Watts Label
 					if (newValue != state.powerL1) {
-						state.powerL1 = newValue
-						[name: "powerOne", value: newValue, unit: "", descriptionText: "L1 Power: ${newValue} Watts"]
-                        sendEvent(name: "powerOne", value: state.powerL1, unit: "W")
+                        if (!((state.powerL1 == 0) && (newValue < 10))) {   // ADDED THIS IF TO GET RID OF LOW WATT REPORTS
+		    				state.powerL1 = newValue
+	    					[name: "powerOne", value: newValue, unit: "", descriptionText: "L1 Power: ${newValue} Watts"]
+                            sendEvent(name: "powerOne", value: state.powerL1, unit: "W")
                         
-                        /* */
-                        childDevices.each {
-							childDevice ->
-               					if (childDevice.deviceNetworkId == "$device.deviceNetworkId-1") {
-                   			childDevice.sendEvent(name: "power", value: newValue, descriptionText: "L1 Power: ${newValue} Watts")
-                			}						
-						}
-                        /* */
-                state.powerValue = state.powerL1 + state.powerL2
-                [name: "power", value: state.powerValue, unit: "W", descriptionText: "Total Power: ${formattedValue} Watts"]
-                dispValue = "Total\n"+state.powerValue+"\nWatts"	// Total watts label
-                sendEvent(name: "powerDisp", value: dispValue as String, unit: "", descriptionText: "Display Power: ${state.powerValue} Watts", displayed: false)
-                sendEvent(name: "power", value: state.powerValue, unit: "W")
-                        
+                            /* */
+                            childDevices.each {
+		    					childDevice ->
+                   					if (childDevice.deviceNetworkId == "$device.deviceNetworkId-1") {
+                       			childDevice.sendEvent(name: "power", value: newValue, descriptionText: "L1 Power: ${newValue} Watts")
+                	    		}						
+						    }
+                            /* */
+                            state.powerValue = state.powerL1 + state.powerL2
+                            [name: "power", value: state.powerValue, unit: "W", descriptionText: "Total Power: ${formattedValue} Watts"]
+                            dispValue = "Total\n"+state.powerValue+"\nWatts"	// Total watts label
+                            sendEvent(name: "powerDisp", value: dispValue as String, unit: "", descriptionText: "Display Power: ${state.powerValue} Watts", displayed: false)
+                            sendEvent(name: "power", value: state.powerValue, unit: "W")
+                        }    
 					}
 				}
 				else if (encapsulatedCommand.scale == 0 ){
@@ -288,27 +289,28 @@ def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
                     //formattedValue = String.format("%5.1f", newValue)
                     //dispValue = "${c2Name}\n${formattedValue}\nWatts"	// L2 Watts Label
                     dispValue = "${newValue}"	// L2 Watts Label
-					if (newValue != state.powerL1) {
-						state.powerL2 = newValue
-						[name: "powerTwo", value: newValue, unit: "", descriptionText: "L2 Power: ${newValue} Watts"]
-                        sendEvent(name: "powerTwo", value: state.powerL2, unit: "W")
-                        
-                        /* */
-                        childDevices.each {
-							childDevice ->
-               					if (childDevice.deviceNetworkId == "$device.deviceNetworkId-2") {
-                    			childDevice.sendEvent(name: "power", value: newValue, descriptionText: "L2 Power: ${newValue} Watts")
-                			}						
-						}
-                        /* */
-                state.powerValue = state.powerL1 + state.powerL2
-                [name: "power", value: state.powerValue, unit: "W", descriptionText: "Total Power: ${formattedValue} Watts"]
-                dispValue = "Total\n"+state.powerValue+"\nWatts"	// Total watts label
-                sendEvent(name: "powerDisp", value: dispValue as String, unit: "", descriptionText: "Display Power: ${state.powerValue} Watts", displayed: false)
-                sendEvent(name: "power", value: state.powerValue, unit: "W")
+					if (newValue != state.powerL2) {
+                        if (!((state.powerL2 == 0) && (newValue < 10))) {   // ADDED THIS IF TO GET RID OF LOW WATT REPORTS
+                            state.powerL2 = newValue
+	    	        		[name: "powerTwo", value: newValue, unit: "", descriptionText: "L2 Power: ${newValue} Watts"]
+                            sendEvent(name: "powerTwo", value: state.powerL2, unit: "W")
+                            /* */
+                            childDevices.each {
+					    	        childDevice ->
+               			    	        if (childDevice.deviceNetworkId == "$device.deviceNetworkId-2") {
+                    	        	    childDevice.sendEvent(name: "power", value: newValue, descriptionText: "L2 Power: ${newValue} Watts")
+                		   	        }						
+					         }
+                            /* */
+                            state.powerValue = state.powerL1 + state.powerL2
+                            [name: "power", value: state.powerValue, unit: "W", descriptionText: "Total Power: ${formattedValue} Watts"]
+                            dispValue = "Total\n"+state.powerValue+"\nWatts"	// Total watts label
+                            sendEvent(name: "powerDisp", value: dispValue as String, unit: "", descriptionText: "Display Power: ${state.powerValue} Watts", displayed: false)
+                            sendEvent(name: "power", value: state.powerValue, unit: "W")
+                        } // ADDED THIS IF TO GET RID OF LOW WATT REPORTS
 					}
-				}
-				else if (encapsulatedCommand.scale == 0 ){
+				
+                } else if (encapsulatedCommand.scale == 0 ){
 					newValue = Math.round(encapsulatedCommand.scaledMeterValue * 100) / 100
 					formattedValue = String.format("%5.2f", newValue)
 					// dispValue = "${c2Name}\n${formattedValue}\nkWh"		// L2 kWh label
