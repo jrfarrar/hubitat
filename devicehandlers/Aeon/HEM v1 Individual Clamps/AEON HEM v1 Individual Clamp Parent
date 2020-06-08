@@ -181,7 +181,8 @@ def parse(String description) {
 */
 def parse(String description) {
     def result = []
-    def cmd = zwave.parse(description)
+    //def cmd = zwave.parse(description)
+    def cmd = zwave.parse(description, [0x60:3])
     if (cmd) {
         result += zwaveEvent(cmd)
         //log.debug "Parsed ${cmd} to ${result.inspect()}"
@@ -268,6 +269,7 @@ def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
                             dispValue = "Total\n"+state.powerValue+"\nWatts"	// Total watts label
                             sendEvent(name: "powerDisp", value: dispValue as String, unit: "", descriptionText: "Display Power: ${state.powerValue} Watts", displayed: false)
                             sendEvent(name: "power", value: state.powerValue, unit: "W")
+                            //log.debug "UPDATED: " + state.powerValue
                         }    
 					}
 				}
