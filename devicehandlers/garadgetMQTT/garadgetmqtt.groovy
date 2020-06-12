@@ -4,7 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
- * 2020/06/12 V1.0 First release
+ * 1.0.0 - 06/12/20 - Initial Release
  */
 
 metadata {
