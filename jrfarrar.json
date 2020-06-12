@@ -1,0 +1,12 @@
+{
+  "author": "J.R. Farrar",
+  "gitHubUrl": "https://github.com/jrfarrar/hubitat",
+  "packages": [
+    {
+      "name": "Garadget MQTT Driver",
+      "category": "Integrations",
+      "location": "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/garadgetMQTT/garadgetmqtt.json",
+      "description": "MQTT Device Handler for Garadget"
+    }
+  ]
+}
