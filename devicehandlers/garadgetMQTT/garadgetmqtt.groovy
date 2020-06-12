@@ -1,5 +1,8 @@
 metadata {
-    definition (name: "Garadget MQTT", namespace: "jrfarrar", author: "J.R. Farrar") {
+    definition (name: "Garadget MQTT", 
+                namespace: "jrfarrar", 
+                author: "J.R. Farrar",
+               importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/garadgetMQTT/garadgetmqtt.groovy") {
         capability "Initialize"
         capability "Garage Door Control"
         capability "Contact Sensor"
@@ -75,47 +78,6 @@ void parse(String description) {
     sendEvent(name: "bright", value: jsonVal.bright)
     sendEvent(name: "time", value: jsonVal.time)
     sendEvent(name:"illuminance", value: jsonVal.bright)
-    
-    
-/*    
-    def message
-    message = interfaces.mqtt.parseMessage(description)
-    log.debug description
-    log.debug message
-    
-    payload = message["payload"]
-    payload = payload.replace("\u007B","")
-    payload = payload.replace("\u007D","")
-    //payload = payload.replaceAll("\"", "")
-
-    //payload = payload.replace("\"status\"", "status")
-    //payload = payload.replace("\"time\"", "time")
-    //payload = payload.replace("\"sensor\"", "sensor")
-    //payload = payload.replace("\"bright\"", "bright")
-    //payload = payload.replace("\"signal\"", "signal")
-    
-    payload = payload.replace(",", ", ")
-    payload = payload.replace("s,", ",")
-    
-    log.debug "Payload: " + payload
-    
-    def map = [payload]
-    log.debug "Map: " + map
-    
-    //log.debug "status: " + map.status
-    
-    //map.each{entry -> log.debug "$entry.key: $entry.value"}
-    
-    //sensor = map.sensor
-    //log.debug sensor
-    
-    def newMap = ["status":"closed", "time":"0s", "sensor":97, "bright":21, "signal":-52]
-    log.debug "newMap: " + newMap
-    log.debug "newMap status: " + newMap.status
-    
-    */
-    //sendEvent(name: "contact", value: "open")
-    //sendEvent(name: "door", value: "open")
 }
 
 //void publishMsg(String s) {
@@ -133,17 +95,14 @@ void close() {
 void refresh(){
     getstatus()
 }
-
 void getstatus() {
     debuglog "getstatus command sent"
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-status")
 }
-
 void updated() {
     infolog "updated..."
     initialize()
 }
-
 void uninstalled() {
     infolog "disconnecting from mqtt"
     interfaces.mqtt.disconnect()
@@ -163,21 +122,17 @@ void initialize() {
         debuglog "initialize error: ${e.message}"
     }
 }
-
 void mqttClientStatus(String message) {
 	infolog "Received status message ${message}"
 }
-
 def on() {
     debuglog "Sending on event to open door"
 	open()
 }
-
 def off() {
     debuglog "Sending off event to close door"  
 	close()
 }
-
 def debuglog(statement)
 {   
 	def logL = 0
