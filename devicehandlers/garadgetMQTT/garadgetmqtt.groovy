@@ -94,6 +94,7 @@ void getStatus(status) {
         sendEvent(name: "door", value: "open")
     } else if (status.status == "opening") {
         sendEvent(name: "door", value: "opening")
+        sendEvent(name: "contact", value: "open")
     } else if (status.status == "closing") {
         sendEvent(name: "door", value: "closing")
     } else {
@@ -122,11 +123,11 @@ void getConfig(config) {
     rlt = config.rlt
     rlp = config.rlp
     srt = config.srt
-    nme = config.nme
-    mqtt = config.mqtt
-    mqip = config.mqip
-    mqpt = config.mqpt
-    mqus = config.mqus
+    //nme = config.nme
+    //mqtt = config.mqtt
+    //mqip = config.mqip
+    //mqpt = config.mqpt
+    //mqus = config.mqus
     mqto = config.mqto
 
 }
@@ -174,7 +175,7 @@ void initialize() {
     } catch(e) {
         debuglog "initialize error: ${e.message}"
     }
-    configure()
+    //configure()
 }
 
 void configure(){
