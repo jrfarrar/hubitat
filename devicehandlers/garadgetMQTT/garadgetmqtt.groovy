@@ -54,6 +54,10 @@ preferences {
   }
 }
 
+def setVersion(){
+    state.name = "Garadget MQTT"
+	state.version = "1.0.0"   
+}
 
 void installed() {
     log.warn "installed..."
