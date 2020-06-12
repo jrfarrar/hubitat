@@ -25,6 +25,7 @@ metadata {
         attribute "sensor", "number"
         attribute "signal", "number"
         attribute "bright", "number"
+        attribute "stopped", "enum", ["true","false"]
 
 preferences {
     section("Settings for connection from HE to Broker") {
@@ -99,17 +100,22 @@ void getStatus(status) {
     if (status.status == "closed") {
         sendEvent(name: "contact", value: "closed")
         sendEvent(name: "door", value: "closed")
+        sendEvent(name: "stopped", value: "false")
     } else if (status.status == "open") {
         sendEvent(name: "contact", value: "open")
         sendEvent(name: "door", value: "open")
+        sendEvent(name: "stopped", value: "false")
     } else if (status.status == "stopped") {
         sendEvent(name: "door", value: "stopped")
         sendEvent(name: "door", value: "open")
+        sendEvent(name: "stopped", value: "true")
     } else if (status.status == "opening") {
         sendEvent(name: "door", value: "opening")
         sendEvent(name: "contact", value: "open")
+        sendEvent(name: "stopped", value: "false")
     } else if (status.status == "closing") {
         sendEvent(name: "door", value: "closing")
+        sendEvent(name: "stopped", value: "false")
     } else {
         infolog "unknown event"
     }
@@ -155,6 +161,7 @@ void close() {
 }
 void refresh(){
     getstatus()
+    setVersion()
 }
 void getstatus() {
     debuglog "Getting status and config..."
