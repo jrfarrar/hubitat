@@ -29,7 +29,7 @@ metadata {
 preferences {
     section("Settings for connection from HE to Broker") {
         input (name: "doorName", type: "text", title: "Garadget Door Name(Topic name)")
-        input (name: "ipAddr", type: "text", title: "IP Address and port: ex: 192.168.0.1:1833 this is for this DH to connect to")
+        input (name: "ipAddr", type: "text", title: "IP Address and port of MQTT broker - EXAMPLE: 192.168.0.1:1833 ")
         }
     section("Settings for Garadget"){
         // put configuration here
@@ -37,9 +37,9 @@ preferences {
         input ( "mtt", "number", title: "door moving time in mS from completely opened to completely closed (1,000 - 120,000, default 10,000)", defaultValue: 10000,range: "1000..120000", required: false)
         input ( "rlt", "number", title: "button press time mS, time for relay to keep contacts closed (10-2,000, default 300)", defaultValue: 300,range: "10..2000", required: false)
         input ( "rlp", "number", title: "delay between consecutive button presses in mS (10-5,000 default 1,000)", defaultValue: 1000,range: "10..5000", required: false)
-        input ( "srt", "number", title: "reflection threshold below which the door is considered open (1-80, default 25)", defaultValue: 25,range: "1..80", required: false)
+        input ( "srt", "number", title: "reflection threshold below which the door is considered open (1-80, default 25)", defaultValue: srt,range: "1..80", required: false)
         //leaving the next few commented out. Do not think there should be a need to set these via this driver
-        //input ( "nme", "text", title: "device name to be used in MQTT topic. If cloud connection enabled, at reboot this value will be overwritten with the one saved in cloud via the apps", required: false)
+        //input ( "nme", "text", title: "device name to be used in MQTT topic. If cloud connection enabled, at reboot this value will be overwritten with the one saved in cloud via the app", required: false)
         //input ( "mqtt", "text", title: "bitmap 0x01 - cloud enabled, 0x02 - mqtt enabled, 0x03 - cloud and mqtt enabled", defaultValue: "0x03", required: false)
         //input ( "mqip", "text", title: "MQTT broker IP address(IP for Garadget to connect to)", required: false)
         //input ( "mqpt", "number", title: "MQTT broker port number(port for Garadget to connect to)", required: false)
@@ -121,7 +121,7 @@ void getConfig(config) {
     debuglog "rlt: " + config.rlt + " - button press time mS, time for relay to keep contacts closed (10-2,000, default 300)"
     debuglog "rlp: " + config.rlp + " - delay between consecutive button presses in mS (10-5,000 default 1,000)"
     debuglog "srt: " + config.srt + " - reflection threshold below which the door is considered open (1-80, default 25)"
-    debuglog "nme: " + config.nme + " - device name to be used in MQTT topic. If cloud connection enabled, at reboot this value will be overwritten with the one saved in cloud via the apps"
+    debuglog "nme: " + config.nme + " - device name to be used in MQTT topic."
     debuglog "mqtt: " + config.mqtt + " - bitmap 0x01 - cloud enabled, 0x02 - mqtt enabled, 0x03 - cloud and mqtt enabled"
     debuglog "mqip: " + config.mqip + " - MQTT broker IP address"
     debuglog "mqpt: " + config.mqpt + " - MQTT broker port number"
