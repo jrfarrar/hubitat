@@ -1,5 +1,5 @@
 metadata {
-    definition (name: "Test Mqtt", namespace: "test", author: "Test") {
+    definition (name: "Garadget MQTT", namespace: "jrfarrar", author: "J.R. Farrar") {
         capability "Initialize"
         capability "Garage Door Control"
         capability "Contact Sensor"
