@@ -26,10 +26,7 @@ metadata {
         attribute "signal", "number"
         attribute "bright", "number"
 
-        //command "get-status", ["String"]
-        //command "getstatus"
 preferences {
-        //paragraph "Press Configuration button after changing preferences."
     section("Settings for connection from HE to Broker") {
         input (name: "doorName", type: "text", title: "Garadget Door Name(Topic name)")
         input (name: "ipAddr", type: "text", title: "IP Address and port: ex: 192.168.0.1:1833 this is for this DH to connect to")
@@ -41,6 +38,7 @@ preferences {
         input ( "rlt", "number", title: "button press time mS, time for relay to keep contacts closed (10-2,000, default 300)", defaultValue: 300,range: "10..2000", required: false)
         input ( "rlp", "number", title: "delay between consecutive button presses in mS (10-5,000 default 1,000)", defaultValue: 1000,range: "10..5000", required: false)
         input ( "srt", "number", title: "reflection threshold below which the door is considered open (1-80, default 25)", defaultValue: 25,range: "1..80", required: false)
+        //leaving the next few commented out. Do not think there should be a need to set these via this driver
         //input ( "nme", "text", title: "device name to be used in MQTT topic. If cloud connection enabled, at reboot this value will be overwritten with the one saved in cloud via the apps", required: false)
         //input ( "mqtt", "text", title: "bitmap 0x01 - cloud enabled, 0x02 - mqtt enabled, 0x03 - cloud and mqtt enabled", defaultValue: "0x03", required: false)
         //input ( "mqip", "text", title: "MQTT broker IP address(IP for Garadget to connect to)", required: false)
@@ -81,6 +79,8 @@ void parse(String description) {
         getStatus(jsonVal)
     } else if (topic[2] == "config") {
         getConfig(jsonVal)
+    } else {
+        debuglog "Unhandled topic..."
     }
     
 
@@ -141,23 +141,19 @@ void getConfig(config) {
 
 }
 
-//void publishMsg(String s) {
-//    interfaces.mqtt.publish("test/hubitat", s)
-//}
-
 void open() {
-    debuglog "Opening command sent: garadget/${doorName}/command"
+    debuglog "Open command sent..."
     interfaces.mqtt.publish("garadget/${doorName}/command", "open")
 }
 void close() {
-    debuglog "Close command sent"
+    debuglog "Close command sent..."
     interfaces.mqtt.publish("garadget/${doorName}/command", "close")
 }
 void refresh(){
     getstatus()
 }
 void getstatus() {
-    debuglog "getstatus command sent"
+    debuglog "Getting status and config..."
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-status")
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-config")
 }
@@ -166,7 +162,7 @@ void updated() {
     initialize()
 }
 void uninstalled() {
-    infolog "disconnecting from mqtt"
+    infolog "disconnecting from mqtt..."
     interfaces.mqtt.disconnect()
 }
 
@@ -177,14 +173,12 @@ void initialize() {
         mqttInt.connect("tcp://${ipAddr}", "HEgaradget ${doorName}", null, null)
         //give it a chance to start
         pauseExecution(1000)
-        infolog "connection established"
+        infolog "connection established..."
         mqttInt.subscribe("garadget/${doorName}/status")
         mqttInt.subscribe("garadget/${doorName}/config")
-        //mqttInt.subscribe("test/hubitat")
     } catch(e) {
         debuglog "initialize error: ${e.message}"
     }
-    //configure()
 }
 
 void configure(){
@@ -209,11 +203,11 @@ void mqttClientStatus(String message) {
 	infolog "Received status message ${message}"
 }
 void on() {
-    debuglog "Sending on event to open door"
+    debuglog "On, open door..."
 	open()
 }
 void off() {
-    debuglog "Sending off event to close door"  
+    debuglog "Off, close door..."  
 	close()
 }
 def debuglog(statement)
