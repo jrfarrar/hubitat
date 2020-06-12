@@ -40,11 +40,11 @@ preferences {
         if (doorName) input ( "rlp", "number", title: "delay between consecutive button presses in mS (10-5,000 default 1,000)", defaultValue: 1000,range: "10..5000", required: false)
         if (doorName) input ( "srt", "number", title: "reflection threshold below which the door is considered open (1-80, default 25)", defaultValue: srt,range: "1..80", required: false)
         //leaving the next few commented out. Do not think there should be a need to set these via this driver
-        //input ( "nme", "text", title: "device name to be used in MQTT topic. If cloud connection enabled, at reboot this value will be overwritten with the one saved in cloud via the app", required: false)
-        //input ( "mqtt", "text", title: "bitmap 0x01 - cloud enabled, 0x02 - mqtt enabled, 0x03 - cloud and mqtt enabled", defaultValue: "0x03", required: false)
-        //input ( "mqip", "text", title: "MQTT broker IP address(IP for Garadget to connect to)", required: false)
-        //input ( "mqpt", "number", title: "MQTT broker port number(port for Garadget to connect to)", required: false)
-        //input ( "mqus", "text", title: "MQTT user", required: false)
+        //if (doorName) input ( "nme", "text", title: "device name to be used in MQTT topic. If cloud connection enabled, at reboot this value will be overwritten with the one saved in cloud via the app", required: false)
+        //if (doorName) input ( "mqtt", "text", title: "bitmap 0x01 - cloud enabled, 0x02 - mqtt enabled, 0x03 - cloud and mqtt enabled", defaultValue: "0x03", required: false)
+        //if (doorName) input ( "mqip", "text", title: "MQTT broker IP address(IP for Garadget to connect to)", required: false)
+        //if (doorName) input ( "mqpt", "number", title: "MQTT broker port number(port for Garadget to connect to)", required: false)
+        //if (doorName) input ( "mqus", "text", title: "MQTT user", required: false)
         if (doorName) input ( "mqto", "number", title: "MQTT timeout (keep alive) in seconds", defaultValue: 15, required: false)
         }
     section("Logging"){
@@ -57,7 +57,7 @@ preferences {
 
 def setVersion(){
     state.name = "Garadget MQTT"
-	state.version = "1.0.0"   
+	state.version = "1.1.0"   
 }
 
 void installed() {
