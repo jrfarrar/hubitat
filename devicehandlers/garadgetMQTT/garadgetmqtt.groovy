@@ -57,7 +57,7 @@ preferences {
 }
 
 def setVersion(){
-    state.name = "Garadget MQTT"
+    //state.name = "Garadget MQTT"
 	state.version = "1.1.1 - This DH"   
 }
 
