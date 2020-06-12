@@ -1,3 +1,12 @@
+
+/**
+ *  Garadget MQTT Device Handler
+ *
+ *  J.R. Farrar (jrfarrar)
+ *
+ * 2020/06/12 V1.0 First release
+ */
+
 metadata {
     definition (name: "Garadget MQTT", 
                 namespace: "jrfarrar", 
