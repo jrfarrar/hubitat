@@ -57,7 +57,7 @@ preferences {
 
 def setVersion(){
     state.name = "Garadget MQTT"
-	state.version = "1.1.0"   
+	state.version = "1.1.0 - This DH"   
 }
 
 void installed() {
@@ -126,6 +126,14 @@ void getStatus(status) {
     sendEvent(name: "illuminance", value: status.bright)
 }
 void getConfig(config) {
+    debuglog "sys: " + config.sys + " - Particle Firmware Version"
+    state.sys = config.sys + " - Particle Firmware Version"
+    debuglog "ver: " + config.ver + " - Garadget firmware version"
+    state.ver = config.ver + " - Garadget firmware version"
+    debuglog "id: "  + config.id  + " - Garadget/Particle device ID"
+    state.id = config.id  + " - Garadget/Particle device ID"
+    debuglog "ssid: "+ config.ssid + " - WiFi SSID name"
+    state.ssid = config.ssid + " - WiFi SSID name"
     debuglog "rdt: " + config.rdt + " - sensor scan interval in mS (200-60,000, default 1,000)"
     debuglog "mtt: " + config.mtt + " - door moving time in mS from completely opened to completely closed (1,000 - 120,000, default 10,000)"
     debuglog "rlt: " + config.rlt + " - button press time mS, time for relay to keep contacts closed (10-2,000, default 300)"
