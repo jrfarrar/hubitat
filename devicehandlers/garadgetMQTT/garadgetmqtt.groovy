@@ -4,7 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
- * 1.0.0 - 06/12/20 - Initial Release
+ * 1.1.0 - 06/12/20 - Initial Release
  */
 
 metadata {
@@ -34,18 +34,18 @@ preferences {
         }
     section("Settings for Garadget"){
         // put configuration here
-        input ( "rdt", "number", title: "sensor scan interval in mS (200-60,000, default 1,000)", defaultValue: 1000,range: "200..60000", required: false)
-        input ( "mtt", "number", title: "door moving time in mS from completely opened to completely closed (1,000 - 120,000, default 10,000)", defaultValue: 10000,range: "1000..120000", required: false)
-        input ( "rlt", "number", title: "button press time mS, time for relay to keep contacts closed (10-2,000, default 300)", defaultValue: 300,range: "10..2000", required: false)
-        input ( "rlp", "number", title: "delay between consecutive button presses in mS (10-5,000 default 1,000)", defaultValue: 1000,range: "10..5000", required: false)
-        input ( "srt", "number", title: "reflection threshold below which the door is considered open (1-80, default 25)", defaultValue: srt,range: "1..80", required: false)
+        if (doorName) input ( "rdt", "number", title: "sensor scan interval in mS (200-60,000, default 1,000)", defaultValue: 1000,range: "200..60000", required: false)
+        if (doorName) input ( "mtt", "number", title: "door moving time in mS from completely opened to completely closed (1,000 - 120,000, default 10,000)", defaultValue: 10000,range: "1000..120000", required: false)
+        if (doorName) input ( "rlt", "number", title: "button press time mS, time for relay to keep contacts closed (10-2,000, default 300)", defaultValue: 300,range: "10..2000", required: false)
+        if (doorName) input ( "rlp", "number", title: "delay between consecutive button presses in mS (10-5,000 default 1,000)", defaultValue: 1000,range: "10..5000", required: false)
+        if (doorName) input ( "srt", "number", title: "reflection threshold below which the door is considered open (1-80, default 25)", defaultValue: srt,range: "1..80", required: false)
         //leaving the next few commented out. Do not think there should be a need to set these via this driver
         //input ( "nme", "text", title: "device name to be used in MQTT topic. If cloud connection enabled, at reboot this value will be overwritten with the one saved in cloud via the app", required: false)
         //input ( "mqtt", "text", title: "bitmap 0x01 - cloud enabled, 0x02 - mqtt enabled, 0x03 - cloud and mqtt enabled", defaultValue: "0x03", required: false)
         //input ( "mqip", "text", title: "MQTT broker IP address(IP for Garadget to connect to)", required: false)
         //input ( "mqpt", "number", title: "MQTT broker port number(port for Garadget to connect to)", required: false)
         //input ( "mqus", "text", title: "MQTT user", required: false)
-        input ( "mqto", "number", title: "MQTT timeout (keep alive) in seconds", defaultValue: 15, required: false)
+        if (doorName) input ( "mqto", "number", title: "MQTT timeout (keep alive) in seconds", defaultValue: 15, required: false)
         }
     section("Logging"){
         //logging
@@ -138,16 +138,22 @@ void getConfig(config) {
     debuglog "mqus: " + config.mqus + " - MQTT user"
     debuglog "mqto: " + config.mqto + " - MQTT timeout (keep alive) in seconds"
     rdt = config.rdt
+    device.updateSetting("rdt", [value: "${rdt}", type: "number"])
     mtt = config.mtt
+    device.updateSetting("mtt", [value: "${mtt}", type: "number"])
     rlt = config.rlt
+    device.updateSetting("rlt", [value: "${rlt}", type: "number"])
     rlp = config.rlp
+    device.updateSetting("rlp", [value: "${rlp}", type: "number"])
     srt = config.srt
+    device.updateSetting("srt", [value: "${srt}", type: "number"])
     //nme = config.nme
     //mqtt = config.mqtt
     //mqip = config.mqip
     //mqpt = config.mqpt
     //mqus = config.mqus
     mqto = config.mqto
+    device.updateSetting("mqto", [value: "${mqto}", type: "number"])
 
 }
 
@@ -190,6 +196,7 @@ void initialize() {
     } catch(e) {
         debuglog "initialize error: ${e.message}"
     }
+    interfaces.mqtt.publish("garadget/${doorName}/command", "get-config")
 }
 
 void configure(){
