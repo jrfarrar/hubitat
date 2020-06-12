@@ -1,0 +1,16 @@
+{
+  "packageName": "Garadget MQTT Driver",
+  "author": "J.R. Farrar",
+  "version": "1.0",
+  "minimumHEVersion": "2.2.1",
+  "dateReleased": "2020-06-12",
+  "drivers": [
+    {
+      "id": "58801d01-51bd-4116-a271-2e7a7c9e24a0",
+      "name": "Garadget MQTT",
+      "namespace": "jrfarrar",
+      "location": "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/garadgetMQTT/garadgetmqtt.groovy",
+      "required": true
+    }
+  ]
+}
