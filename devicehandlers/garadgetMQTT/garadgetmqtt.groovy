@@ -15,7 +15,7 @@ metadata {
         capability "Initialize"
         capability "Garage Door Control"
         capability "Contact Sensor"
-        capability "Switch"
+        //capability "Switch"
         capability "Refresh"
         capability "Illuminance Measurement"
         capability "Configuration"
@@ -202,6 +202,7 @@ void configure(){
 void mqttClientStatus(String message) {
 	infolog "Received status message ${message}"
 }
+/*
 void on() {
     debuglog "On, open door..."
 	open()
@@ -210,6 +211,7 @@ void off() {
     debuglog "Off, close door..."  
 	close()
 }
+*/
 def debuglog(statement)
 {   
 	def logL = 0
