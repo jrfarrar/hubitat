@@ -4,6 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.1.1 - 06/12/10 - logging fixes
  * 1.1.0 - 06/12/20 - Initial Release
  */
 
@@ -57,7 +58,7 @@ preferences {
 
 def setVersion(){
     state.name = "Garadget MQTT"
-	state.version = "1.1.0 - This DH"   
+	state.version = "1.1.1 - This DH"   
 }
 
 void installed() {
@@ -75,7 +76,7 @@ void parse(String description) {
     //log.debug "json= " + json
     //log.debug "topic0: " + topic[0]
     //log.debug "topic1: " + topic[1]
-    log.debug "topic2: " + topic[2]
+    debuglog "topic2: " + topic[2]
     //top=interfaces.mqtt.parseMessage(description).topic
 
     def message=interfaces.mqtt.parseMessage(description).payload
@@ -92,7 +93,7 @@ void parse(String description) {
 }
 
 void getStatus(status) {
-    debuglog "status: " + status.status
+    infolog "status: " + status.status
     debuglog "bright: " + status.bright
     debuglog "sensor: " + status.sensor
     debuglog "signal: " + status.signal
@@ -166,11 +167,11 @@ void getConfig(config) {
 }
 
 void open() {
-    debuglog "Open command sent..."
+    infolog "Open command sent..."
     interfaces.mqtt.publish("garadget/${doorName}/command", "open")
 }
 void close() {
-    debuglog "Close command sent..."
+    infolog "Close command sent..."
     interfaces.mqtt.publish("garadget/${doorName}/command", "close")
 }
 void refresh(){
@@ -178,7 +179,7 @@ void refresh(){
     setVersion()
 }
 void getstatus() {
-    debuglog "Getting status and config..."
+    infolog "Getting status and config..."
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-status")
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-config")
 }
