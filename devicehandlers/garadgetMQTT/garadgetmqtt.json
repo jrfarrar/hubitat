@@ -3,7 +3,7 @@
   "author": "J.R. Farrar",
   "version": "1.2",
   "minimumHEVersion": "2.1.9",
-  "communityLink":"https://community.hubitat.com/t/release-garadget-mqtt-device-handler/43377"
+  "communityLink":"https://community.hubitat.com/t/release-garadget-mqtt-device-handler/43377",
   "dateReleased": "2020-06-14",
   "releaseNotes": "added: stop command, watchdog, MQTT username/pass, separated IP addr & port",
   "drivers": [
