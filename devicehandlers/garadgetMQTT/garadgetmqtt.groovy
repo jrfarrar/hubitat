@@ -217,6 +217,7 @@ void refresh(){
 }
 //refresh data from status and config topics
 void getstatus() {
+    watchDog()
     infolog "Getting status and config..."
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-status")
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-config")
