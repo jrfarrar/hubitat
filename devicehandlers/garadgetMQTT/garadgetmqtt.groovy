@@ -309,7 +309,9 @@ def watchDog() {
     //if not connnected, re-initialize
     if(!interfaces.mqtt.isConnected()) initialize()
 }
-
+void mqttClientStatus(String message) {
+	log.info "Received status message ${message}"
+}
 //Logging below here
 def logsOff(){
     log.warn "Debug logging disabled."
