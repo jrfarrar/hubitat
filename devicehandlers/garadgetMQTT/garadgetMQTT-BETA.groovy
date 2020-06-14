@@ -4,6 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.3.0 - 06/14/20 - impletmented Garadget IP and Port changing and validation of config data, documentation, other small stuff
  * 1.2.0 - 06/14/20 - added: stop command, watchdog, MQTT username/pass, separated IP addr & port
  * 1.1.1 - 06/12/20 - logging fixes
  * 1.1.0 - 06/12/20 - Initial Release
@@ -66,7 +67,7 @@ preferences {
 
 def setVersion(){
     //state.name = "Garadget MQTT"
-	state.version = "1.2.0 - This DH"   
+	state.version = "1.3.0 - This DH"   
 }
 
 void installed() {
@@ -210,7 +211,6 @@ void getConfig(config) {
 
 }
 
-
 void refresh(){
     getstatus()
     setVersion()
@@ -232,13 +232,12 @@ void uninstalled() {
 }
 
 void initialize() {
-    interfaces.mqtt.disconnect()
     if (logLevel == 2) runIn(3600,logsOff)
     try {
-        def mqttInt = interfaces.mqtt
         //open connection
+        def mqttInt = interfaces.mqtt
         mqttbroker = "tcp://" + ipAddr + ":" + ipPort
-        mqttclientname = "Hubitat Garadget " + doorName
+        mqttclientname = "Hubitat MQTT " + doorName
         mqttInt.connect(mqttbroker, mqttclientname, username,password)
         //give it a chance to start
         pauseExecution(1000)
