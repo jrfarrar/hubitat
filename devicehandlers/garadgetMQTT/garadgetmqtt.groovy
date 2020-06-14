@@ -4,6 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.3.1 - 06/14/20 - Default bug
  * 1.3.0 - 06/14/20 - impletmented Garadget IP and Port changing and validation of config data, documentation, other small stuff
  * 1.2.0 - 06/14/20 - added: stop command, watchdog, MQTT username/pass, separated IP addr & port
  * 1.1.1 - 06/12/20 - logging fixes
@@ -46,7 +47,7 @@ preferences {
         if (doorName && ipAddr && ipPort) input ( "mtt", "number", title: "door moving time in mS from completely opened to completely closed (1,000 - 120,000, default 10,000)", defaultValue: 10000,range: "1000..120000", required: false)
         if (doorName && ipAddr && ipPort) input ( "rlt", "number", title: "button press time mS, time for relay to keep contacts closed (10-2,000, default 300)", defaultValue: 300,range: "10..2000", required: false)
         if (doorName && ipAddr && ipPort) input ( "rlp", "number", title: "delay between consecutive button presses in mS (10-5,000 default 1,000)", defaultValue: 1000,range: "10..5000", required: false)
-        if (doorName && ipAddr && ipPort) input ( "srt", "number", title: "reflection threshold below which the door is considered open (1-80, default 25)", defaultValue: srt,range: "1..80", required: false)
+        if (doorName && ipAddr && ipPort) input ( "srt", "number", title: "reflection threshold below which the door is considered open (1-80, default 25)", defaultValue: 25,range: "1..80", required: false)
         //Topic name is broken in current version(1.20) of Garadget firmware. It uses the Door Name
         //if (doorName) input ( "nme", "text", title: "device name to be used in MQTT topic. If cloud connection enabled, at reboot this value will be overwritten with the one saved in cloud via the app", required: false)
         //Not positive of how to cast this bitmap in HE so leaving this commented out for now
@@ -67,7 +68,7 @@ preferences {
 
 def setVersion(){
     //state.name = "Garadget MQTT"
-	state.version = "1.3.0 - This DH"   
+	state.version = "1.3.1 - This DH"   
 }
 
 void installed() {
