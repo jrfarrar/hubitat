@@ -4,7 +4,8 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
- * 1.1.1 - 06/12/10 - logging fixes
+ * 1.2.0 - 06/14/20 - added: stop command, watchdog, MQTT username/pass, separated IP addr & port
+ * 1.1.1 - 06/12/20 - logging fixes
  * 1.1.0 - 06/12/20 - Initial Release
  */
 
@@ -27,11 +28,16 @@ metadata {
         attribute "signal", "number"
         attribute "bright", "number"
         attribute "stopped", "enum", ["true","false"]
+        
+        command "stop"
 
 preferences {
     section("Settings for connection from HE to Broker") {
         input (name: "doorName", type: "text", title: "Garadget Door Name(Topic name)")
-        input (name: "ipAddr", type: "text", title: "IP Address and port of MQTT broker - EXAMPLE: 192.168.0.1:1833 ")
+        input (name: "ipAddr", type: "text", title: "IP Address of MQTT broker")
+        input (name: "ipPort", type: "text", title: "Port # of MQTT broker")
+        input name: "username", type: "text", title: "MQTT Username:", description: "(blank if none)", required: false
+	    input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)", required: false
         }
     section("Settings for Garadget"){
         // put configuration here
@@ -58,7 +64,7 @@ preferences {
 
 def setVersion(){
     //state.name = "Garadget MQTT"
-	state.version = "1.1.1 - This DH"   
+	state.version = "1.2.0 - This DH"   
 }
 
 void installed() {
@@ -166,14 +172,7 @@ void getConfig(config) {
 
 }
 
-void open() {
-    infolog "Open command sent..."
-    interfaces.mqtt.publish("garadget/${doorName}/command", "open")
-}
-void close() {
-    infolog "Close command sent..."
-    interfaces.mqtt.publish("garadget/${doorName}/command", "close")
-}
+
 void refresh(){
     getstatus()
     setVersion()
@@ -185,18 +184,20 @@ void getstatus() {
 }
 void updated() {
     infolog "updated..."
+    unschedule()
     initialize()
 }
 void uninstalled() {
     infolog "disconnecting from mqtt..."
     interfaces.mqtt.disconnect()
+    unschedule()
 }
 
 void initialize() {
     try {
         def mqttInt = interfaces.mqtt
         //open connection
-        mqttInt.connect("tcp://${ipAddr}", "HEgaradget ${doorName}", null, null)
+        mqttInt.connect("tcp://${ipAddr}:${ipPort}", "HEgaradget ${doorName}", settings?.username,settings?.password)
         //give it a chance to start
         pauseExecution(1000)
         infolog "connection established..."
@@ -206,6 +207,8 @@ void initialize() {
         debuglog "initialize error: ${e.message}"
     }
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-config")
+    //unschedule()
+    schedule('0 */15 * ? * *', watchDog)
 }
 
 void configure(){
@@ -229,6 +232,19 @@ void configure(){
 void mqttClientStatus(String message) {
 	infolog "Received status message ${message}"
 }
+
+void open() {
+    infolog "Open command sent..."
+    interfaces.mqtt.publish("garadget/${doorName}/command", "open")
+}
+void close() {
+    infolog "Close command sent..."
+    interfaces.mqtt.publish("garadget/${doorName}/command", "close")
+}
+def stop(){
+	infolog "Stop command sent..."
+    interfaces.mqtt.publish("garadget/${doorName}/command", "stop")
+}
 /*
 void on() {
     debuglog "On, open door..."
@@ -239,6 +255,13 @@ void off() {
 	close()
 }
 */
+
+def watchDog() {
+    debuglog "${device.label?device.label:device.name}: Checking MQTT status"
+    debuglog "${device.label?device.label:device.name}: MQTT Connected: (${interfaces.mqtt.isConnected()})"
+    if(!interfaces.mqtt.isConnected()) initialize()
+}
+
 def debuglog(statement)
 {   
 	def logL = 0
