@@ -44,9 +44,9 @@ preferences {
 	    input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)", required: false
         input name: "retryTime", type: "number", title: "Number of minutes between retries to connect if broker goes down", defaultValue: 5, required: true
         input name: "refreshStats", type: "bool", title: "Refresh Garadget stats on a schedule?", defaultValue: false, required: true
-        input name: "refreshTime", type: "number", title: "If using refresh, refresh this number of minutes", defaultValue: 5, required: true
+        input name: "refreshTime", type: "number", title: "If using refresh, refresh this number of minutes", defaultValue: 5, range: "1..59", required: true
         input name: "watchDogSched", type: "bool", title: "Check for connection to MQTT broker on a schedule?", defaultValue: false, required: true
-        input name: "watchDogTime", type: "number", title: "This number of minutes to check for connection to MQTT broker", defaultValue: 15, required: true
+        input name: "watchDogTime", type: "number", title: "This number of minutes to check for connection to MQTT broker", defaultValue: 15, range: "1..59", required: true
         }
     section("Settings for Garadget"){
         // put configuration here
