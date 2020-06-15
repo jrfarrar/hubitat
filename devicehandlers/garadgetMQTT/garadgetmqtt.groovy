@@ -4,7 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
- * 1.3.1 - 06/14/20 - Default bug
+ * 1.3.2 - 06/14/20 - Default bug, auto-reconnection if broker drops
  * 1.3.0 - 06/14/20 - impletmented Garadget IP and Port changing and validation of config data, documentation, other small stuff
  * 1.2.0 - 06/14/20 - added: stop command, watchdog, MQTT username/pass, separated IP addr & port
  * 1.1.1 - 06/12/20 - logging fixes
@@ -40,6 +40,7 @@ preferences {
         input name: "ipPort", type: "text", title: "Port # of MQTT broker", defaultValue: "1883", required: true
         input name: "username", type: "text", title: "MQTT Username:", description: "(blank if none)", required: false
 	    input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)", required: false
+        input name: "retryTime", type: "number", title: "Number of minutes between retries to connect if broker goes down", defaultValue: 5, required: true
         }
     section("Settings for Garadget"){
         // put configuration here
@@ -68,7 +69,7 @@ preferences {
 
 def setVersion(){
     //state.name = "Garadget MQTT"
-	state.version = "1.3.1 - This DH"   
+	state.version = "1.3.2 - This Device Handler version"   
 }
 
 void installed() {
@@ -221,11 +222,13 @@ void getstatus() {
     watchDog()
     infolog "Getting status and config..."
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-status")
+    pauseExecution(1000)
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-config")
 }
 void updated() {
     infolog "updated..."
     configure()
+    if (logLevel == 2) runIn(3600,logsOff)
 }
 void uninstalled() {
     infolog "disconnecting from mqtt..."
@@ -234,7 +237,6 @@ void uninstalled() {
 }
 
 void initialize() {
-    if (logLevel == 2) runIn(3600,logsOff)
     try {
         //open connection
         def mqttInt = interfaces.mqtt
@@ -312,8 +314,21 @@ def watchDog() {
     if(!interfaces.mqtt.isConnected()) initialize()
 }
 void mqttClientStatus(String message) {
-	log.info "Received status message ${message}"
+	log.warn "****Received status message ${message}"
+    if (message.contains ("Connection lost")) {
+        connectionLost()
+    }
 }
+//if connection is dropped, try to reconnect every (retryTime) minutes until the connection is back
+void connectionLost(){
+    delayTime = retryTime * 1000
+    while(!interfaces.mqtt.isConnected()) {
+        infolog "Connection Lost attempting to reconnect..."
+        initialize()
+        pauseExecution(delayTime)
+    }
+}
+    
 //Logging below here
 def logsOff(){
     log.warn "Debug logging disabled."
