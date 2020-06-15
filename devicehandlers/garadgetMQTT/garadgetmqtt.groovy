@@ -4,6 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.3.3 - 06/15/20 - minor logging fix
  * 1.3.2 - 06/14/20 - Default bug, auto-reconnection if broker drops
  * 1.3.0 - 06/14/20 - impletmented Garadget IP and Port changing and validation of config data, documentation, other small stuff
  * 1.2.0 - 06/14/20 - added: stop command, watchdog, MQTT username/pass, separated IP addr & port
@@ -69,7 +70,7 @@ preferences {
 
 def setVersion(){
     //state.name = "Garadget MQTT"
-	state.version = "1.3.2 - This Device Handler version"   
+	state.version = "1.3.3 - This Device Handler version"   
 }
 
 void installed() {
@@ -228,7 +229,6 @@ void getstatus() {
 void updated() {
     infolog "updated..."
     configure()
-    if (logLevel == 2) runIn(3600,logsOff)
 }
 void uninstalled() {
     infolog "disconnecting from mqtt..."
