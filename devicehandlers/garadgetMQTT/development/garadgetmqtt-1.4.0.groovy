@@ -4,6 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.4.0 - 06/15/20 - added scheduling for refresh and reconnect, log streamlining
  * 1.3.3 - 06/15/20 - minor logging fix
  * 1.3.2 - 06/14/20 - Default bug, auto-reconnection if broker drops
  * 1.3.0 - 06/14/20 - impletmented Garadget IP and Port changing and validation of config data, documentation, other small stuff
@@ -74,7 +75,7 @@ preferences {
 
 def setVersion(){
     //state.name = "Garadget MQTT"
-	state.version = "1.3.3 - This Device Handler version"   
+	state.version = "1.4.0 - This Device Handler version"   
 }
 
 void installed() {
@@ -217,7 +218,6 @@ void getConfig(config) {
     mqto = config.mqto
     device.updateSetting("mqto", [value: "${mqto}", type: "number"])
     sendEvent(name: "mqto", value: mqto)
-
 }
 
 void refresh(){
@@ -273,7 +273,7 @@ void initialize() {
         mqttInt.subscribe("garadget/${doorName}/status")
         mqttInt.subscribe("garadget/${doorName}/config")
     } catch(e) {
-        debuglog "initialize error: ${e.message}"
+        log.warn "${device.label?device.label:device.name}: MQTT initialize error: ${e.message}"
     }
 }
 
@@ -335,7 +335,7 @@ def watchDog() {
     }
 }
 void mqttClientStatus(String message) {
-	log.warn "**** Received status message: ${message} ****"
+	log.warn "${device.label?device.label:device.name}: **** Received status message: ${message} ****"
     if (message.contains ("Connection lost")) {
         connectionLost()
     }
