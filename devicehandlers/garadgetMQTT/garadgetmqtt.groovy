@@ -4,6 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.4.0 - 06/15/20 - added scheduling for refresh and reconnect, log streamlining
  * 1.3.3 - 06/15/20 - minor logging fix
  * 1.3.2 - 06/14/20 - Default bug, auto-reconnection if broker drops
  * 1.3.0 - 06/14/20 - impletmented Garadget IP and Port changing and validation of config data, documentation, other small stuff
@@ -13,7 +14,7 @@
  */
 
 metadata {
-    definition (name: "Garadget MQTT", 
+    definition (name: "Garadget MQTT - 1.4.0", 
                 namespace: "jrfarrar", 
                 author: "J.R. Farrar",
                importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/garadgetMQTT/garadgetmqtt.groovy") {
@@ -42,6 +43,10 @@ preferences {
         input name: "username", type: "text", title: "MQTT Username:", description: "(blank if none)", required: false
 	    input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)", required: false
         input name: "retryTime", type: "number", title: "Number of minutes between retries to connect if broker goes down", defaultValue: 5, required: true
+        input name: "refreshStats", type: "bool", title: "Refresh Garadget stats on a schedule?", defaultValue: false, required: true
+        input name: "refreshTime", type: "number", title: "If using refresh, refresh this number of minutes", defaultValue: 5, required: true
+        input name: "watchDogSched", type: "bool", title: "Check for connection to MQTT broker on a schedule?", defaultValue: false, required: true
+        input name: "watchDogTime", type: "number", title: "This number of minutes to check for connection to MQTT broker", defaultValue: 15, required: true
         }
     section("Settings for Garadget"){
         // put configuration here
@@ -70,7 +75,7 @@ preferences {
 
 def setVersion(){
     //state.name = "Garadget MQTT"
-	state.version = "1.3.3 - This Device Handler version"   
+	state.version = "1.4.0 - This Device Handler version"   
 }
 
 void installed() {
@@ -81,6 +86,7 @@ void installed() {
 void parse(String description) {
     topicFull=interfaces.mqtt.parseMessage(description).topic
 	def topic=topicFull.split('/')
+    /*
 	//def topicCount=topic.size()
 	//def payload=interfaces.mqtt.parseMessage(description).payload.split(',')
     //log.debug "Desc.payload: " + interfaces.mqtt.parseMessage(description).payload
@@ -88,8 +94,9 @@ void parse(String description) {
     //log.debug "json= " + json
     //log.debug "topic0: " + topic[0]
     //log.debug "topic1: " + topic[1]
-    debuglog "topic2: " + topic[2]
+    //debuglog "topic2: " + topic[2]
     //top=interfaces.mqtt.parseMessage(description).topic
+    */
     
     def message=interfaces.mqtt.parseMessage(description).payload
     if (message) {
@@ -99,7 +106,7 @@ void parse(String description) {
         } else if (topic[2] == "config") {
             getConfig(jsonVal)
         } else {
-            debuglog "Unhandled topic..."
+            debuglog "Unhandled topic..." + topic[2]
         }
     } else {
         debuglog "Empty payload"
@@ -107,7 +114,7 @@ void parse(String description) {
 }
 //Handle status update topic
 void getStatus(status) {
-    infolog "status: " + status.status
+    debuglog "status: " + status.status
     debuglog "bright: " + status.bright
     debuglog "sensor: " + status.sensor
     debuglog "signal: " + status.signal
@@ -132,7 +139,7 @@ void getStatus(status) {
         sendEvent(name: "door", value: "closing")
         sendEvent(name: "stopped", value: "false")
     } else {
-        infolog "unknown event"
+        infolog "unknown status event"
     }
     sendEvent(name: "sensor", value: status.sensor)
     sendEvent(name: "signal", value: status.signal)
@@ -211,7 +218,6 @@ void getConfig(config) {
     mqto = config.mqto
     device.updateSetting("mqto", [value: "${mqto}", type: "number"])
     sendEvent(name: "mqto", value: mqto)
-
 }
 
 void refresh(){
@@ -221,14 +227,30 @@ void refresh(){
 //refresh data from status and config topics
 void getstatus() {
     watchDog()
-    infolog "Getting status and config..."
-    interfaces.mqtt.publish("garadget/${doorName}/command", "get-status")
-    pauseExecution(1000)
+    debuglog "Getting status and config..."
+    //Garadget requires sending a command to force it to update the config topic
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-config")
+    pauseExecution(1000)
+    //Garadget requires sending a command to force it to update the status topic (unless there is a door event)
+    interfaces.mqtt.publish("garadget/${doorName}/command", "get-status")
 }
 void updated() {
     infolog "updated..."
+    //write the configuration
     configure()
+    //set schedules   
+    unschedule()
+    pauseExecution(1000)
+    //schedule the watchdog to run in case the broker restarts
+    if (watchDogSched) {
+        debuglog "setting schedule to check for MQTT broker connection every ${watchDogTime} minutes"
+        schedule("44 7/${watchDogTime} * ? * *", watchDog)
+    }
+    //If refresh set to true then set the schedule
+    if (refreshStats) {
+        debuglog "setting schedule to refresh every ${refreshTime} minutes"
+        schedule("22 3/${refreshTime} * ? * *", getstatus) 
+    }
 }
 void uninstalled() {
     infolog "disconnecting from mqtt..."
@@ -237,6 +259,7 @@ void uninstalled() {
 }
 
 void initialize() {
+    infolog "initialize..."
     try {
         //open connection
         def mqttInt = interfaces.mqtt
@@ -250,16 +273,12 @@ void initialize() {
         mqttInt.subscribe("garadget/${doorName}/status")
         mqttInt.subscribe("garadget/${doorName}/config")
     } catch(e) {
-        debuglog "initialize error: ${e.message}"
+        log.warn "${device.label?device.label:device.name}: MQTT initialize error: ${e.message}"
     }
-    unschedule()
-    pauseExecution(1000)
-    //schedule the watchdog to run in case the broker restarts
-    schedule('0 */15 * ? * *', watchDog)
 }
 
 void configure(){
-    infolog "Configure..."
+    infolog "configure..."
     watchDog()
     
     //Build Option Map based on preferences
@@ -282,17 +301,17 @@ void configure(){
 }
 
 void open() {
-    infolog "Open command sent..."
+    infolog "Open..."
     watchDog()
     interfaces.mqtt.publish("garadget/${doorName}/command", "open")
 }
 void close() {
-    infolog "Close command sent..."
+    infolog "Close..."
     watchDog()
     interfaces.mqtt.publish("garadget/${doorName}/command", "close")
 }
 def stop(){
-	infolog "Stop command sent..."
+	infolog "Stop..."
     watchDog()
     interfaces.mqtt.publish("garadget/${doorName}/command", "stop")
 }
@@ -308,13 +327,15 @@ void off() {
 */
 
 def watchDog() {
-    debuglog "${device.label?device.label:device.name}: Checking MQTT status"
-    debuglog "${device.label?device.label:device.name}: MQTT Connected: (${interfaces.mqtt.isConnected()})"
+    debuglog "Checking MQTT status"    
     //if not connnected, re-initialize
-    if(!interfaces.mqtt.isConnected()) initialize()
+    if(!interfaces.mqtt.isConnected()) { 
+        debuglog "MQTT Connected: (${interfaces.mqtt.isConnected()})"
+        initialize()
+    }
 }
 void mqttClientStatus(String message) {
-	log.warn "****Received status message ${message}"
+	log.warn "${device.label?device.label:device.name}: **** Received status message: ${message} ****"
     if (message.contains ("Connection lost")) {
         connectionLost()
     }
@@ -323,7 +344,7 @@ void mqttClientStatus(String message) {
 void connectionLost(){
     delayTime = retryTime * 1000
     while(!interfaces.mqtt.isConnected()) {
-        infolog "Connection Lost attempting to reconnect..."
+        infolog "connection lost attempting to reconnect..."
         initialize()
         pauseExecution(delayTime)
     }
@@ -331,7 +352,7 @@ void connectionLost(){
     
 //Logging below here
 def logsOff(){
-    log.warn "Debug logging disabled."
+    log.warn "debug logging disabled"
     device.updateSetting("logLevel",[value:"1",type:"number"])
 }
 def debuglog(statement)
@@ -341,7 +362,7 @@ def debuglog(statement)
     if (logL == 0) {return}//bail
     else if (logL >= 2)
 	{
-		log.debug(statement)
+		log.debug("${device.label?device.label:device.name}: " + statement)
 	}
 }
 def infolog(statement)
@@ -351,7 +372,7 @@ def infolog(statement)
     if (logL == 0) {return}//bail
     else if (logL >= 1)
 	{
-		log.info(statement)
+		log.info("${device.label?device.label:device.name}: " + statement)
 	}
 }
 def getLogLevels(){
