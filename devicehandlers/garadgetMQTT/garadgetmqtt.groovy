@@ -14,7 +14,7 @@
  */
 
 metadata {
-    definition (name: "Garadget MQTT - 1.4.0", 
+    definition (name: "Garadget MQTT", 
                 namespace: "jrfarrar", 
                 author: "J.R. Farrar",
                importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/garadgetMQTT/garadgetmqtt.groovy") {
