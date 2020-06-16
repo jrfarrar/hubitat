@@ -4,6 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.4.1 - 06/16/20 - log tweaking and code efficiency for scheduled refreshes
  * 1.4.0 - 06/15/20 - added scheduling for refresh and reconnect, log streamlining
  * 1.3.3 - 06/15/20 - minor logging fix
  * 1.3.2 - 06/14/20 - Default bug, auto-reconnection if broker drops
@@ -14,7 +15,7 @@
  */
 
 metadata {
-    definition (name: "Garadget MQTT - 1.4.0", 
+    definition (name: "Garadget MQTT", 
                 namespace: "jrfarrar", 
                 author: "J.R. Farrar",
                importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/garadgetMQTT/garadgetmqtt.groovy") {
@@ -44,9 +45,9 @@ preferences {
 	    input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)", required: false
         input name: "retryTime", type: "number", title: "Number of minutes between retries to connect if broker goes down", defaultValue: 5, required: true
         input name: "refreshStats", type: "bool", title: "Refresh Garadget stats on a schedule?", defaultValue: false, required: true
-        input name: "refreshTime", type: "number", title: "If using refresh, refresh this number of minutes", defaultValue: 5, required: true
+        input name: "refreshTime", type: "number", title: "If using refresh, refresh this number of minutes", defaultValue: 5, range: "1..59", required: true
         input name: "watchDogSched", type: "bool", title: "Check for connection to MQTT broker on a schedule?", defaultValue: false, required: true
-        input name: "watchDogTime", type: "number", title: "This number of minutes to check for connection to MQTT broker", defaultValue: 15, required: true
+        input name: "watchDogTime", type: "number", title: "This number of minutes to check for connection to MQTT broker", defaultValue: 15, range: "1..59", required: true
         }
     section("Settings for Garadget"){
         // put configuration here
@@ -75,7 +76,7 @@ preferences {
 
 def setVersion(){
     //state.name = "Garadget MQTT"
-	state.version = "1.4.0 - This Device Handler version"   
+	state.version = "1.4.1 - Garadget MQTT Device Handler version"   
 }
 
 void installed() {
@@ -114,38 +115,43 @@ void parse(String description) {
 }
 //Handle status update topic
 void getStatus(status) {
-    debuglog "status: " + status.status
-    debuglog "bright: " + status.bright
-    debuglog "sensor: " + status.sensor
-    debuglog "signal: " + status.signal
-    debuglog "time: " + status.time
-    if (status.status == "closed") {
-        sendEvent(name: "contact", value: "closed")
-        sendEvent(name: "door", value: "closed")
-        sendEvent(name: "stopped", value: "false")
-    } else if (status.status == "open") {
-        sendEvent(name: "contact", value: "open")
-        sendEvent(name: "door", value: "open")
-        sendEvent(name: "stopped", value: "false")
-    } else if (status.status == "stopped") {
-        sendEvent(name: "door", value: "stopped")
-        sendEvent(name: "door", value: "open")
-        sendEvent(name: "stopped", value: "true")
-    } else if (status.status == "opening") {
-        sendEvent(name: "door", value: "opening")
-        sendEvent(name: "contact", value: "open")
-        sendEvent(name: "stopped", value: "false")
-    } else if (status.status == "closing") {
-        sendEvent(name: "door", value: "closing")
-        sendEvent(name: "stopped", value: "false")
-    } else {
-        infolog "unknown status event"
+    if (status.status != state.prevStatus) { 
+        infolog status.status
+        if (status.status == "closed") {
+            sendEvent(name: "contact", value: "closed")
+            sendEvent(name: "door", value: "closed")
+            sendEvent(name: "stopped", value: "false")
+        } else if (status.status == "open") {
+            sendEvent(name: "contact", value: "open")
+            sendEvent(name: "door", value: "open")
+            sendEvent(name: "stopped", value: "false")
+        } else if (status.status == "stopped") {
+            sendEvent(name: "door", value: "stopped")
+            sendEvent(name: "door", value: "open")
+            sendEvent(name: "stopped", value: "true")
+        } else if (status.status == "opening") {
+            sendEvent(name: "door", value: "opening")
+            sendEvent(name: "contact", value: "open")
+            sendEvent(name: "stopped", value: "false")
+        } else if (status.status == "closing") {
+            sendEvent(name: "door", value: "closing")
+            sendEvent(name: "stopped", value: "false")
+        } else {
+            infolog "unknown status event"
+        }
     }
+    state.prevStatus = status.status
     sendEvent(name: "sensor", value: status.sensor)
     sendEvent(name: "signal", value: status.signal)
     sendEvent(name: "bright", value: status.bright)
     sendEvent(name: "time", value: status.time)
     sendEvent(name: "illuminance", value: status.bright)
+    //log
+    debuglog "status: " + status.status
+    debuglog "bright: " + status.bright
+    debuglog "sensor: " + status.sensor
+    debuglog "signal: " + status.signal
+    debuglog "time: " + status.time    
 }
 //Handle config update topic
 void getConfig(config) {
@@ -221,11 +227,11 @@ void getConfig(config) {
 }
 
 void refresh(){
-    getstatus()
+    requestStatus()
     setVersion()
 }
 //refresh data from status and config topics
-void getstatus() {
+void requestStatus() {
     watchDog()
     debuglog "Getting status and config..."
     //Garadget requires sending a command to force it to update the config topic
@@ -249,7 +255,7 @@ void updated() {
     //If refresh set to true then set the schedule
     if (refreshStats) {
         debuglog "setting schedule to refresh every ${refreshTime} minutes"
-        schedule("22 3/${refreshTime} * ? * *", getstatus) 
+        schedule("22 3/${refreshTime} * ? * *", requestStatus) 
     }
 }
 void uninstalled() {
@@ -297,31 +303,31 @@ void configure(){
     //write configuration to MQTT broker
     interfaces.mqtt.publish("garadget/${doorName}/set-config", json)
     //refresh config from broker
-    interfaces.mqtt.publish("garadget/${doorName}/command", "get-config")
+    interfaces.mqtt.publish("garadget/${doorName}/command", "get-config") 
 }
 
 void open() {
-    infolog "Open..."
+    infolog "Open command sent..."
     watchDog()
     interfaces.mqtt.publish("garadget/${doorName}/command", "open")
 }
 void close() {
-    infolog "Close..."
+    infolog "Close command sent..."
     watchDog()
     interfaces.mqtt.publish("garadget/${doorName}/command", "close")
 }
 def stop(){
-	infolog "Stop..."
+	infolog "Stop command sent..."
     watchDog()
     interfaces.mqtt.publish("garadget/${doorName}/command", "stop")
 }
 /*
 void on() {
-    debuglog "On, open door..."
+    debuglog "On sent, open door..."
 	open()
 }
 void off() {
-    debuglog "Off, close door..."  
+    debuglog "Off sent, close door..."  
 	close()
 }
 */
