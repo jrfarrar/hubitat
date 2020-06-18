@@ -58,6 +58,11 @@ def pageConfig()
 			input "ManualControlMode", "enum", title: "Off After Manual-On?", required: true, options: ["Manually", "By Humidity", "After Set Time"], defaultValue: "After Set Time"
 			paragraph "How many minutes until the fan is auto-turned-off?"
 			input "ManualOffMinutes", "number", title: "Auto Turn Off Time (minutes)?", required: false, defaultValue: 10
+        }
+		section("Manual De-Activation")
+		{
+			paragraph "How many minutes until the fan switches back to auto after being turned off manually??"
+			input "ManualOffResetMinutes", "number", title: "Manual Off Reset Time (minutes)?", required: false, defaultValue: 5
 		}
 		section("Disable Modes")
 		{
@@ -96,6 +101,7 @@ def initialize()
 {
 	infolog "Initializing"
 	state.AutomaticallyTurnedOn = (FanSwitch.currentValue("switch") == "on")
+	state.AutomaticallyTurnedOff = !state.AutomaticallyTurnedOn
 	state.TurnOffLaterStarted = false
 	HumidityHandler(null)
 
@@ -161,7 +167,7 @@ def HumidityHandler(evt)
     }
     
     
-    if ( ((state.currentHumidity)>=(state.threshold)) && (FanSwitch.currentValue("switch") == "off") && !modeStop)
+    if ( ((state.currentHumidity)>=(state.threshold)) && (FanSwitch.currentValue("switch") == "off") && !modeStop && state.AutomaticallyTurnedOff)
         {
             state.AutomaticallyTurnedOn = true
             state.TurnOffLaterStarted = false
@@ -207,6 +213,7 @@ def FanSwitchHandler(evt)
 	switch(evt.value)
 	{
 		case "on":
+			state.AutomaticallyTurnedOff = false
 			if(!state.AutomaticallyTurnedOn && (ManualControlMode == "After Set Time") && ManualOffMinutes)
 			{
 				if(ManualOffMinutes == 0)
@@ -221,12 +228,25 @@ def FanSwitchHandler(evt)
 				}
 			}
 			break
-            case "off":
+        case "off":
 			debuglog "FanSwitchHandler::Switch turned off"
 			state.AutomaticallyTurnedOn = false
 			state.TurnOffLaterStarted = false
+
+			if(!state.AutomaticallyTurnedOff)
+            {
+                debuglog "Scheduling switch back to automatic in ${ManualOffResetMinutes.toInteger()} minutes"
+				runIn(60 * ManualOffResetMinutes.toInteger(), ManualOffReset)
+            }
 			break
     }
+}
+
+def ManualOffReset()
+{
+    debuglog "ManualOffReset: Function Start"
+	state.AutomaticallyTurnedOff = true
+	HumidityHandler(null)
 }
 
 def TurnOffFanSwitchCheckHumidity()
@@ -255,9 +275,10 @@ def TurnOffFanSwitch()
     if(FanSwitch.currentValue("switch") == "on")
     {
         infolog "TurnOffFanSwitch:Fan Off"
-        FanSwitch.off()
+        state.AutomaticallyTurnedOff = true
         state.AutomaticallyTurnedOn = false
         state.TurnOffLaterStarted = false
+        FanSwitch.off()
     }
 }
 
@@ -266,9 +287,10 @@ def TurnOffFanSwitchManual()
     if ((FanSwitch.currentValue("switch") == "on") && (state.AutomaticallyTurnedOn == false))
     {
         infolog "TurnOffFanSwitch:Fan Off"
-        FanSwitch.off()
         state.AutomaticallyTurnedOn = false
+        state.AutomaticallyTurnedOff = true
         state.TurnOffLaterStarted = false
+        FanSwitch.off()
     }
     else
     {
