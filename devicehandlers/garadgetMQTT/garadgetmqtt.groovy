@@ -4,6 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.4.1 - 06/18/20 - log tweaking and code efficiency for scheduled refreshes
  * 1.4.0 - 06/15/20 - added scheduling for refresh and reconnect, log streamlining
  * 1.3.3 - 06/15/20 - minor logging fix
  * 1.3.2 - 06/14/20 - Default bug, auto-reconnection if broker drops
@@ -67,7 +68,7 @@ preferences {
         }
     section("Logging"){
         //logging
-        input(name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum",options: getLogLevels(),submitOnChange : false,defaultValue : "1")
+        input(name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum", options: getLogLevels(), submitOnChange : false, defaultValue : "1")
         }
      }
   }
@@ -75,7 +76,7 @@ preferences {
 
 def setVersion(){
     //state.name = "Garadget MQTT"
-	state.version = "1.4.0 - This Device Handler version"   
+	state.version = "1.4.1 - Garadget MQTT Device Handler version"   
 }
 
 void installed() {
@@ -114,38 +115,43 @@ void parse(String description) {
 }
 //Handle status update topic
 void getStatus(status) {
+    if (status.status != device.currentValue("door")) { 
+        infolog status.status 
+        if (status.status == "closed") {
+            sendEvent(name: "contact", value: "closed")
+            sendEvent(name: "door", value: "closed")
+            sendEvent(name: "stopped", value: "false")
+        } else if (status.status == "open") {
+            sendEvent(name: "contact", value: "open")
+            sendEvent(name: "door", value: "open")
+            sendEvent(name: "stopped", value: "false")
+        } else if (status.status == "stopped") {
+            sendEvent(name: "door", value: "stopped")
+            sendEvent(name: "contact", value: "open")
+            sendEvent(name: "stopped", value: "true")
+        } else if (status.status == "opening") {
+            sendEvent(name: "door", value: "opening")
+            sendEvent(name: "contact", value: "open")
+            sendEvent(name: "stopped", value: "false")
+        } else if (status.status == "closing") {
+            sendEvent(name: "door", value: "closing")
+            sendEvent(name: "stopped", value: "false")
+        } else {
+            infolog "unknown status event"
+        }
+    }   
+    //update device status if it has changed
+    if (status.sensor != device.currentValue("sensor")) { sendEvent(name: "sensor", value: status.sensor) }
+    if (status.signal != device.currentValue("signal")) { sendEvent(name: "signal", value: status.signal) }
+    if (status.bright != device.currentValue("bright")) { sendEvent(name: "bright", value: status.bright) }
+    if (status.time != device.currentValue("time")) { sendEvent(name: "time", value: status.time) }
+    if (status.illuminance != device.currentValue("illuminance")) { sendEvent(name: "illuminance", value: status.bright) }
+    //log
     debuglog "status: " + status.status
     debuglog "bright: " + status.bright
     debuglog "sensor: " + status.sensor
     debuglog "signal: " + status.signal
     debuglog "time: " + status.time
-    if (status.status == "closed") {
-        sendEvent(name: "contact", value: "closed")
-        sendEvent(name: "door", value: "closed")
-        sendEvent(name: "stopped", value: "false")
-    } else if (status.status == "open") {
-        sendEvent(name: "contact", value: "open")
-        sendEvent(name: "door", value: "open")
-        sendEvent(name: "stopped", value: "false")
-    } else if (status.status == "stopped") {
-        sendEvent(name: "door", value: "stopped")
-        sendEvent(name: "door", value: "open")
-        sendEvent(name: "stopped", value: "true")
-    } else if (status.status == "opening") {
-        sendEvent(name: "door", value: "opening")
-        sendEvent(name: "contact", value: "open")
-        sendEvent(name: "stopped", value: "false")
-    } else if (status.status == "closing") {
-        sendEvent(name: "door", value: "closing")
-        sendEvent(name: "stopped", value: "false")
-    } else {
-        infolog "unknown status event"
-    }
-    sendEvent(name: "sensor", value: status.sensor)
-    sendEvent(name: "signal", value: status.signal)
-    sendEvent(name: "bright", value: status.bright)
-    sendEvent(name: "time", value: status.time)
-    sendEvent(name: "illuminance", value: status.bright)
 }
 //Handle config update topic
 void getConfig(config) {
@@ -221,11 +227,11 @@ void getConfig(config) {
 }
 
 void refresh(){
-    getstatus()
+    requestStatus()
     setVersion()
 }
 //refresh data from status and config topics
-void getstatus() {
+void requestStatus() {
     watchDog()
     debuglog "Getting status and config..."
     //Garadget requires sending a command to force it to update the config topic
@@ -249,7 +255,7 @@ void updated() {
     //If refresh set to true then set the schedule
     if (refreshStats) {
         debuglog "setting schedule to refresh every ${refreshTime} minutes"
-        schedule("22 3/${refreshTime} * ? * *", getstatus) 
+        schedule("22 3/${refreshTime} * ? * *", requestStatus) 
     }
 }
 void uninstalled() {
@@ -275,6 +281,9 @@ void initialize() {
     } catch(e) {
         log.warn "${device.label?device.label:device.name}: MQTT initialize error: ${e.message}"
     }
+    //if logs are in "Need Help" turn down to "Running" after an hour
+    logL = logLevel.toInteger()
+    if (logL == 2) runIn(3600,logsOff)
 }
 
 void configure(){
@@ -297,31 +306,31 @@ void configure(){
     //write configuration to MQTT broker
     interfaces.mqtt.publish("garadget/${doorName}/set-config", json)
     //refresh config from broker
-    interfaces.mqtt.publish("garadget/${doorName}/command", "get-config")
+    interfaces.mqtt.publish("garadget/${doorName}/command", "get-config") 
 }
 
 void open() {
-    infolog "Open..."
+    infolog "Open command sent..."
     watchDog()
     interfaces.mqtt.publish("garadget/${doorName}/command", "open")
 }
 void close() {
-    infolog "Close..."
+    infolog "Close command sent..."
     watchDog()
     interfaces.mqtt.publish("garadget/${doorName}/command", "close")
 }
 def stop(){
-	infolog "Stop..."
+	infolog "Stop command sent..."
     watchDog()
     interfaces.mqtt.publish("garadget/${doorName}/command", "stop")
 }
 /*
 void on() {
-    debuglog "On, open door..."
+    debuglog "On sent, open door..."
 	open()
 }
 void off() {
-    debuglog "Off, close door..."  
+    debuglog "Off sent, close door..."  
 	close()
 }
 */
@@ -353,7 +362,7 @@ void connectionLost(){
 //Logging below here
 def logsOff(){
     log.warn "debug logging disabled"
-    device.updateSetting("logLevel",[value:"1",type:"number"])
+    device.updateSetting("logLevel", [value: "1", type: "enum"])
 }
 def debuglog(statement)
 {   
