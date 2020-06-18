@@ -4,7 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
- * 1.4.1 - 06/16/20 - log tweaking and code efficiency for scheduled refreshes
+ * 1.4.1 - 06/18/20 - log tweaking and code efficiency for scheduled refreshes
  * 1.4.0 - 06/15/20 - added scheduling for refresh and reconnect, log streamlining
  * 1.3.3 - 06/15/20 - minor logging fix
  * 1.3.2 - 06/14/20 - Default bug, auto-reconnection if broker drops
@@ -363,7 +363,6 @@ void connectionLost(){
 def logsOff(){
     log.warn "debug logging disabled"
     device.updateSetting("logLevel", [value: "1", type: "enum"])
-    //logLevel = "1"
 }
 def debuglog(statement)
 {   
