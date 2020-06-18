@@ -68,7 +68,7 @@ preferences {
         }
     section("Logging"){
         //logging
-        input(name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum",options: getLogLevels(),submitOnChange : false,defaultValue : "1")
+        input(name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum", options: getLogLevels(), submitOnChange : false, defaultValue : "1")
         }
      }
   }
@@ -115,8 +115,8 @@ void parse(String description) {
 }
 //Handle status update topic
 void getStatus(status) {
-    if (status.status != state.prevStatus) { 
-        infolog status.status
+    if (status.status != device.currentValue("door")) { 
+        infolog status.status 
         if (status.status == "closed") {
             sendEvent(name: "contact", value: "closed")
             sendEvent(name: "door", value: "closed")
@@ -127,7 +127,7 @@ void getStatus(status) {
             sendEvent(name: "stopped", value: "false")
         } else if (status.status == "stopped") {
             sendEvent(name: "door", value: "stopped")
-            sendEvent(name: "door", value: "open")
+            sendEvent(name: "contact", value: "open")
             sendEvent(name: "stopped", value: "true")
         } else if (status.status == "opening") {
             sendEvent(name: "door", value: "opening")
@@ -139,19 +139,19 @@ void getStatus(status) {
         } else {
             infolog "unknown status event"
         }
-    }
-    state.prevStatus = status.status
-    sendEvent(name: "sensor", value: status.sensor)
-    sendEvent(name: "signal", value: status.signal)
-    sendEvent(name: "bright", value: status.bright)
-    sendEvent(name: "time", value: status.time)
-    sendEvent(name: "illuminance", value: status.bright)
+    }   
+    //update device status if it has changed
+    if (status.sensor != device.currentValue("sensor")) { sendEvent(name: "sensor", value: status.sensor) }
+    if (status.signal != device.currentValue("signal")) { sendEvent(name: "signal", value: status.signal) }
+    if (status.bright != device.currentValue("bright")) { sendEvent(name: "bright", value: status.bright) }
+    if (status.time != device.currentValue("time")) { sendEvent(name: "time", value: status.time) }
+    if (status.illuminance != device.currentValue("illuminance")) { sendEvent(name: "illuminance", value: status.bright) }
     //log
     debuglog "status: " + status.status
     debuglog "bright: " + status.bright
     debuglog "sensor: " + status.sensor
     debuglog "signal: " + status.signal
-    debuglog "time: " + status.time    
+    debuglog "time: " + status.time
 }
 //Handle config update topic
 void getConfig(config) {
@@ -281,6 +281,9 @@ void initialize() {
     } catch(e) {
         log.warn "${device.label?device.label:device.name}: MQTT initialize error: ${e.message}"
     }
+    //if logs are in "Need Help" turn down to "Running" after an hour
+    logL = logLevel.toInteger()
+    if (logL == 2) runIn(3600,logsOff)
 }
 
 void configure(){
@@ -359,7 +362,8 @@ void connectionLost(){
 //Logging below here
 def logsOff(){
     log.warn "debug logging disabled"
-    device.updateSetting("logLevel",[value:"1",type:"number"])
+    device.updateSetting("logLevel", [value: "1", type: "enum"])
+    //logLevel = "1"
 }
 def debuglog(statement)
 {   
