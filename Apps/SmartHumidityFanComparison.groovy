@@ -95,19 +95,16 @@ def updated()
 def initialize()
 {
 	infolog "Initializing"
-	state.AutomaticallyTurnedOn = false
+	state.AutomaticallyTurnedOn = (FanSwitch.currentValue("switch") == "on")
 	state.TurnOffLaterStarted = false
+	HumidityHandler(null)
+
     subscribe(HumiditySensor, "humidity", HumidityHandler)
     subscribe(CompareHumiditySensor, "humidity", HumidityHandler)
     subscribe(FanSwitch, "switch", FanSwitchHandler)
-	subscribe(location, "mode", modeChangeHandler)
+    subscribe(location, "mode", modeChangeHandler)
+
     version()
-	if (!state.baselineHumidity)
-	{
-        def myHumid = CompareHumiditySensor.currentState("humidity")
-        infolog "${CompareHumiditySensor} currently: ${myHumid.value}"
-		state.baselineHumidity = myHumid.value
-	}
 }
 
 def modeChangeHandler(evt)
@@ -125,18 +122,10 @@ def modeChangeHandler(evt)
 
 def HumidityHandler(evt)
 {
+    state.baselineHumidity = Double.parseDouble(CompareHumiditySensor.currentState("humidity").value.replace("%", ""))
+    state.currentHumidity = Double.parseDouble(HumiditySensor.currentState("humidity").value.replace("%", ""))
     state.threshold = state.baselineHumidity + HumidityIncreasedBy
     state.thresholdOff = state.baselineHumidity + HumidityDecreasedBy
-    if (evt.deviceId == CompareHumiditySensor.deviceId) 
-    {
-        state.baselineHumidity = Double.parseDouble(evt.value.replace("%", ""))
-        //debuglog "Baseline humidity update : ${state.baselineHumidity} from: ${evt.device}"
-    } 
-    else 
-    {
-        state.currentHumidity = Double.parseDouble(evt.value.replace("%", ""))
-        //debuglog "Current humidity update: ${state.currentHumidity} from: ${evt.device}"
-    }
     
     
     //debuglog "TEST: evt: ${evt.descriptionText}"
