@@ -1,11 +1,11 @@
 {
   "packageName": "Garadget MQTT Driver",
   "author": "J.R. Farrar",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "minimumHEVersion": "2.1.9",
   "communityLink":"https://community.hubitat.com/t/release-garadget-mqtt-device-handler/43377",
-  "dateReleased": "2020-06-15",
-  "releaseNotes": "added scheduling of reconnect and status update, other streamlining and log changes",
+  "dateReleased": "2020-06-18",
+  "releaseNotes": "log tweaking and code efficiency for scheduled refreshes",
   "drivers": [
     {
       "id": "58801d01-51bd-4116-a271-2e7a7c9e24a0",
