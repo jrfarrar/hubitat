@@ -133,6 +133,7 @@ def HumidityHandler(evt)
     state.currentHumidity = Double.parseDouble(HumiditySensor.currentState("humidity").value.replace("%", ""))
     state.threshold = state.baselineHumidity + HumidityIncreasedBy
     state.thresholdOff = state.baselineHumidity + HumidityDecreasedBy
+    state.deltaHumidity = Math.round((state.currentHumidity - state.baselineHumidity) * 10) / 10
     
     
     //debuglog "TEST: evt: ${evt.descriptionText}"
@@ -142,8 +143,9 @@ def HumidityHandler(evt)
     //debuglog "TEST: CompareHumiditySensor-ID: ${CompareHumiditySensor.deviceId}"
     debuglog "Current humidity: ${state.currentHumidity}"
     debuglog "Baseline humidity: ${state.baselineHumidity}"
-    debuglog "Turn ON Humidity threshold: ${state.threshold}"
-    debuglog "Turn OFF Humidity threshold: ${state.thresholdOff}"
+    debuglog "Delta humidity: ${state.deltaHumidity}"
+    debuglog "Turn ON Humidity threshold: ${state.threshold} (${HumidityIncreasedBy})"
+    debuglog "Turn OFF Humidity threshold: ${state.thresholdOff}  (${HumidityDecreasedBy})"
     
     //infolog "HumidityHandler:running humidity check: ${state.currentHumidity}"
 	def allModes = settings.modes
