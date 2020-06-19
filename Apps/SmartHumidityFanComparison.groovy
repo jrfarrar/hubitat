@@ -103,7 +103,6 @@ def initialize()
 	state.AutomaticallyTurnedOn = (FanSwitch.currentValue("switch") == "on")
 	state.AutomaticallyTurnedOff = !state.AutomaticallyTurnedOn
 	state.TurnOffLaterStarted = false
-	HumidityHandler(null)
 
     subscribe(HumiditySensor, "humidity", HumidityHandler)
     subscribe(CompareHumiditySensor, "humidity", HumidityHandler)
@@ -111,6 +110,8 @@ def initialize()
     subscribe(location, "mode", modeChangeHandler)
 
     version()
+
+	HumidityHandler(null)
 }
 
 def modeChangeHandler(evt)
