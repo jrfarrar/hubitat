@@ -178,6 +178,7 @@ def ResetState()
 
 def SwitchToAutomatic()
 {
+	debuglog "SwitchToAutomatic: Function Start"
 	ResetState()
 	IlluminanceHandler(null)
 }
