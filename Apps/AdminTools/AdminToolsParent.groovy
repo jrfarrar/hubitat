@@ -35,6 +35,8 @@ def mainPage() {
             	app(name: "childApps", appName: "Temperature Controller Child", namespace: "jrfarrar", title: "New Temperature Turn ON/OFF Instance", multiple: true)
                 app(name: "childApps", appName: "Humidity Controller Child", namespace: "jrfarrar", title: "New Humidity Turn ON/OFF Instance", multiple: true)
                 app(name: "childApps", appName: "Is It Dark Child", namespace: "jrfarrar", title: "New Is It Dark Instance", multiple: true)
+                app(name: "childApps", appName: "Power Monitor Child", namespace: "jrfarrar", title: "New Power Monitor Instance", multiple: true)
+                app(name: "childApps", appName: "Septic Pump Child", namespace: "jrfarrar", title: "New Septic Pump Instance", multiple: true)
         	}
     	}
     }
