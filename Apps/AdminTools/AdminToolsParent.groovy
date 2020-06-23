@@ -39,6 +39,8 @@ def mainPage() {
                 app(name: "childApps", appName: "Septic Pump Child", namespace: "jrfarrar", title: "New Septic Pump Instance", multiple: true)
                 //Location Notifier Child
                 app(name: "childApps", appName: "Location Notifier Child", namespace: "jrfarrar", title: "New Location Notifier Instance", multiple: true)
+                //Power Handler Child
+                app(name: "childApps", appName: "Power Handler Child", namespace: "jrfarrar", title: "New Power Handler Instance", multiple: true)
         	}
     	}
     }
