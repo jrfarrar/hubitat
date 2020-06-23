@@ -3,7 +3,7 @@
  *
  *	Author: J.R. Farrar
  * 
- * 
+ *  V 1.0 - 2020-06-23 
  * 
  */
 
@@ -64,7 +64,7 @@ def installed() {
 
 def updated() {
   infolog "updated"
-  initialize()
+  //initialize()
 }
 
 def initialize() {
@@ -80,7 +80,7 @@ def initialize() {
 def uninstalled() {
   unschedule()
   unsubscribe()
-  log.debug "uninstalled"
+  infolog "uninstalled"
 }
 
 def subscribeToEvents() {
@@ -97,7 +97,7 @@ def powerHandler(evt) {
     if (rndPower > watts) {
         if (state.running == false) {
             unschedule(itsBeenSevenDays)
-            state.lastrun = new Date().format("yyyy-MM-dd HH:mm")
+            state.lastrun = new Date().format("yyyy-MM-dd HH:mm:ss")
             state.running = true
             infolog "pump turned on, time: " + state.lastrun
             runIn(60 * tooLong.toInteger(), pumpRunningLong)
@@ -112,7 +112,7 @@ def powerHandler(evt) {
     } else {
         if (state.running) {
             state.running = false
-            state.lastoff = new Date().format("yyyy-MM-dd HH:mm")
+            state.lastoff = new Date().format("yyyy-MM-dd HH:mm:ss")
             infolog "pump shut off, time: " + state.lastoff
             unschedule(pumpRunningLong)
             if ( tooLongSwitch.latestValue( "switch" ) != "off" ) {
