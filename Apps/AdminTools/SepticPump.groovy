@@ -95,7 +95,8 @@ def powerHandler(evt) {
     dblePower = Double.parseDouble(evt.value)
     rndPower = dblePower.round(0)
     debuglog "power: $rndPower, $evt.device"
-
+  //make sure we don't get an erroneous reading  
+  if (rndPower < 10000){
     if (rndPower > watts) {
         if (state.running == false) {
             unschedule(itsBeenSevenDays)
@@ -122,6 +123,7 @@ def powerHandler(evt) {
             }
         }
     }
+  }
 }
  
 void itsBeenSevenDays() {
