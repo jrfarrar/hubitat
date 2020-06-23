@@ -75,25 +75,25 @@ def subscribeToEvents() {
 }
 
 def whoLocation(evt){
-    debuglog "Event: " + evt
-    debuglog "Where: " + evt.value
+    debuglog "Location received: " + evt.value
     if (evt.value != state.prevLocation) {
         state.prevLocation = evt.value
         if (evt.value == where) {
-            debuglog "MATCH"
             if ( arrivedSwitch.latestValue( "switch" ) != "on" ) {
                 arrivedSwitch.on()
                 infolog "${who} arrived at ${where}"
+            } else {
+                debuglog "MATCH - Location: " + evt.value
             }
         } else {
-            debuglog "NO MATCH - Location: " + evt.value
             if ( arrivedSwitch.latestValue( "switch" ) != "off" ) {
                 arrivedSwitch.off()
                 infolog "${who} left ${where}"
-            }            
+            } else {
+                debuglog "NO MATCH - Location: " + evt.value
+            }
         }
     }
-
 }
 
 
