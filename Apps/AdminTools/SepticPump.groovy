@@ -63,8 +63,10 @@ def installed() {
 }
 
 def updated() {
-  infolog "updated"
-  //initialize()
+    infolog "updated"
+    unsubscribe()
+    subscribeToEvents()
+    //initialize()
 }
 
 def initialize() {
