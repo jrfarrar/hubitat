@@ -121,6 +121,7 @@ def powerHandler(evt) {
             if ( tooLongSwitch.latestValue( "switch" ) != "off" ) {
                 tooLongSwitch.off()
             }
+            app.updateSetting("thisName", "Septic Pump Last run: ${state.lastoff}")
         }
     }
   }
