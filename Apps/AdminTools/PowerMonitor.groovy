@@ -3,7 +3,7 @@
  *
  *	Author: J.R. Farrar
  * 
- * 
+ * V1.0 2020-06-25 - rewrote logic
  * 
  */
 
@@ -29,10 +29,13 @@ dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval
     
   section(getFormat("header-green", "Devices")) {
 		  paragraph "- Default is turn on when power rises above. Use toggle below to reverse and turn off when power rises above."
-	      input (name: "pwrClamp", type: "capability.powerMeter", title: "Power Meter", submitOnChange: true)
-          input (name: "tempSwitch", type: "capability.switch", title: "Switch to turn on/off", submitOnChange: true, multiple: false)
-          input (name: "watts", type: "number", title: "Watt trigger?")
-          input (name: "useReverse", type: "bool", defaultValue: "false", title: "Use in reverse? (turn switch off when power goes above)", submitOnChange: true)
+	      input (name: "pwrClamp", type: "capability.powerMeter", title: "Power Meter", submitOnChange: true, required: true)
+          input (name: "tempSwitch", type: "capability.switch", title: "Switch to turn on/off", submitOnChange: true, multiple: false, required: true)
+          input (name: "watts", type: "number", title: "Watt trigger?", defaultValue: 10, required: true)
+          input (name: "delayBeforeOn", type: "bool", defaultValue: "false", title: "After power goes above, wait before turning switch on?", submitOnChange: true)
+          if (delayBeforeOn) input (name: "delayOn", type: "number", title: "Wait this many minutes before turning switch on", defaultValue: 3)
+          input (name: "delayBeforeOff", type: "bool", defaultValue: "false", title: "After power drops below, wait before turning switch off?", submitOnChange: true)
+          if (delayBeforeOff) input (name: "delayOff", type: "number", title: "Wait this many minutes before turning switch off", defaultValue: 3)
     }
     section(getFormat("header-green", "RESTRICTIONS")) {
 		  paragraph "- These restrict the above triggers based on what's set here."
@@ -47,7 +50,7 @@ dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval
     section(getFormat("header-green", "APP NAME")){
         input (name: "thisName", type: "text", title: "App Name", submitOnChange: true)
 			//if(thisName) app.updateLabel("$thisName") else app.updateSetting("thisName", "Temperature turn on/off")
-        if(thisName) app.updateLabel("$thisName") else {if (tempSwitch) app.updateSetting("thisName", "Temp Control - $tempSwitch")}
+        if(thisName) app.updateLabel("$thisName") else {if (tempSwitch) app.updateSetting("thisName", "$pwrClamp - Power Monitor")}
     }
   }  
 } 
@@ -69,12 +72,13 @@ def initialize() {
   unsubscribe()
   //subscribe to events for chosen devices
   subscribeToEvents()
+  state.running = false  
 }
 
 def uninstalled() {
   unschedule()
   unsubscribe()
-  log.debug "uninstalled"
+  infolog "uninstalled"
 }
 
 def subscribeToEvents() {
@@ -88,49 +92,69 @@ def powerHandler(evt) {
     dblePower = Double.parseDouble(evt.value)
     rndPower = dblePower.round(0)
     debuglog "power: $rndPower, $evt.device"
-if (canWeRun()) {    
-    if (useReverse) {    
-        if (rndPower <= watts) {
-            if ( tempSwitch.latestValue( "switch" ) != "on" ) {
-                infolog "Turning on"
-                tempSwitch.on()
+      
+    if (canWeRun(rndPower)) {    
+        if (rndPower > watts ) {
+            if (state.running == false) {
+                debuglog "power rose above ${watts}: " + rndPower
+                unschedule(turnOff)
+                state.running = true
+                if (delayBeforeOn) {
+                    debuglog "Waiting ${delayOn} minutes to turn on"
+                    runIn(60 * delayOn.toInteger(), turnOn)
+                } else {
+                    turnOn()
+                }
+            }
+        } else {
+            if (state.running) {
+                debuglog "power dropped below or equal ${watts}: " + rndPower
+                unschedule(turnOn)
+                state.running = false
+                if (delayBeforeOff) {
+                    debuglog "Waiting ${delayOff} minutes to turn off"
+                    runIn(60 * delayOff.toInteger(), turnOff)
+                } else {
+                    turnOff()
+                }
+        
             }
         }
-        else if (rndPower > watts ) {
-            if ( tempSwitch.latestValue( "switch" ) != "off" ) {
-                infolog "Turning off"
-                tempSwitch.off()
-            }  
-        }
-        else {
-            debuglog "Current power in watts is ${evt.value}"
-        }        
-    } else {
-        if (rndPower <= watts) {
-            if ( tempSwitch.latestValue( "switch" ) != "off" ) {
-                infolog "Turning off"
-                tempSwitch.off()
-            }
-        }
-        else if (rndPower > watts ) {
-            if ( tempSwitch.latestValue( "switch" ) != "on" ) {
-                infolog "Turning on"
-                tempSwitch.on()
-            }  
-        }
-        else {
-            debuglog "Current power in watts is ${evt.value}"
-        }        
     }
- }
 }
 
 
-def canWeRun(){
+void turnOff() {
+    if ( tempSwitch.latestValue( "switch" ) != "off" ) {
+        state.lastoff = new Date().format("yyyy-MM-dd HH:mm:ss")
+        infolog "shut off, time: " + state.lastoff
+        tempSwitch.off()
+    } 
+}
+
+void turnOn(){
+    if ( tempSwitch.latestValue( "switch" ) != "on" ) {
+        state.laston = new Date().format("yyyy-MM-dd HH:mm:ss")
+        infolog "turned on, time: " + state.laston
+        tempSwitch.on()
+    }  
+}
+
+
+
+def canWeRun(pwr){
     def isItOn
     def isItOff
     def isModeOk
+    def powerOk
+    debuglog "Checking if power is over 10,000: " + pwr
 
+    if (pwr < 10000){
+        powerOk = true
+    } else {
+        powerOk = false
+        infolog "Power received was out of bounds" + pwr
+    }   
     if (onSwitch && mySwitch.currentValue('switch').contains('off')) {
         isItOn = false
         debuglog "Only Run when switch is ON and it's OFF"
@@ -158,7 +182,7 @@ def canWeRun(){
         debuglog "No Restriced Modes Selected"
     }
     
-    if (isItOff && isItOn && isModeOk) {
+    if (isItOff && isItOn && isModeOk && powerOk) {
         return true
     } else {
         return false
