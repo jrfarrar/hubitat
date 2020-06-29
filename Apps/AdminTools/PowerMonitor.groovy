@@ -100,7 +100,7 @@ def powerHandler(evt) {
                 unschedule(turnOff)
                 state.running = true
                 if (delayBeforeOn) {
-                    debuglog "Waiting ${delayOn} minutes to turn on"
+                    infolog "Waiting ${delayOn} minutes to turn on"
                     runIn(60 * delayOn.toInteger(), turnOn)
                 } else {
                     turnOn()
@@ -112,7 +112,7 @@ def powerHandler(evt) {
                 unschedule(turnOn)
                 state.running = false
                 if (delayBeforeOff) {
-                    debuglog "Waiting ${delayOff} minutes to turn off"
+                    infolog "Waiting ${delayOff} minutes to turn off"
                     runIn(60 * delayOff.toInteger(), turnOff)
                 } else {
                     turnOff()
