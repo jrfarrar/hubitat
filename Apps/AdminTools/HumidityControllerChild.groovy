@@ -58,8 +58,13 @@ def installed() {
 }
 
 def updated() {
-  infolog "updated"
-  initialize()
+    infolog "updated"
+    initialize()
+    if ( dehumidifierSwitch.latestValue( "switch" ) == "on" ) {
+        app.updateLabel("$thisName <span style=\"color:green;\">(ON)</span>")
+    } else {
+        app.updateLabel("$thisName <span style=\"color:red;\">(OFF)</span>")
+    }
 }
 
 def initialize() {
@@ -89,14 +94,16 @@ if (canWeRun()) {
     if (!useAsHumidifier) {    
         if (Double.parseDouble(evt.value.replace("%", "")) <= desiredHumidity) {
             if ( dehumidifierSwitch.latestValue( "switch" ) != "off" ) {
-                infolog "Turning dehumidifier off"
+                infolog "Turning ${dehumidifierSwitch} off"
                 dehumidifierSwitch.off()
+                app.updateLabel("$thisName <span style=\"color:red;\">(OFF)</span>")
             }
         }
         else if (Double.parseDouble(evt.value.replace("%", "")) > desiredHumidity ) {
             if ( dehumidifierSwitch.latestValue( "switch" ) != "on" ) {
-                infolog "Turning dehumidifier on"
+                infolog "Turning ${dehumidifierSwitch} on"
                 dehumidifierSwitch.on()
+                app.updateLabel("$thisName <span style=\"color:green;\">(ON)</span>")
             }  
         }
         else {
@@ -106,14 +113,16 @@ if (canWeRun()) {
         //useing as a humidifier
         if (Double.parseDouble(evt.value.replace("%", "")) <= desiredHumidity) {
             if ( dehumidifierSwitch.latestValue( "switch" ) != "on" ) {
-                infolog "Turning humidifier on"
+                infolog "Turning ${dehumidifierSwitch} on"
                 dehumidifierSwitch.on()
+                app.updateLabel("$thisName <span style=\"color:green;\">(ON)</span>")
             }
         }
         else if (Double.parseDouble(evt.value.replace("%", "")) > desiredHumidity ) {
             if ( dehumidifierSwitch.latestValue( "switch" ) != "off" ) {
-                infolog "Turning humidifier off"
+                infolog "Turning ${dehumidifierSwitch} off"
                 dehumidifierSwitch.off()
+                app.updateLabel("$thisName <span style=\"color:red;\">(OFF)</span>")
             }  
         }
         else {
