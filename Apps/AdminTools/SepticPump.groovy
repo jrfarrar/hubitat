@@ -3,6 +3,7 @@
  *
  *	Author: J.R. Farrar
  * 
+ *  V 1.1 - 2020-07-02
  *  V 1.0 - 2020-06-23 
  * 
  */
@@ -121,7 +122,7 @@ def powerHandler(evt) {
             if ( tooLongSwitch.latestValue( "switch" ) != "off" ) {
                 tooLongSwitch.off()
             }
-            app.updateSetting("thisName", "Septic Pump Last run: ${state.lastoff}")
+            app.updateLabel("$thisName <span style=\"color:black;\">(${state.lastoff})</span>")
         }
     }
   }
