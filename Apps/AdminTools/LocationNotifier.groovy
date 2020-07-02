@@ -3,7 +3,7 @@
  *
  *	Author: J.R. Farrar
  * 
- * 
+ * V1.0 2020-07-02
  * 
  */
 
@@ -49,8 +49,13 @@ def installed() {
 }
 
 def updated() {
-  infolog "updated"
-  initialize()
+    infolog "updated"
+    initialize()
+    if ( arrivedSwitch.latestValue( "switch" ) == "on" ) {
+        app.updateLabel("$thisName <span style=\"color:green;\">(TRUE)</span>")
+    } else {
+        app.updateLabel("$thisName <span style=\"color:#FF0000;\">(FALSE)</span>")
+    }
 }
 
 def initialize() {
@@ -82,6 +87,7 @@ def whoLocation(evt){
             if ( arrivedSwitch.latestValue( "switch" ) != "on" ) {
                 arrivedSwitch.on()
                 infolog "${who} arrived at ${where}"
+                app.updateLabel("$thisName <span style=\"color:green;\">(TRUE)</span>")
             } else {
                 debuglog "MATCH - Location: " + evt.value
             }
@@ -89,6 +95,7 @@ def whoLocation(evt){
             if ( arrivedSwitch.latestValue( "switch" ) != "off" ) {
                 arrivedSwitch.off()
                 infolog "${who} left ${where}"
+                app.updateLabel("$thisName <span style=\"color:#FF0000;\">(FALSE)</span>")
             } else {
                 debuglog "NO MATCH - Location: " + evt.value
             }
