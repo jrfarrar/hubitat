@@ -71,6 +71,11 @@ def updated() {
 	unsubscribe()
 	unschedule()
 	initialize()
+    if ( mySwitch.latestValue( "switch" ) == "on" ) {
+        app.updateLabel("$thisName <span style=\"color:green;\">(LIGHT)</span>")
+    } else {
+        app.updateLabel("$thisName <span style=\"color:black;\">(DARK)</span>")
+    }    
 }
 
 def initialize() {
@@ -175,16 +180,18 @@ def checkIllumincation(){
 
 def switchOff() {
     if (mySwitch.currentValue("switch") == "on") {
-        infolog "Turning switch off"
+        infolog "Turning switch ${mySwitch} off"
         mySwitch.off()
+        app.updateLabel("$thisName <span style=\"color:black;\">(DARK)</span>")
     } else {
         debuglog "Switch already off"
     }
 }
 def switchOn() {
     if (mySwitch.currentValue("switch") == "off") {
-        infolog "Turning switch on"
+        infolog "Turning switch ${mySwitch} on"
         mySwitch.on()
+        app.updateLabel("$thisName <span style=\"color:green;\">(LIGHT)</span>")
     } else {
         debuglog "Switch already on"
     }
