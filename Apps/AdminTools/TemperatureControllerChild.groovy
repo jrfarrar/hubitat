@@ -58,8 +58,13 @@ def installed() {
 }
 
 def updated() {
-  infolog "updated"
-  initialize()
+    infolog "updated"
+    initialize()
+    if ( tempSwitch.latestValue( "switch" ) == "on" ) {
+        app.updateLabel("$thisName <span style=\"color:green;\">(ON)</span>")
+    } else {
+        app.updateLabel("$thisName <span style=\"color:red;\">(OFF)</span>")
+    }
 }
 
 def initialize() {
@@ -91,12 +96,14 @@ if (canWeRun()) {
             if ( tempSwitch.latestValue( "switch" ) != "off" ) {
                 infolog "Turning Cooler off"
                 tempSwitch.off()
+                app.updateLabel("$thisName <span style=\"color:red;\">(OFF)</span>")
             }
         }
         else if (Double.parseDouble(evt.value.replace("%", "")) > desiredTemp ) {
             if ( tempSwitch.latestValue( "switch" ) != "on" ) {
                 infolog "Turning Cooler on"
                 tempSwitch.on()
+                app.updateLabel("$thisName <span style=\"color:green;\">(ON)</span>")
             }  
         }
         else {
@@ -108,12 +115,14 @@ if (canWeRun()) {
             if ( tempSwitch.latestValue( "switch" ) != "on" ) {
                 infolog "Turning heater on"
                 tempSwitch.on()
+                app.updateLabel("$thisName <span style=\"color:green;\">(ON)</span>")
             }
         }
         else if (Double.parseDouble(evt.value.replace("%", "")) > desiredTemp ) {
             if ( tempSwitch.latestValue( "switch" ) != "off" ) {
                 infolog "Turning heater off"
                 tempSwitch.off()
+                app.updateLabel("$thisName <span style=\"color:red;\">(OFF)</span>")
             }  
         }
         else {
