@@ -3,6 +3,7 @@
  *
  *	Author: J.R. Farrar
  * 
+ * V1.1 2020-07-02
  * V1.0 2020-06-25 - rewrote logic
  * 
  */
@@ -100,7 +101,7 @@ def powerHandler(evt) {
                 unschedule(turnOff)
                 state.running = true
                 if (delayBeforeOn) {
-                    infolog "Waiting ${delayOn} minutes to turn on"
+                    debuglog "Waiting ${delayOn} minutes to turn on"
                     runIn(60 * delayOn.toInteger(), turnOn)
                 } else {
                     turnOn()
@@ -112,7 +113,7 @@ def powerHandler(evt) {
                 unschedule(turnOn)
                 state.running = false
                 if (delayBeforeOff) {
-                    infolog "Waiting ${delayOff} minutes to turn off"
+                    debuglog "Waiting ${delayOff} minutes to turn off"
                     runIn(60 * delayOff.toInteger(), turnOff)
                 } else {
                     turnOff()
@@ -126,9 +127,10 @@ def powerHandler(evt) {
 
 void turnOff() {
     if ( tempSwitch.latestValue( "switch" ) != "off" ) {
-        state.lastoff = new Date().format("yyyy-MM-dd HH:mm:ss")
+        state.lastoff = new Date().format("yyyy-MM-dd HH:mm")
         infolog "shut off, time: " + state.lastoff
         tempSwitch.off()
+        app.updateLabel("$thisName <span style=\"color:black;\">(${state.lastoff})</span>")
     } 
 }
 
@@ -137,6 +139,7 @@ void turnOn(){
         state.laston = new Date().format("yyyy-MM-dd HH:mm:ss")
         infolog "turned on, time: " + state.laston
         tempSwitch.on()
+        app.updateLabel("$thisName <span style=\"color:green;\">(ON)</span>")
     }  
 }
 
