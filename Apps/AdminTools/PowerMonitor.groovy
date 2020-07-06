@@ -206,7 +206,7 @@ def debuglog(statement)
     if (logL == 0) {return}//bail
     else if (logL >= 2)
 	{
-		log.debug(statement)
+		log.debug("$thisName: " + statement)
 	}
 }
 def infolog(statement)
@@ -216,7 +216,7 @@ def infolog(statement)
     if (logL == 0) {return}//bail
     else if (logL >= 1)
 	{
-		log.info(statement)
+		log.info("$thisName: " + statement)
 	}
 }
 def getLogLevels(){
