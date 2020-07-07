@@ -101,7 +101,8 @@ def initialize()
     subscribe(CompareHumiditySensor, "humidity", HumidityHandler)
     subscribe(FanSwitch, "switch", FanSwitchHandler)
 	subscribe(location, "mode", modeChangeHandler)
-    version()
+    unschedule()
+    //version()
 	if (!state.baselineHumidity)
 	{
         def myHumid = CompareHumiditySensor.currentState("humidity")
@@ -168,7 +169,9 @@ def HumidityHandler(evt)
         state.TurnOffLaterStarted = false
         state.AutomaticallyTurnedOnAt = new Date().format("yyyy-MM-dd HH:mm")
         infolog "HumidityHandler:Automatic mode took over manual mode due to humidity increase"
-	    infolog "Value exceeded: ${state.threshold}, Current humidity: ${state.currentHumidity}"
+        infolog "Baseline humidity (${CompareHumiditySensor}): ${state.baselineHumidity}"
+        infolog "${HumiditySensor} humidity exceeded: ${state.threshold}, Current humidity: ${state.currentHumidity}"
+        infolog "Waiting to drop below ${state.thresholdOff} to start timed off sequence"
     }
     
     
@@ -177,13 +180,19 @@ def HumidityHandler(evt)
             state.AutomaticallyTurnedOn = true
             state.TurnOffLaterStarted = false
             state.AutomaticallyTurnedOnAt = new Date().format("yyyy-MM-dd HH:mm")
-            infolog "HumidityHandler:Turn On Fan due to humidity increase"
-	        infolog "Value exceeded: ${state.threshold}, Current humidity: ${state.currentHumidity}"
+            //
+            debuglog "Baseline humidity(${CompareHumiditySensor}): ${state.baselineHumidity}"
+            debuglog "increased by threshold setting:  ${settings.HumidityIncreasedBy}"
+            debuglog "turn on threshold: ${state.threshold}"
+            debuglog "Current humidity(${HumiditySensor}): ${state.currentHumidity}"
+            //
+            infolog "Turn On Fan due to humidity increase"
+            infolog "${HumiditySensor} humidity exceeded: ${state.threshold}, current humidity: ${state.currentHumidity}"
+            infolog "Waiting to drop below ${state.thresholdOff} to start timed off sequence"
+            //
             FanSwitch.on()
-            debuglog "Humidity above threshold (baseline plus increase amount): ${state.threshold}" 
-            debuglog "Current humidity: ${state.currentHumidity}"
-            //debuglog "Baseline humidity: ${state.baselineHumidity}"
-            //debuglog "Increased by: ${settings.HumidityIncreasedBy}"
+
+
         }
 	//turn off the fan when humidity returns to normal and it was kicked on by the humidity sensor
 	else if((state.AutomaticallyTurnedOn || ManualControlMode == "By Humidity")&& !state.TurnOffLaterStarted)
@@ -193,14 +202,21 @@ def HumidityHandler(evt)
             //debuglog "CURRENT HUMIDITY: ${state.currentHumidity}  STATE.THRESHOLDOFF: ${state.thresholdOff}"
             if(HumidityDropTimeout == 0)
             {
-                infolog "HumidityHandler:Fan Off"
+                debuglog "HumidityHandler:Fan Off"
                 TurnOffFanSwitch()
             }
             else
             {
-				infolog "HumidityHandler:Turn Fan off in ${HumidityDropTimeout} minutes."
-                infolog "${CompareHumiditySensor} : ${state.baselineHumidity}"
-                infolog "${HumiditySensor} : ${state.currentHumidity}"
+                //
+                debuglog "Baseline humidity(${CompareHumiditySensor}): ${state.baselineHumidity}"
+                debuglog "decreased by threshold setting:  ${settings.HumidityDecreasedBy}"
+                debuglog "turn off threshold: ${state.thresholdOff}"
+                debuglog "Current humidity(${HumiditySensor}): ${state.currentHumidity}"	
+                //
+                infolog "Humidity dropped below threshold"  
+                infolog "${HumiditySensor} humidity fell below: ${state.thresholdOff}, current humidity: ${state.currentHumidity}"                
+                infolog "Turning fan off in ${HumidityDropTimeout} minutes"
+                //
 				state.TurnOffLaterStarted = true
 				runIn(60 * HumidityDropTimeout.toInteger(), TurnOffFanSwitchCheckHumidity)
 				debuglog "HumidityHandler: state.TurnOffLaterStarted = ${state.TurnOffLaterStarted}"
@@ -211,10 +227,10 @@ def HumidityHandler(evt)
 
 def FanSwitchHandler(evt)
 {
-	infolog "FanSwitchHandler::Switch changed"
+	debuglog "FanSwitchHandler::Switch changed"
 	debuglog "FanSwitchHandler: ManualControlMode = ${ManualControlMode}"
 	debuglog "FanSwitchHandler: ManualOffMinutes = ${ManualOffMinutes}"
-	debuglog "HumidityHandler: state.AutomaticallyTurnedOn = ${state.AutomaticallyTurnedOn}"
+	debuglog "FanSwitchHandler: state.AutomaticallyTurnedOn = ${state.AutomaticallyTurnedOn}"
 	switch(evt.value)
 	{
 		case "on":
@@ -245,17 +261,17 @@ def TurnOffFanSwitchCheckHumidity()
     debuglog "TurnOffFanSwitchCheckHumidity: Function Start"
 	if(FanSwitch.currentValue("switch") == "on")
     {
-		debuglog "TurnOffFanSwitchCheckHumidity: state.currentHumidity ${state.currentHumidity} : state.thresholdOff ${state.currentHumidity}"
+		debuglog "TurnOffFanSwitchCheckHumidity: state.currentHumidity ${state.currentHumidity} : state.thresholdOff ${state.thresholdOff}"
 		if (state.currentHumidity >= state.thresholdOff)
         {
-            infolog "TurnOffFanSwitchCheckHumidity: Didn't turn off fan because humdity: ${state.currentHumidity} is greater than turn off threshold"
+            infolog "Didn't turn off fan because humdity: ${state.currentHumidity} is greater than turn off threshold: ${state.thresholdOff}"
 			state.AutomaticallyTurnedOn = true
 			state.AutomaticallyTurnedOnAt = now()
 			state.TurnOffLaterStarted = false
 		}
 		else
 		{
-			debuglog "TurnOffFanSwitchCheckHumidity: Turning the Fan off now"
+			debuglog "Time expired, turning the Fan off"
 			TurnOffFanSwitch()
 		}
 	}
@@ -265,10 +281,12 @@ def TurnOffFanSwitch()
 {
     if(FanSwitch.currentValue("switch") == "on")
     {
-        infolog "TurnOffFanSwitch:Fan Off"
+        infolog "Fan Off"
         FanSwitch.off()
         state.AutomaticallyTurnedOn = false
         state.TurnOffLaterStarted = false
+    } else {
+        infolog "Fan already off, not turning off"
     }
 }
 
@@ -276,29 +294,15 @@ def TurnOffFanSwitchManual()
 {
     if ((FanSwitch.currentValue("switch") == "on") && (state.AutomaticallyTurnedOn == false))
     {
-        infolog "TurnOffFanSwitch:Fan Off"
+        infolog "Fan Off"
         FanSwitch.off()
         state.AutomaticallyTurnedOn = false
         state.TurnOffLaterStarted = false
     }
     else
     {
-        infolog "Not turning off switch, either the swtich was off or the Auto routine kicked in"
+        infolog "Not turning off switch, either the switch was off or the Auto routine kicked in"
     }
-}
-
-def CheckThreshold(evt)
-{
-	double lastevtvalue = Double.parseDouble(evt.value.replace("%", ""))
-	if(lastevtvalue >= HumidityThreshold)
-	{  
-		infolog "IsHumidityPresent: Humidity is above the Threashold"
-		return true
-	}
-	else
-	{
-		return false
-	}
 }
 
 def debuglog(statement)
@@ -324,11 +328,29 @@ def infolog(statement)
 def getLogLevels(){
     return [["0":"None"],["1":"Running"],["2":"NeedHelp"]]
 }
+
+
+/*
+def CheckThreshold(evt)
+{
+	double lastevtvalue = Double.parseDouble(evt.value.replace("%", ""))
+	if(lastevtvalue >= HumidityThreshold)
+	{  
+		infolog "Humidity is above the Threshold"
+		return true
+	}
+	else
+	{
+		return false
+	}
+}
+
 def version(){
 	unschedule()
 	//schedule("0 0 9 ? * FRI *", updateCheck) // Cron schedule - How often to perform the update check - (This example is 9am every Friday)
 	//updateCheck()  
 }
+
 
 def display(){
 	if(state.Status){
@@ -382,3 +404,5 @@ def setVersion(){
 	state.version = "1.0.0" // Version number of this app
 	state.InternalName = "SmartHumidityFanComparison"   // this is the name used in the JSON file for this app
 }
+
+*/
