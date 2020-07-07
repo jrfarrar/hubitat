@@ -3,6 +3,7 @@
  *
  *	Author: J.R. Farrar
  * 
+ *  V 1.2 - 2020-07-07 Added duration
  *  V 1.1 - 2020-07-02
  *  V 1.0 - 2020-06-23 
  * 
@@ -102,6 +103,7 @@ def powerHandler(evt) {
         if (state.running == false) {
             unschedule(itsBeenSevenDays)
             state.lastrun = new Date().format("yyyy-MM-dd HH:mm:ss")
+            state.onTime = now()
             state.running = true
             infolog "pump turned on, time: " + state.lastrun
             runIn(60 * tooLong.toInteger(), pumpRunningLong)
@@ -117,12 +119,16 @@ def powerHandler(evt) {
         if (state.running) {
             state.running = false
             state.lastoff = new Date().format("yyyy-MM-dd HH:mm:ss")
-            infolog "pump shut off, time: " + state.lastoff
+            state.offTime = now()
+            dur = ((state.offTime - state.onTime)/1000)/60
+            state.duration = (dur as double).round(2)
+            infolog "shut off, time: " + state.lastoff
+            infolog "run time in minutes: " + state.duration
             unschedule(pumpRunningLong)
             if ( tooLongSwitch.latestValue( "switch" ) != "off" ) {
                 tooLongSwitch.off()
             }
-            app.updateLabel("$thisName <span style=\"color:black;\">(${state.lastoff})</span>")
+            app.updateLabel("$thisName <span style=\"color:black;\">(${state.lastoff})(Runtime: ${state.duration}min)</span>")
         }
     }
   }
