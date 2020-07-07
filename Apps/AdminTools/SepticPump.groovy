@@ -148,50 +148,6 @@ void pumpRunningLong() {
     tooLongSwitch.on() 
 }
 
-
-/*
-def powerHandler(evt) {
-    dblePower = Double.parseDouble(evt.value)
-    rndPower = dblePower.round(0)
-    debuglog "power: $rndPower, $evt.device"
-if (canWeRun()) {    
-    if (useReverse) {    
-        if (rndPower <= watts) {
-            if ( tempSwitch.latestValue( "switch" ) != "on" ) {
-                infolog "Turning on"
-                tempSwitch.on()
-            }
-        }
-        else if (rndPower > watts ) {
-            if ( tempSwitch.latestValue( "switch" ) != "off" ) {
-                infolog "Turning off"
-                tempSwitch.off()
-            }  
-        }
-        else {
-            debuglog "Current power in watts is ${evt.value}"
-        }        
-    } else {
-        if (rndPower <= watts) {
-            if ( tempSwitch.latestValue( "switch" ) != "off" ) {
-                infolog "Turning off"
-                tempSwitch.off()
-            }
-        }
-        else if (rndPower > watts ) {
-            if ( tempSwitch.latestValue( "switch" ) != "on" ) {
-                infolog "Turning on"
-                tempSwitch.on()
-            }  
-        }
-        else {
-            debuglog "Current power in watts is ${evt.value}"
-        }        
-    }
- }
-}
-*/
-
 def canWeRun(){
     def isItOn
     def isItOff
