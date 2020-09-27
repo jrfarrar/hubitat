@@ -133,9 +133,9 @@ def powerHandler(evt) {
             infolog "turned off, time: " + state.lastoff
             unschedule(tooLongOnHandler)
             unschedule(tooLongOffHandler)
-            if ( tooLongSwitch.latestValue( "switch" ) != "off" ) {
-                tooLongSwitch.off()
-            }
+            //if ( tooLongSwitchOff.latestValue( "switch" ) != "off" ) {
+            //    tooLongSwitchOff.off()
+            //}
         }
     }
 }
