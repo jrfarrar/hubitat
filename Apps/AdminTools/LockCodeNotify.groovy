@@ -28,8 +28,8 @@ dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval
     
   section(getFormat("header-green", "Devices")) {
 		  paragraph "Notify when door lock code is entered."
-          input (name: "myLock", type: "capability.lock", title: "Lock", submitOnChange: true)
-          input ("sendPushMessage", "capability.notification", title: "Notification device", multiple: true, required: false, submitOnChange: true)
+          input (name: "lock", type: "capability.lock", title: "Lock", submitOnChange: true, required: true)
+          input ("sendPushMessage", "capability.notification", title: "Notification device", multiple: true, required: true, submitOnChange: true)
           //if (sendPushMessage) input ("message", "text", title: "Message to send?", required: false)
     }
     
@@ -80,32 +80,31 @@ def uninstalled() {
 }
 
 def subscribeToEvents() {
-    if(myLock) {
-    //subscribe(myLock, "lastCodeName", lockHandler, ["filterEvents": false])
-    subscribe(myLock, "lock", lockHandler)    
+    if(lock) {
+    //subscribe(lock, "lastCodeName", lockHandler, ["filterEvents": false])
+    subscribe(lock, "lock.unlocked", lockHandler)    
     }
 }
 
     //debuglog "EVENT: $evt
     //debuglog "Value: $evt.value"
-    //codes = myLock.currentValue("lockCodes")
+    //codes = lock.currentValue("lockCodes")
     //debuglog "Codes: $codes"
     //debuglog "-------------------evt.value: $evt.value"
     //debuglog "-------------------evt.type: $evt.type"
 
 def lockHandler(evt) {
     debuglog "Unlock event: ${evt.name} : ${evt.descriptionText}"
-    lastName = myLock.currentValue("lastCodeName")
-    if (evt.value == "unlocked") {
-        if (evt.type == 'physical' && evt.descriptionText.endsWith('thumb turn [physical]') || (evt.type == 'digital' && (evt.descriptionText.endsWith('unlocked [digital]')))) {
-            debuglog "$myLock.displayName was unlocked manually"
-        } else {
-            infolog "$myLock.displayName was unlocked by CODE: $lastName"
-            sendPushMessage.deviceNotification("$myLock.displayName was unlocked by: $lastName")
-            //sendPushMessage.deviceNotification(message)
-            app.updateLabel("$thisName <span style=\"color:black;\">(${lastName})</span>")
-        }
-    }  
+    lastName = lock.currentValue("lastCodeName")
+    //myResult = evt.descriptionText.endsWith('command [digital]')
+    if (evt.descriptionText.endsWith('thumbturn [physical]') || evt.descriptionText.endsWith('command [digital]')) {
+        infolog "$lock.displayName was unlocked manually or electronically"
+    } else {
+        infolog "$lock.displayName was unlocked by CODE: $lastName"
+        sendPushMessage.deviceNotification("$lock.displayName was unlocked by: $lastName")
+        //sendPushMessage.deviceNotification(message)
+        app.updateLabel("$thisName <span style=\"color:black;\">(${lastName})</span>")
+    }
 }
 
 
