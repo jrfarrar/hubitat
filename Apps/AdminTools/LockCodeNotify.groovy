@@ -103,6 +103,7 @@ def lockHandler(evt) {
             debuglog "$myLock.displayName was unlocked by CODE: $lastName"
             sendPushMessage.deviceNotification("$myLock.displayName was unlocked by: $lastName")
             //sendPushMessage.deviceNotification(message)
+            app.updateLabel("$thisName <span style=\"color:black;\">(${lastName})</span>")
         }
     }  
 }
