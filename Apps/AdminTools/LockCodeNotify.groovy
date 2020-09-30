@@ -94,13 +94,13 @@ def subscribeToEvents() {
     //debuglog "-------------------evt.type: $evt.type"
 
 def lockHandler(evt) {
-    //debuglog "Unlock event: ${evt.name} : ${evt.descriptionText}"
+    debuglog "Unlock event: ${evt.name} : ${evt.descriptionText}"
     lastName = myLock.currentValue("lastCodeName")
     if (evt.value == "unlocked") {
         if (evt.type == 'physical' && evt.descriptionText.endsWith('thumb turn [physical]') || (evt.type == 'digital' && (evt.descriptionText.endsWith('unlocked [digital]')))) {
             debuglog "$myLock.displayName was unlocked manually"
         } else {
-            debuglog "$myLock.displayName was unlocked by CODE: $lastName"
+            infolog "$myLock.displayName was unlocked by CODE: $lastName"
             sendPushMessage.deviceNotification("$myLock.displayName was unlocked by: $lastName")
             //sendPushMessage.deviceNotification(message)
             app.updateLabel("$thisName <span style=\"color:black;\">(${lastName})</span>")
