@@ -92,19 +92,19 @@ def subscribeToEvents() {
     //debuglog "Codes: $codes"
     //debuglog "-------------------evt.value: $evt.value"
     //debuglog "-------------------evt.type: $evt.type"
+    //myResult = evt.descriptionText.endsWith('command [digital]')
+    //if (evt.descriptionText.endsWith('thumbturn [physical]') || evt.descriptionText.endsWith('command [digital]'))
+
 
 def lockHandler(evt) {
     debuglog "Unlock event: ${evt.name} : ${evt.descriptionText}"
     lastName = lock.currentValue("lastCodeName")
-    //myResult = evt.descriptionText.endsWith('command [digital]')
-    //if (evt.descriptionText.endsWith('thumbturn [physical]') || evt.descriptionText.endsWith('command [digital]'))
-    if (!state.dText.contains("unlocked by")) {
-        infolog "$lock.displayName was unlocked manually or electronically"
-    } else {
-        infolog "$lock.displayName was unlocked by CODE: $lastName"
+    if (evt.descriptionText.contains("unlocked by")) {
+        infolog "$lock.displayName was unlocked by: $lastName"
         sendPushMessage.deviceNotification("$lock.displayName was unlocked by: $lastName")
-        //sendPushMessage.deviceNotification(message)
-        app.updateLabel("$thisName <span style=\"color:black;\">(${lastName})</span>")
+        app.updateLabel("$thisName <span style=\"color:black;\">(${lastName})</span>")        
+    } else {
+        infolog "$lock.displayName was unlocked manually or electronically"
     }
 }
 
