@@ -57,7 +57,7 @@ metadata {
 
     preferences {            
        input ( "onTime", "number", title: "Press Configuration button after changing preferences\n\n   On Time: Duration (8-720 seconds) [default: 15]", defaultValue: 15,range: "8..720", required: false)
-       input ( "luxDisableValue", "number", title: "Lux Value to Disable Sensor: (0-200 lux)(0 Disables lux from motion) [default: 50]", defaultValue: 50, range: "0..200", required: false)       
+       input ( "luxDisableValue", "number", title: "Lux Value to Disable Sensor: (0-200 lux)(0 Disables lux from motion)(255 always turn on with PIR) [default: 50]", defaultValue: 50, range: "0..200", required: false)       
        input ( "luxReportInterval", "number", title: "Lux Report Interval: (0-1440 minutes) [default 10]", defaultValue: 10, range: "0..1440", required: false)
        input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: true
        input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
