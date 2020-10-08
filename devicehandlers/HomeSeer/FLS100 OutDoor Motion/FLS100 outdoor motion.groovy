@@ -55,8 +55,9 @@ metadata {
 //		reply "200100,delay 5000,2602": "command: 2603, payload: 00"		
 //	}
 
-    preferences {            
-       input ( "onTime", "number", title: "Press Configuration button after changing preferences\n\n   On Time: Duration (8-720 seconds) [default: 15]", defaultValue: 15,range: "8..720", required: false)
+    preferences {
+       input ( "null", "number", title: "Press Configuration button after changing preferences\n\n" )
+       input ( "onTime", "number", title: "On Time - The duration after being trigged that the sensor will go inactive. If you couple the light to the PIR(Auto) the light will also stay on for this long.: Duration (8-720 seconds) [default: 15]", defaultValue: 15,range: "8..720", required: false)
        input ( "luxDisableValue", "number", title: "Lux Value to Disable Sensor: (0-200 lux)(0 Disables lux from motion)(255 always turn on with PIR) [default: 50]", defaultValue: 50, range: "0..200", required: false)       
        input ( "luxReportInterval", "number", title: "Lux Report Interval: (0-1440 minutes) [default 10]", defaultValue: 10, range: "0..1440", required: false)
        input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: true
@@ -75,10 +76,10 @@ def parse(String description) {
 	    }
     }
     if (!result){
-        if (logEnable) log.debug "Parse returned ${result} for command ${cmd}"
+        if (logEnable) log.debug "${device.displayName} - Parse returned ${result} for command ${cmd}"
     }
     else {
-		if (logEnable) log.debug "Parse returned ${result}"
+		if (logEnable) log.debug "${device.displayName} - Parse returned ${result}"
     }   
 	return result
 }
@@ -91,23 +92,23 @@ def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd) {
 	if (cmd.notificationType == 0x07) {
 		switch (cmd.event) {
 			case 0:
-				if (txtEnable) log.info "Motion Inactive"	
+			if (txtEnable) log.info "${device.displayName} - Motion Inactive"	
                 createEvent(name:"motion", value: "inactive", isStateChange: true)
 				break
 			case 8:
-				if (txtEnable) log.info "Motion Active"
+				if (txtEnable) log.info "${device.displayName} - Motion Active"
 				createEvent(name:"motion", value: "active", isStateChange: true)
 				break
-			default:
-				if (txtEnable) logDebug "Sensor is ${cmd.event}"
+			//default:
+				//if (txtEnable) logDebug "${device.displayName} - Sensor is ${cmd.event}"
 		}
 	}	
 }
 
 def zwaveEvent(hubitat.zwave.commands.sensormultilevelv5.SensorMultilevelReport cmd) {
-	if (logEnable) log.debug("sensor multilevel report")
-    if (logEnable) log.debug "cmd:  ${cmd}"
-	if (txtEnable) log.info "Illuminance: ${cmd.scaledSensorValue}"
+	if (logEnable) log.debug("${device.displayName} - sensor multilevel report")
+    if (logEnable) log.debug "${device.displayName} - cmd:  ${cmd}"
+	if (txtEnable) log.info "${device.displayName} - Illuminance: ${cmd.scaledSensorValue}"
 	
     def lval = cmd.scaledSensorValue
     
@@ -140,7 +141,7 @@ def zwaveEvent(hubitat.zwave.commands.versionv1.VersionReport cmd) {
 }
 
 def zwaveEvent(hubitat.zwave.commands.firmwareupdatemdv2.FirmwareMdReport cmd) { 
-    if (logEnable) log.debug ("received Firmware Report")
+    if (logEnable) log.debug ("${device.displayName} - received Firmware Report")
     if (logEnable) log.debug "checksum:       ${cmd.checksum}"
     if (logEnable) log.debug "firmwareId:     ${cmd.firmwareId}"
     if (logEnable) log.debug "manufacturerId: ${cmd.manufacturerId}"
@@ -148,7 +149,7 @@ def zwaveEvent(hubitat.zwave.commands.firmwareupdatemdv2.FirmwareMdReport cmd) {
 }
 
 def zwaveEvent(hubitat.zwave.commands.switchbinaryv1.SwitchBinaryReport cmd) { 
-	if (logEnable) log.debug ("received switch binary Report")
+	if (logEnable) log.debug ("${device.displayName} - received switch binary Report")
     createEvent(name:"switch", value: cmd.value ? "on" : "off")
 }
 
@@ -158,7 +159,7 @@ def zwaveEvent(hubitat.zwave.Command cmd) {
 }
 
 def on() {
-	if (txtEnable) log.info "On"
+	if (txtEnable) log.info "${device.displayName} - On"
 	delayBetween([
 			zwave.basicV1.basicSet(value: 0xFF).format(),
 			zwave.switchMultilevelV1.switchMultilevelGet().format()
@@ -166,7 +167,7 @@ def on() {
 }
 
 def off() {
-	if (txtEnable) log.info "Off"
+	if (txtEnable) log.info "${device.displayName} - Off"
 	delayBetween([
 			zwave.basicV1.basicSet(value: 0x00).format(),
 			zwave.switchMultilevelV1.switchMultilevelGet().format()
@@ -285,7 +286,7 @@ delayBetween(cmds, 500)
 
 
 def manual() {
-	if (logEnable) log.debug "Setting operating mode to: Manual"
+	if (logEnable) log.debug "${device.displayName} - Setting operating mode to: Manual"
 	def cmds = []
 	cmds << zwave.configurationV1.configurationSet(parameterNumber:2, size:2, scaledConfigurationValue: 0 ).format()
 	sendEvent(name:"operatingMode", value: "manual")
@@ -293,7 +294,7 @@ def manual() {
 }
 
 def auto() {
-	if (logEnable) log.debug "Setting operating mode to: Auto"
+	if (logEnable) log.debug "${device.displayName} - Setting operating mode to: Auto"
 	def cmds = []
 	def luxDisableValue = Math.max(Math.min(luxDisableValue, 200), 0)
 	cmds << zwave.configurationV1.configurationSet(parameterNumber:2, size:2, scaledConfigurationValue: luxDisableValue ).format()
