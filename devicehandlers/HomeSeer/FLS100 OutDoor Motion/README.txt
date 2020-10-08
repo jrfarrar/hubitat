@@ -15,3 +15,5 @@ The "On Time" or duration will also be the duration that the sensor shows "activ
 If you additionally set the Lux Value to 0. This basically disables the sensor from turning the light on locally. AKA you now have a Illuminance sensor, a motion sensor and a switch that all report back to the hub. No local turn on of the light. See above for "On Time" as that still sets how long the motion sensor stays active.
 
 Once you set the Lux value then that engages the local light turn on. So at that lux value and below with motion the light will turn on and stay on for the duration of "On Time" as listed above. The motion sensor will also show "active" for this same time period.
+
+There are also custom commands "auto" and "manual".  To use this set your LUX to whatever setting you would like for Auto mode.  Then you can use auto/manual commands in rules/etc to change the mode of the sensor.  Manual mode will essentiall set the LUX to 0 uncoupling the light from the sensor.  Auto mode sets the LUX back to whatever you have selected in settings for LUX.
