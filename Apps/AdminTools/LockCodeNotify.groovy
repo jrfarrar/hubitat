@@ -81,8 +81,9 @@ def uninstalled() {
 
 def subscribeToEvents() {
     if(lock) {
-    //subscribe(lock, "lastCodeName", lockHandler, ["filterEvents": false])
+    subscribe(lock, "lastCodeName", lastCodeHandler, ["filterEvents": false])
     subscribe(lock, "lock.unlocked", lockHandler)    
+    //subscribe(lock, "lastCodeName", lockHandler)            
     }
 }
 
@@ -97,17 +98,26 @@ def subscribeToEvents() {
 
 
 def lockHandler(evt) {
-    debuglog "Unlock event: ${evt.name} : ${evt.descriptionText}"
+    //debuglog "Unlock event: ${evt.name} : ${evt.descriptionText}"
     lastName = lock.currentValue("lastCodeName")
+
     if (evt.descriptionText.contains("unlocked by")) {
-        infolog "$lock.displayName was unlocked by: $lastName"
-        sendPushMessage.deviceNotification("$lock.displayName was unlocked by: $lastName")
-        app.updateLabel("$thisName <span style=\"color:black;\">(${lastName})</span>")        
+        infolog "$lock.displayName was unlocked by: $lastName (using description text)"
+        //sendPushMessage.deviceNotification("$lock.displayName was unlocked by: $lastName")
+        //app.updateLabel("$thisName <span style=\"color:black;\">(${lastName})</span>")        
     } else {
-        infolog "$lock.displayName was unlocked manually or electronically"
+        infolog "$lock.displayName was unlocked manually or electronically (using description text)"
     }
+
 }
 
+def lastCodeHandler(evt) {
+    debuglog "Unlock event: ${evt.name} : ${evt.descriptionText} (lastCodeName evt)"
+    lastName = lock.currentValue("lastCodeName")
+    infolog "$lock.displayName was unlocked by: $lastName (lastCodeName evt)"
+    sendPushMessage.deviceNotification("$lock.displayName was unlocked by: $lastName (lastCodeName evt)")
+    app.updateLabel("$thisName <span style=\"color:black;\">(${lastName})</span>")        
+}
 
 
 /*
