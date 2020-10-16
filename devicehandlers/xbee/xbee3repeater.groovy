@@ -22,9 +22,10 @@
  *    2020-03-09  N0W0n          added 15 and 30 minute departure time
  *    2020-06-22  N0W0n          general house cleaning
  *    2020-06-26  rsjaffe        added temperature monitoring, requires updated main.py
+ *    2020-10-16  jrfarrar       changed to be more of a repeater than presence sensor, decresed reporting times/etc
  */
 metadata {
-    definition (name: "XBee3 Repeater with Temp", namespace: "dan.t", author: "Daniel Terryn") {
+    definition (name: "XBee3 Repeater with Temp", namespace: "jrfarrar", author: " ") {
         capability "Battery"
         capability "Presence Sensor"
         capability "Temperature Measurement"
@@ -178,7 +179,7 @@ private handlePresenceEvent(present) {
 
 private startTimer() {
     if (logDebug) log.debug "Scheduling periodic timer"
-    runEvery1Hour("checkPresenceCallback")
+    runEvery3Hours("checkPresenceCallback")
 }
 
 private stopTimer() {
