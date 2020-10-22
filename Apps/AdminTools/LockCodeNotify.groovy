@@ -112,10 +112,10 @@ def lockHandler(evt) {
 }
 
 def lastCodeHandler(evt) {
-    debuglog "Unlock event: ${evt.name} : ${evt.descriptionText} (lastCodeName evt)"
+    debuglog "Unlock event: ${evt.name} : ${evt.descriptionText}"
     lastName = lock.currentValue("lastCodeName")
-    infolog "$lock.displayName was unlocked by: $lastName (lastCodeName evt)"
-    sendPushMessage.deviceNotification("$lock.displayName was unlocked by: $lastName (lastCodeName evt)")
+    infolog "$lock.displayName was unlocked by: $lastName"
+    sendPushMessage.deviceNotification("$lock.displayName was unlocked by: $lastName")
     app.updateLabel("$thisName <span style=\"color:black;\">(${lastName})</span>")        
 }
 
