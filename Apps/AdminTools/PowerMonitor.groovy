@@ -128,15 +128,20 @@ def powerHandler(evt) {
 void turnOff() {
     if ( tempSwitch.latestValue( "switch" ) != "off" ) {
         state.lastoff = new Date().format("yyyy-MM-dd HH:mm")
+        state.offTime = now()
+        dur = ((state.offTime - state.onTime)/1000)/60
+        state.duration = (dur as double).round(2)        
         infolog "shut off, time: " + state.lastoff
+        infolog "Runtime: ${state.duration} Minutes"
         tempSwitch.off()
-        app.updateLabel("$thisName <span style=\"color:black;\">(${state.lastoff})</span>")
+        app.updateLabel("$thisName <span style=\"color:black;\">(${state.lastoff})(${state.duration}min)</span>")
     } 
 }
 
 void turnOn(){
     if ( tempSwitch.latestValue( "switch" ) != "on" ) {
-        state.laston = new Date().format("yyyy-MM-dd HH:mm:ss")
+        state.laston = new Date().format("yyyy-MM-dd HH:mm")
+        state.onTime = now()
         infolog "turned on, time: " + state.laston
         tempSwitch.on()
         app.updateLabel("$thisName <span style=\"color:green;\">(ON)</span>")
