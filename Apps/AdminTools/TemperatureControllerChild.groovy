@@ -60,10 +60,11 @@ def installed() {
 def updated() {
     infolog "updated"
     initialize()
+    def nowTemp = tempSensor.currentState("temperature").value
     if ( tempSwitch.latestValue( "switch" ) == "on" ) {
-        app.updateLabel("$thisName <span style=\"color:green;\">(ON)</span>")
+        app.updateLabel("$thisName <span style=\"color:green;\">(ON)($nowTemp°)</span>")
     } else {
-        app.updateLabel("$thisName <span style=\"color:red;\">(OFF)</span>")
+        app.updateLabel("$thisName <span style=\"color:red;\">(OFF)($nowTemp°)</span>")
     }
 }
 
@@ -90,39 +91,42 @@ def subscribeToEvents() {
 
 def temperatureHandler(evt) {
     debuglog "temperature: $evt.value, $evt.device"
+    currentTemp = Double.parseDouble(evt.value)
+    //Double.parseDouble(evt.value.replace("%", ""))
+    debuglog "currentTemp: $currentTemp"
 if (canWeRun()) {    
     if (useAsCool) {    
-        if (Double.parseDouble(evt.value.replace("%", "")) <= desiredTemp) {
+        if (currentTemp <= desiredTemp) {
             if ( tempSwitch.latestValue( "switch" ) != "off" ) {
                 infolog "Turning Cooler off"
                 tempSwitch.off()
-                app.updateLabel("$thisName <span style=\"color:red;\">(OFF)</span>")
+                app.updateLabel("$thisName <span style=\"color:red;\">(OFF)($currentTemp°)</span>")
             }
         }
-        else if (Double.parseDouble(evt.value.replace("%", "")) > desiredTemp ) {
+        else if (currentTemp > desiredTemp ) {
             if ( tempSwitch.latestValue( "switch" ) != "on" ) {
                 infolog "Turning Cooler on"
                 tempSwitch.on()
-                app.updateLabel("$thisName <span style=\"color:green;\">(ON)</span>")
+                app.updateLabel("$thisName <span style=\"color:green;\">(ON)($currentTemp°)</span>")
             }  
         }
         else {
             debuglog "Current temp is ${evt.value}"
         }
     } else {
-        //useing as a humidifier
-        if (Double.parseDouble(evt.value.replace("%", "")) <= desiredTemp) {
+        //use as a heater
+        if (currentTemp <= desiredTemp) {
             if ( tempSwitch.latestValue( "switch" ) != "on" ) {
                 infolog "Turning heater on"
                 tempSwitch.on()
-                app.updateLabel("$thisName <span style=\"color:green;\">(ON)</span>")
+                app.updateLabel("$thisName <span style=\"color:green;\">(ON)($currentTemp°)</span>")
             }
         }
-        else if (Double.parseDouble(evt.value.replace("%", "")) > desiredTemp ) {
+        else if (currentTemp > desiredTemp ) {
             if ( tempSwitch.latestValue( "switch" ) != "off" ) {
                 infolog "Turning heater off"
                 tempSwitch.off()
-                app.updateLabel("$thisName <span style=\"color:red;\">(OFF)</span>")
+                app.updateLabel("$thisName <span style=\"color:red;\">(OFF)($currentTemp°)</span>")
             }  
         }
         else {
