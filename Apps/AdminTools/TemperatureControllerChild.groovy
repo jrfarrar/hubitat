@@ -120,14 +120,14 @@ if (canWeRun()) {
                 infolog "Turning heater on"
                 tempSwitch.on()
                 app.updateLabel("$thisName <span style=\"color:green;\">(ON)($currentTemp°)</span>")
-            }
+            } else {app.updateLabel("$thisName <span style=\"color:green;\">(ON)($currentTemp°)</span>")}
         }
         else if (currentTemp > desiredTemp ) {
             if ( tempSwitch.latestValue( "switch" ) != "off" ) {
                 infolog "Turning heater off"
                 tempSwitch.off()
                 app.updateLabel("$thisName <span style=\"color:red;\">(OFF)($currentTemp°)</span>")
-            }  
+            }  else {app.updateLabel("$thisName <span style=\"color:red;\">(OFF)($currentTemp°)</span>")}
         }
         else {
             debuglog "Current temp is ${evt.value}"
