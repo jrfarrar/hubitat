@@ -106,6 +106,7 @@ def powerHandler(evt) {
             state.onTime = now()
             state.running = true
             infolog "pump turned on, time: " + state.lastrun
+            app.updateLabel("$thisName <span style=\"color:green;\">(RUNNING - ${state.lastrun})</span>")
             runIn(60 * tooLong.toInteger(), pumpRunningLong)
             timeToRun = new Date() + xdays.toInteger()
             debuglog "Time to run: " + timeToRun
