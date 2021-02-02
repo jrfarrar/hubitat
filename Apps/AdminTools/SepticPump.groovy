@@ -32,6 +32,7 @@ dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval
   section(getFormat("header-green", "Devices")) {
 		  paragraph "- Turn on switch when Septic Pump hasn't run in X days."
 	      input (name: "pwrClamp", type: "capability.powerMeter", title: "Power Meter", submitOnChange: true, required: true)
+          input (name: "pumpSwitch", type: "capability.switch", title: "Switch to turn on while pump is running?", submitOnChange: true,required: false , multiple: false)      
           input (name: "tempSwitch", type: "capability.switch", title: "Switch to turn on if pump hasn't run in X days?", submitOnChange: true,required: true , multiple: false)
           input (name: "watts", type: "number", title: "Watt trigger?", required: true)
           input (name: "xdays", type: "number", title: "How many days without pump running?", required: true)
@@ -106,6 +107,7 @@ def powerHandler(evt) {
             state.onTime = now()
             state.running = true
             infolog "pump turned on, time: " + state.lastrun
+            if (pumpSwitch) { pumpSwitch.on() }
             app.updateLabel("$thisName <span style=\"color:green;\">(RUNNING - ${state.lastrun})</span>")
             runIn(60 * tooLong.toInteger(), pumpRunningLong)
             timeToRun = new Date() + xdays.toInteger()
@@ -125,6 +127,7 @@ def powerHandler(evt) {
             state.duration = (dur as double).round(2)
             infolog "shut off, time: " + state.lastoff
             infolog "run time in minutes: " + state.duration
+            if (pumpSwitch) { pumpSwitch.off() }
             unschedule(pumpRunningLong)
             if ( tooLongSwitch.latestValue( "switch" ) != "off" ) {
                 tooLongSwitch.off()
