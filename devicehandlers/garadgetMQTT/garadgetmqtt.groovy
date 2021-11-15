@@ -4,6 +4,7 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.4.2 - 11/15/21 - settings update(show/hide) fixed retryTime (should have been seconds not minutes)
  * 1.4.1 - 06/18/20 - log tweaking and code efficiency for scheduled refreshes
  * 1.4.0 - 06/15/20 - added scheduling for refresh and reconnect, log streamlining
  * 1.3.3 - 06/15/20 - minor logging fix
@@ -43,40 +44,46 @@ preferences {
         input name: "ipPort", type: "text", title: "Port # of MQTT broker", defaultValue: "1883", required: true
         input name: "username", type: "text", title: "MQTT Username:", description: "(blank if none)", required: false
 	    input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)", required: false
-        input name: "retryTime", type: "number", title: "Number of minutes between retries to connect if broker goes down", defaultValue: 5, required: true
+        input name: "retryTime", type: "number", title: "Number of seconds between retries to connect if broker goes down", defaultValue: 300, required: true
         input name: "refreshStats", type: "bool", title: "Refresh Garadget stats on a schedule?", defaultValue: false, required: true
         input name: "refreshTime", type: "number", title: "If using refresh, refresh this number of minutes", defaultValue: 5, range: "1..59", required: true
         input name: "watchDogSched", type: "bool", title: "Check for connection to MQTT broker on a schedule?", defaultValue: false, required: true
         input name: "watchDogTime", type: "number", title: "This number of minutes to check for connection to MQTT broker", defaultValue: 15, range: "1..59", required: true
+        input name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum", options: getLogLevels(), submitOnChange : false, defaultValue : "1"
+        input name: "ShowAllPreferences", type: "bool", title: "<b>Show Garadget device settings?</b>These change settings on the device itself through MQTT", defaultValue: false
         }
+   if( ShowAllPreferences ){
     section("Settings for Garadget"){
         // put configuration here
-        if (doorName && ipAddr && ipPort) input ( "rdt", "number", title: "sensor scan interval in mS (200-60,000, default 1,000)", defaultValue: 1000,range: "200..60000", required: false)
-        if (doorName && ipAddr && ipPort) input ( "mtt", "number", title: "door moving time in mS from completely opened to completely closed (1,000 - 120,000, default 10,000)", defaultValue: 10000,range: "1000..120000", required: false)
-        if (doorName && ipAddr && ipPort) input ( "rlt", "number", title: "button press time mS, time for relay to keep contacts closed (10-2,000, default 300)", defaultValue: 300,range: "10..2000", required: false)
-        if (doorName && ipAddr && ipPort) input ( "rlp", "number", title: "delay between consecutive button presses in mS (10-5,000 default 1,000)", defaultValue: 1000,range: "10..5000", required: false)
-        if (doorName && ipAddr && ipPort) input ( "srt", "number", title: "reflection threshold below which the door is considered open (1-80, default 25)", defaultValue: 25,range: "1..80", required: false)
+        if (doorName && ipAddr && ipPort) input ( "rdt", "number", title: "<b>GARADGET: sensor scan interval in mS</b> (200-60,000, default 1,000)", defaultValue: 1000,range: "200..60000", required: false)
+        if (doorName && ipAddr && ipPort) input ( "mtt", "number", title: "<b>GARADGET: door moving time in mS from completely opened to completely closed</b> (1,000 - 120,000, default 10,000)", defaultValue: 10000,range: "1000..120000", required: false)
+        if (doorName && ipAddr && ipPort) input ( "rlt", "number", title: "<b>GARADGET: button press time mS, time for relay to keep contacts closed</b> (10-2,000, default 300)", defaultValue: 300,range: "10..2000", required: false)
+        if (doorName && ipAddr && ipPort) input ( "rlp", "number", title: "<b>GARADGET: delay between consecutive button presses in mS</b> (10-5,000 default 1,000)", defaultValue: 1000,range: "10..5000", required: false)
+        if (doorName && ipAddr && ipPort) input ( "srt", "number", title: "<b>GARADGET: reflection threshold below which the door is considered open</b> (1-80, default 25)", defaultValue: 25,range: "1..80", required: false)
         //Topic name is broken in current version(1.20) of Garadget firmware. It uses the Door Name
         //if (doorName) input ( "nme", "text", title: "device name to be used in MQTT topic. If cloud connection enabled, at reboot this value will be overwritten with the one saved in cloud via the app", required: false)
         //Not positive of how to cast this bitmap in HE so leaving this commented out for now
         //if (doorName) input ( "mqtt", "text", title: "bitmap 0x01 - cloud enabled, 0x02 - mqtt enabled, 0x03 - cloud and mqtt enabled", defaultValue: "0x03", required: false)
-        if (doorName && ipAddr && ipPort) input ( "mqip", "text", title: "*CAUTION: This can break your connection*\n MQTT broker IP address(IP for Garadget to connect to)", required: false)
-        if (doorName && ipAddr && ipPort) input ( "mqpt", "number", title: "*CAUTION: This can break your connection*\n MQTT broker port number(port for Garadget to connect to)", required: false)
+        if (doorName && ipAddr && ipPort) input ( "mqip", "text", title: "<b>GARADGET: *CAUTION: This can break your connection*\n MQTT broker IP address(IP for Garadget to connect to)</b>", required: false)
+        if (doorName && ipAddr && ipPort) input ( "mqpt", "number", title: "<b>GARADGET: *CAUTION: This can break your connection*\n MQTT broker port number(port for Garadget to connect to)</b>", required: false)
         //Leaving username commented out as no need to change it since you can't change password via MQTT
         //if (doorName) input ( "mqus", "text", title: "MQTT user", required: false)
-        if (doorName && ipAddr && ipPort) input ( "mqto", "number", title: "MQTT timeout (keep alive) in seconds", defaultValue: 15, required: false)
+        if (doorName && ipAddr && ipPort) input ( "mqto", "number", title: "<b>GARADGET: MQTT timeout (keep alive) in seconds</b>", defaultValue: 15, required: false)
         }
+   }
+    /*
     section("Logging"){
         //logging
         input(name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum", options: getLogLevels(), submitOnChange : false, defaultValue : "1")
         }
+    */
      }
   }
 }
 
 def setVersion(){
     //state.name = "Garadget MQTT"
-	state.version = "1.4.1 - Garadget MQTT Device Handler version"   
+	state.version = "1.4.2 - Garadget MQTT Device Handler version"   
 }
 
 void installed() {
@@ -349,8 +356,9 @@ void mqttClientStatus(String message) {
         connectionLost()
     }
 }
-//if connection is dropped, try to reconnect every (retryTime) minutes until the connection is back
+//if connection is dropped, try to reconnect every (retryTime) seconds until the connection is back
 void connectionLost(){
+    //convert to milliseconds
     delayTime = retryTime * 1000
     while(!interfaces.mqtt.isConnected()) {
         infolog "connection lost attempting to reconnect..."
