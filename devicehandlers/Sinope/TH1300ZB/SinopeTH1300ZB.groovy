@@ -63,7 +63,8 @@ def updated() {
         if(prefLogging) log.error "updated(): Error unschedule() - ${errMsg}"
     }
     runIn(1,configure)
-    runEvery3Hours(configure)  
+    //originally this was scheduled to run every three hours...I don't know why. JRF
+    //runEvery3Hours(configure)  
     try{
         state.remove("displayClock")
         state.remove("hideClock")
@@ -129,7 +130,7 @@ private createCustomMap(descMap){
             map.value = getTemperature(descMap.value)
             map.unit = "°${location.temperatureScale}"
             sendEvent("name": "thermostatSetpoint", "value": getTemperature(descMap.value), "unit": "°${location.temperatureScale}")
-            if(prefLogging) log.info "heatingSetpoint: ${map.value}"
+            //if(prefLogging) log.info "heatingSetpoint: ${map.value}"
             
         } else if (descMap.cluster == "0201" && descMap.attrId == "0015") {
             map.name = "heatingSetpointRangeLow"
