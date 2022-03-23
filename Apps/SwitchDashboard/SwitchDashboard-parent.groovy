@@ -242,8 +242,10 @@ def subscribeToEvents() {
     }
 }
 def forceResetEvent(evt) {
+    state.remove("leds")
     logDebug "Refresh Dashboard called from switch being turned on"
-    refreshDashboard()
+    doRefreshDashboard()
+    //refreshDashboard()
 }
 
 /**
