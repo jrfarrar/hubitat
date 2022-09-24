@@ -28,6 +28,7 @@ Map mainPage() {
 			input "switches", "capability.switch", title: "Switches to turn off", multiple: true
 			paragraph "For the trigger use a Virtual Switch with auto-off enabled, turning it on fires the main off command for the switches above"
 			input "trigger", "capability.switch", title: "Trigger switch"
+            input "force", "bool", title: "Force turning off all devices first then retry", devaultValue: False, submitOnChange: true
 			input "retry", "number", title: "Select retry interval in seconds (default 1 second)", defaultValue: 1, submitOnChange: true, width: 4
 			input "maxRetry", "number", title: "Maximum number of retries?", defaultValue: 5, submitOnChange: true, width: 4
 			input "meter", "number", title: "Use metering (in milliseconds)", width: 4
@@ -56,6 +57,7 @@ void handler(evt) {
 }
 
 void turnOffi() {
+    if (force) {
 		List whichOffi = []
 		switches.each{
 			it.off() 
@@ -63,7 +65,8 @@ void turnOffi() {
 			if(meter) pause(meter)
 			}
 		log.info "Switches sent forced off commands: ${"$whichOffi" - "[" - "]"}"
-        turnOff()
+    }
+    turnOff()
 }
 
 
