@@ -58,6 +58,7 @@ void handler(evt) {
 
 void turnOffi() {
     if (force) {
+        log.info "Forced turned on, sending off command to all switches"
 		List whichOffi = []
 		switches.each{
 			it.off() 
