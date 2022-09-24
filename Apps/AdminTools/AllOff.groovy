@@ -1,7 +1,7 @@
 /**
  *  All Off Child
  *
- * 1.0 - 09/24/22 - Added forced off to this for the Room Lights Activators
+ * 1.0 - 09/24/22 - Added forced off for devices that don't report state well
  */
 
 definition(
