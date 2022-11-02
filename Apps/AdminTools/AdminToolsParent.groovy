@@ -43,6 +43,8 @@ def mainPage() {
                 app(name: "childApps", appName: "Power Handler Child", namespace: "jrfarrar", title: "New Power Handler Instance", multiple: true)
                 //Lock Code Notifier Child
                 app(name: "childApps", appName: "Lock Code Notify Child", namespace: "jrfarrar", title: "New Lock Code Notify Instance", multiple: true)
+                //All Off
+                app(name: "childApps", appName: "All Off Child", namespace: "jrfarrar", title: "New All Off Instance", multiple: true)
         	}
     	}
     }
