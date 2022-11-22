@@ -4,6 +4,7 @@
  *  J.R. Farrar (jrfarrar)
  *
  * 1.1.0 - 08/20/22 - Initial Release
+ * 1.2.0 - 11/22/22 - Added active,inactive commands
  */
 
 metadata {
