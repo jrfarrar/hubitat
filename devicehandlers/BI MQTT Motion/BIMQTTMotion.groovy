@@ -10,8 +10,7 @@ metadata {
     definition (name: "BI MQTT Motion", 
                 namespace: "jrfarrar", 
                 author: "J.R. Farrar",
-               //importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/garadgetMQTT/garadgetmqtt.groovy"
-               ) {
+                importUrl: "https://github.com/jrfarrar/hubitat/blob/master/devicehandlers/BI%20MQTT%20Motion/BIMQTTMotion.groovy") {
         capability "Initialize"
         capability "Refresh"
         capability "Configuration"
@@ -19,6 +18,9 @@ metadata {
         capability "Motion Sensor"
         
         attribute "type", "string"
+        
+        command "active"
+        command "inactive"
 
 /*
         attribute "status", "string"
@@ -344,6 +346,14 @@ def stop(){
     interfaces.mqtt.publish("garadget/${doorName}/command", "stop")
 }
 */
+void active(){
+    infolog "active called"
+    sendEvent(name: "motion", value: "active")
+}
+void inactive(){
+    infolog "inactive called"
+    sendEvent(name: "motion", value: "inactive")
+}
 
 /*
 void on() {
