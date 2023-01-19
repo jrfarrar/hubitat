@@ -123,10 +123,12 @@ def subscribeToEvents() {
 def eventHandler(evt) {
     debuglog "eventHandler called"
     if (canWeRun()) {
-        infolog "Switch or sensor: " + evt.device + " triggered"
+        debuglog "Switch or sensor: " + evt.device        
+        infolog "triggered"
         sendHttp()
     } else {
-        infolog "Switch or sensor: " + evt.device + ": Restrictions - not running"
+        debuglog "Switch or sensor: " + evt.device
+        infolog "Restrictions - not running"
     }
 }
 
@@ -180,6 +182,7 @@ def sendHttp() {
             }
      }
     
+    pauseExecution(1000)
     def myString2 = "${settings.BIcommand2}"
     myString2 = myString2?.trim()
     if (myString2 != "null") {
@@ -197,7 +200,8 @@ def sendHttp() {
      } else {
         debuglog "no command 2"
     }
-
+    
+    pauseExecution(1000)
     def myString3 = "${settings.BIcommand3}"
     myString3 = myString3?.trim()
     if (myString3 != "null") {
@@ -216,6 +220,7 @@ def sendHttp() {
         debuglog "no command 3"
     }
     
+    pauseExecution(1000)
     def myString4 = "${settings.BIcommand4}"
     myString4 = myString4?.trim()
     if (myString4 != "null") {
@@ -267,6 +272,7 @@ def timeOut() {
         debuglog "no command 1 after delay"
     }
     
+    pauseExecution(1000)
     debuglog "Command #2 ad"
     def myString2ad = "${settings.BIcommand2ad}"
     myString2ad = myString2ad?.trim()
@@ -285,6 +291,7 @@ def timeOut() {
         debuglog "no command 2 after delay"
     }
     
+    pauseExecution(1000)
     debuglog "Command #3 ad"
     def myString3ad = "${settings.BIcommand3ad}"
     myString3ad = myString3ad?.trim()
@@ -303,6 +310,7 @@ def timeOut() {
         debuglog "no command 3 after delay"
     }
     
+    pauseExecution(1000)
     debuglog "Command #4 ad"
     def myString4ad = "${settings.BIcommand4ad}"
     myString4ad = myString4ad?.trim()
