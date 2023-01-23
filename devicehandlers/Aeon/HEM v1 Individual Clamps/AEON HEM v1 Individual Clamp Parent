@@ -134,6 +134,7 @@ metadata {
 			range: "0..65000",
 			required: false,
 			displayDuringSetup: true
+        input(name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum",options: getLogLevels(),submitOnChange : false,defaultValue : "1")
     }
     
 }
@@ -146,20 +147,7 @@ def installed() {
 }
 
 def updated() {
-    log.debug "updated"
-    
-    if (!childDevices) {
-        createChildDevices()
-    }
-    else if (device.label != state.oldLabel) {
-        childDevices.each {
-            def newLabel = "$device.displayName (CH${channelNumber(it.deviceNetworkId)})"
-            it.setLabel(newLabel)
-        }
-  
-        state.oldLabel = device.label
-    }
-
+    infolog "updated"
 	configure()
 	resetDisplay()
 	refresh()
@@ -173,7 +161,7 @@ def parse(String description) {
 		result = createEvent(zwaveEvent(cmd))
 	}
 	if (result) {
-		//log.debug "Parse returned ${result?.descriptionText}"
+		//debuglog "Parse returned ${result?.descriptionText}"
 		return result
 	} else {
 	}
@@ -185,17 +173,21 @@ def parse(String description) {
     def cmd = zwave.parse(description, [0x60:3])
     if (cmd) {
         result += zwaveEvent(cmd)
-        //log.debug "Parsed ${cmd} to ${result.inspect()}"
+        //debuglog "Parsed ${cmd} to ${result.inspect()}"
     } else {
-        log.debug "Non-parsed event: ${description}"
+        debuglog "Non-parsed event: ${description}"
     }
     
-    def now
-    if(location.timeZone)
-    now = new Date().format("yyyy MMM dd EEE h:mm:ss a", location.timeZone)
-    else
-    now = new Date().format("yyyy MMM dd EEE h:mm:ss a")
-    sendEvent(name: "lastActivity", value: now, displayed:false)
+    def iscommand = zwaveEvent(cmd)
+    if (iscommand) {
+        def now
+        if(location.timeZone)
+        now = new Date().format("yyyy MMM dd EEE h:mm:ss a", location.timeZone)
+        else
+        now = new Date().format("yyyy MMM dd EEE h:mm:ss a")
+        sendEvent(name: "lastActivity", value: now, displayed:false)
+        debuglog "CMD: ${iscommand}"
+    }
     
     return result
 }
@@ -256,7 +248,7 @@ def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
 	    					[name: "powerOne", value: newValue, unit: "", descriptionText: "L1 Power: ${newValue} Watts"]
                             sendEvent(name: "powerOne", value: state.powerL1, unit: "W")
                         
-                            /* */
+                            /* */ 
                             childDevices.each {
 		    					childDevice ->
                    					if (childDevice.deviceNetworkId == "$device.deviceNetworkId-1") {
@@ -269,7 +261,7 @@ def zwaveEvent(hubitat.zwave.commands.multichannelv3.MultiChannelCmdEncap cmd) {
                             dispValue = "Total\n"+state.powerValue+"\nWatts"	// Total watts label
                             sendEvent(name: "powerDisp", value: dispValue as String, unit: "", descriptionText: "Display Power: ${state.powerValue} Watts", displayed: false)
                             sendEvent(name: "power", value: state.powerValue, unit: "W")
-                            //log.debug "UPDATED: " + state.powerValue
+                            //debuglog "UPDATED: " + state.powerValue
                         }    
 					}
 				}
@@ -340,18 +332,18 @@ def zwaveEvent(hubitat.zwave.commands.batteryv1.BatteryReport cmd) {
 	else {
 		map.value = cmd.batteryLevel
 	}
-	//log.debug map
+	//debuglog map
 	return map
 }
 
 def zwaveEvent(hubitat.zwave.Command cmd) {
 	// Handles all Z-Wave commands we aren't interested in
-    log.debug "Unhandled event ${cmd}"
+    debuglog "Unhandled event ${cmd}"
 	[:]
 }
 
 def refresh() {			// Request HEMv2 to send us the latest values for the 4 we are tracking
-	log.debug "refresh()"
+	infolog "refresh()"
     
 	delayBetween([
 		zwave.meterV2.meterGet(scale: 0).format(),		// Change 0 to 1 if international version
@@ -361,12 +353,12 @@ def refresh() {			// Request HEMv2 to send us the latest values for the 4 we are
 }
 
 def poll() {
-	log.debug "poll()"
+	infolog "poll()"
 	refresh()
 }
 
 def resetDisplay() {
-	log.debug "resetDisplay()"
+	infolog "resetDisplay()"
 	
     sendEvent(name: "powerDisp", value: "Total\n" + state.powerValue + "\nWatts", unit: "W")
     sendEvent(name: "energyDisp", value: "Total\n" + state.energyValue + "\nkWh", unit: "kWh")
@@ -380,7 +372,7 @@ def resetDisplay() {
 }
 
 def reset() {
-	log.debug "reset()"
+	infolog "reset()"
 	
     state.energyValue = ""
     state.powerValue = ""
@@ -401,7 +393,7 @@ def reset() {
 }
 
 def configure() {
-	log.debug "configure()"
+	infolog "configure()"
     
 	Long kwhDelay = settings.kWhDelay as Long
     Long wDelay = settings.wDelay as Long
@@ -418,8 +410,8 @@ def configure() {
     
 	// Perform a complete factory reset. Use this all by itself and comment out all others below.
 	// Once reset, comment this line out and uncomment the others to go back to normal
-//	zwave.configurationV1.configurationSet(parameterNumber: 255, size: 4, scaledConfigurationValue: 1).format()
-    	
+       //zwave.configurationV1.configurationSet(parameterNumber: 255, size: 4, scaledConfigurationValue: 1).format()
+   	
         zwave.configurationV1.configurationSet(parameterNumber: 1, size: 2, scaledConfigurationValue: voltageValue).format(),		// assumed voltage
 		zwave.configurationV1.configurationSet(parameterNumber: 3, size: 1, scaledConfigurationValue: reportType).format(),			// Disable (=0) selective reporting
 		zwave.configurationV1.configurationSet(parameterNumber: 4, size: 2, scaledConfigurationValue: wattsChangedWhole).format(),			// Don't send whole HEM unless watts have changed by 1
@@ -442,18 +434,20 @@ def configure() {
 	], 2000)
 	
     
-	log.debug cmd
+	infolog cmd
 	cmd
 }
 
+
 def recreateChildDevices() {
-    log.debug "recreateChildDevices"
+    infolog "recreateChildDevices"
     deleteChildren()
     createChildDevices()
 }
 
+
 def deleteChildren() {
-	log.debug "deleteChildren"
+	infolog "deleteChildren"
 	def children = getChildDevices()
     
     children.each {child->
@@ -462,9 +456,34 @@ def deleteChildren() {
 }
 
 private void createChildDevices() {
-    log.debug "createChildDevices"
+    infolog "createChildDevices"
     
     for (i in 1..2) {
         addChildDevice("jrfarrar", "AEON HEM V1 (Child)", "$device.deviceNetworkId-$i", [name: "ch$i", label: "$device.displayName $i", isComponent: true])
     }
 }
+
+def debuglog(statement)
+{   
+	def logL = 0
+    if (logLevel) logL = logLevel.toInteger()
+    if (logL == 0) {return}//bail
+    else if (logL >= 2)
+	{
+		log.debug("$thisName: " + statement)
+	}
+}
+def infolog(statement)
+{       
+	def logL = 0
+    if (logLevel) logL = logLevel.toInteger()
+    if (logL == 0) {return}//bail
+    else if (logL >= 1)
+	{
+		log.info("$thisName: " + statement)
+	}
+}
+def getLogLevels(){
+    return [["0":"None"],["1":"Running"],["2":"NeedHelp"]]
+}
+
