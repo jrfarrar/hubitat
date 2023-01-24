@@ -102,10 +102,10 @@ def powerHandler(evt) {
   if (rndPower < 10000){
     if (rndPower > watts) {
         if (state.running == false) {
+            state.running = true
             unschedule(itsBeenSevenDays)
             state.lastrun = new Date().format("yyyy-MM-dd HH:mm:ss")
             state.onTime = now()
-            state.running = true
             infolog "pump turned on, time: " + state.lastrun
             if (pumpSwitch) { pumpSwitch.on() }
             app.updateLabel("$thisName <span style=\"color:green;\">(RUNNING - ${state.lastrun})</span>")
