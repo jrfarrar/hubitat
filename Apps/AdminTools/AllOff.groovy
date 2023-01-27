@@ -88,7 +88,11 @@ void turnOff() {
 			log.info "Switches sent off commands: ${"$whichOff" - "[" - "]"}"
 			atomicState.retry++
 			if(atomicState.retry < maxRetry) runIn(retry, turnOff)
-			else log.info "Stopped after $maxRetry attempts: ${"$whichOff" - "[" - "]"} still on"
+                else {
+                    log.info "Stopped after $maxRetry attempts: ${"$whichOff" - "[" - "]"} still on"
+                    state.lastoff = new Date().format("yyyy-MM-dd HH:mm")
+                    app.updateLabel("$appName <span style=\"color:black;\">(${state.lastoff})(STOPPED)</span>")   
+                }
         } else { 
             log.info "All switches reported off"
             state.lastoff = new Date().format("yyyy-MM-dd HH:mm")
