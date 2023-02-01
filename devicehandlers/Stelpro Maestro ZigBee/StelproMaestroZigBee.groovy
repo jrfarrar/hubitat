@@ -51,7 +51,7 @@ metadata {
         input name: "logEnable", type: "bool", title: "Enable debug logging", defaultValue: true
     }
 }
-    
+import groovy.json.JsonOutput    
 
 def parse(String description) {
     logDebug "Parse description $description"
@@ -157,8 +157,8 @@ def configure(){
     //sendEvent(name: "supportedThermostatFanModes", value: "on, auto")
     
     //new way
-    setSupportedThermostatFanModes(groovy.json.JsonOutput.toJson(["auto","on"]))
-	setSupportedThermostatModes(groovy.json.JsonOutput.toJson(["auto", "emergency heat", "heat", "off"]))
+    setSupportedThermostatFanModes(JsonOutput.toJson(["auto","on"]))
+    setSupportedThermostatModes(JsonOutput.toJson(["auto", "emergency heat", "heat", "off"]))
 
     updateDataValue("lastRunningMode", "heat") // heat is the only compatible mode for this device
     
