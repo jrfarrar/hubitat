@@ -125,10 +125,10 @@ void parse(String description) {
                 } else {
                     debuglog "Empty payload: message"
                 }
-            } else if (myTopic == "type") {
+            } 
+        } else if (myTopic == "type") {
                 infolog "Type: " + myTopic
-                sendEvent(name: "type", value: message)
-            }
+            sendEvent(name: "type", value: message) 
         }
     }
     
