@@ -9,6 +9,7 @@
  *
  * 1.0.0 - 11/08/25 - Initial Release for Shelly BLU Distance
  * 1.1.0 - 11/08/25 - Added optional inches display
+ * 1.2.0 - 11/08/25 - Added threshold-based switch capability
  */
 
 metadata {
@@ -20,6 +21,7 @@ metadata {
         capability "Refresh"
         capability "Configuration"
         capability "Sensor"
+        capability "Switch"
         
         attribute "distance", "number"
         attribute "distanceCm", "number"
@@ -27,6 +29,9 @@ metadata {
         attribute "battery", "number"
         attribute "rssi", "number"
         attribute "lastUpdate", "string"
+        
+        command "on"
+        command "off"
 
 preferences {
     section("Settings for connection from HE to Broker") {
@@ -41,18 +46,24 @@ preferences {
         input name: "watchDogTime", type: "number", title: "This number of minutes to check for connection to MQTT broker", defaultValue: 15, range: "1..59", required: true
         input name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum", options: getLogLevels(), submitOnChange : false, defaultValue : "1"
         }
+    section("Threshold Switch Settings") {
+        input name: "enableThreshold", type: "bool", title: "Enable switch based on distance threshold?", defaultValue: false, required: true
+        input name: "thresholdValue", type: "number", title: "Threshold value", defaultValue: 50, required: false, description: "Switch turns ON when distance exceeds this value"
+        input name: "thresholdUnit", type: "enum", title: "Threshold unit", options: ["mm", "cm", "in"], defaultValue: "cm", required: false
+        }
      }
   }
 }
 
 def setVersion(){
     state.name = "Shelly BLU Distance MQTT"
-	state.version = "1.1.0 - Shelly BLU Distance MQTT Device Handler"   
+	state.version = "1.2.0 - Shelly BLU Distance MQTT Device Handler"   
 }
 
 void installed() {
     log.warn "installed..."
     setVersion()
+    sendEvent(name: "switch", value: "off")
 }
 
 // Parse incoming device messages to generate events
@@ -125,6 +136,11 @@ void parseBTHomeData(bleData) {
         
         sendEvent(name: "distance", value: distanceMm, unit: "mm")
         sendEvent(name: "distanceCm", value: distanceCm, unit: "cm")
+        
+        // Check threshold and update switch state
+        if (enableThreshold) {
+            evaluateThreshold(distanceMm, distanceCm)
+        }
     }
     
     // Parse battery level
@@ -150,8 +166,69 @@ void refresh(){
     infolog "Refresh called - waiting for next MQTT update..."
 }
 
+void evaluateThreshold(distanceMm, distanceCm) {
+    if (!thresholdValue) {
+        debuglog "No threshold value set"
+        return
+    }
+    
+    // Convert distance to the threshold unit for comparison
+    def compareValue
+    switch(thresholdUnit) {
+        case "mm":
+            compareValue = distanceMm
+            break
+        case "cm":
+            compareValue = distanceCm
+            break
+        case "in":
+            compareValue = new BigDecimal(distanceMm / 25.4).setScale(2, BigDecimal.ROUND_HALF_UP)
+            break
+        default:
+            compareValue = distanceCm
+    }
+    
+    def currentSwitch = device.currentValue("switch") ?: "off"
+    
+    // Switch ON when distance exceeds threshold
+    // Switch OFF when distance goes below threshold
+    if (compareValue > thresholdValue && currentSwitch != "on") {
+        infolog "Distance ${compareValue}${thresholdUnit} exceeds threshold ${thresholdValue}${thresholdUnit} - turning switch ON"
+        sendEvent(name: "switch", value: "on")
+    } else if (compareValue <= thresholdValue && currentSwitch != "off") {
+        infolog "Distance ${compareValue}${thresholdUnit} below threshold ${thresholdValue}${thresholdUnit} - turning switch OFF"
+        sendEvent(name: "switch", value: "off")
+    }
+}
+
+// These commands are for Switch capability - they update state but warn that it's normally threshold-controlled
+void on() {
+    infolog "Manual ON command received"
+    sendEvent(name: "switch", value: "on")
+    if (enableThreshold) {
+        log.warn "Note: Switch is configured to be controlled by distance threshold"
+    }
+}
+
+void off() {
+    infolog "Manual OFF command received"
+    sendEvent(name: "switch", value: "off")
+    if (enableThreshold) {
+        log.warn "Note: Switch is configured to be controlled by distance threshold"
+    }
+}
+
 void updated() {
     infolog "updated..."
+    
+    // Initialize switch state if threshold is enabled
+    if (enableThreshold) {
+        if (device.currentValue("switch") == null) {
+            sendEvent(name: "switch", value: "off")
+            infolog "Initialized switch state to OFF"
+        }
+    }
+    
     configure()
     unschedule()
     pauseExecution(1000)
@@ -171,6 +248,13 @@ void uninstalled() {
 
 void initialize() {
     infolog "initialize..."
+    
+    // Initialize switch state if threshold is enabled
+    if (enableThreshold && device.currentValue("switch") == null) {
+        sendEvent(name: "switch", value: "off")
+        infolog "Initialized switch state to OFF"
+    }
+    
     try {
         // Open connection
         def mqttInt = interfaces.mqtt
