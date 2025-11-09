@@ -4,11 +4,11 @@
  *	Author: J.R. Farrar
  * 
  *  Monitors a device's power cycling pattern and triggers a switch
- *  if the device continues to cycle on/off (indicating it was left on)
+ *  if the device continues to cycle on/off (indicating it is ON)
  *
  *  V 1.0 - 2025-11-08 - Initial Release
  * 
- */ 
+ */
 
 definition(
   name: "Power Cycle Monitor Child",
@@ -168,11 +168,11 @@ def evaluateCyclePattern() {
     def cyclesInWindow = state.cycleHistory?.size() ?: 0
     
     if (cyclesInWindow >= cycleCount && !state.leftOnDetected) {
-        // Device has cycled enough times - it's "left on"
+        // Device has cycled enough times - it's "ON"
         state.leftOnDetected = true
         state.alertTime = new Date().format("yyyy-MM-dd HH:mm:ss")
         
-        infolog "ALERT: Device has cycled ${cyclesInWindow} times in ${timeWindow} minutes! Device appears to be LEFT ON."
+        infolog "ALERT: Device has cycled ${cyclesInWindow} times in ${timeWindow} minutes! Device appears to be ON."
         
         if (alertSwitch.latestValue("switch") != "on") {
             alertSwitch.on()
@@ -233,7 +233,7 @@ def updateAppLabel() {
     
     if (state.leftOnDetected) {
         // Alert has been triggered
-        label += " <span style=\"color:red;\">(LEFT ON - ${cyclesInWindow} cycles - ${state.alertTime})</span>"
+        label += " <span style=\"color:red;\">(ON - ${cyclesInWindow} cycles - ${state.alertTime})</span>"
     } else if (cyclesInWindow > 0) {
         // Cycles detected but not enough yet
         def remaining = cycleCount - cyclesInWindow
