@@ -183,7 +183,7 @@ def evaluateCyclePattern() {
 
 def checkDeviceOff() {
     // This runs if no activity for offTimeout minutes
-    def minutesSinceActivity = Math.round(((now() - state.lastActivity) / 1000.0 / 60.0) * 10) / 10.0
+    def minutesSinceActivity = new BigDecimal((now() - state.lastActivity) / 1000.0 / 60.0).setScale(1, BigDecimal.ROUND_HALF_UP)
     
     infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF."
     
