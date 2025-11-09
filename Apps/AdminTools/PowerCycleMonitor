@@ -1,0 +1,276 @@
+/*
+ *	Power Cycle Monitor
+ *
+ *	Author: J.R. Farrar
+ * 
+ *  Monitors a device's power cycling pattern and triggers a switch
+ *  if the device continues to cycle on/off (indicating it was left on)
+ *
+ *  V 1.0 - 2025-11-08 - Initial Release
+ * 
+ */
+
+definition(
+  name: "Power Cycle Monitor Child",
+  namespace: "jrfarrar",
+  author: "J.R. Farrar",
+  description: "Monitor power cycling and trigger switch if device is left on",
+  parent: "jrfarrar:Admin tools",    
+  iconUrl: "",
+  iconX2Url: "",
+  iconX3Url: "",
+  importUrl: ""
+)
+
+
+preferences {
+    page(name: "pageConfig")
+}
+
+def pageConfig() {
+    dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval:0) { 
+        
+        section(getFormat("header-green", "DEVICES")) {
+            paragraph "- Monitor a power meter for cycling patterns. If device cycles on/off repeatedly, it indicates it was 'left on'."
+            input (name: "pwrMeter", type: "capability.powerMeter", title: "Power Meter to Monitor", submitOnChange: true, required: true)
+            input (name: "alertSwitch", type: "capability.switch", title: "Switch to turn ON when cycling detected", submitOnChange: true, required: true, multiple: false)
+        }
+        
+        section(getFormat("header-green", "CYCLE DETECTION SETTINGS")) {
+            paragraph "Device is considered 'left on' if it cycles multiple times within a time window"
+            input (name: "watts", type: "number", title: "Watt threshold (power above = ON, below = OFF)", required: true, defaultValue: 100)
+            input (name: "cycleCount", type: "number", title: "Number of cycles to detect", required: true, defaultValue: 3, description: "How many on/off cycles indicate 'left on'")
+            input (name: "timeWindow", type: "number", title: "Time window in minutes", required: true, defaultValue: 30, description: "Cycles must occur within this time window")
+            input (name: "offTimeout", type: "number", title: "Minutes off before considering 'turned off'", required: true, defaultValue: 60, description: "If no cycles for this long, device is considered off")
+        }
+        
+        section(getFormat("header-green", "RESTRICTIONS")) {
+            paragraph "- Optional: Restrict when this monitor is active"
+            input (name: "restrictSwitch", type: "capability.switch", title: "Only run when this switch is ON", submitOnChange: true, required: false, multiple: false)
+            input (name: "noRunModes", type: "mode", title: "Do NOT run in these modes", submitOnChange: true, required: false, multiple: true)
+        }
+        
+        section(getFormat("header-green", "LOGGING")){                       
+            input(name: "logLevel", title: "IDE logging level", multiple: false, required: true, type: "enum", options: getLogLevels(), submitOnChange: false, defaultValue: "1")
+        }
+        
+        section(getFormat("header-green", "APP NAME")){
+            input (name: "thisName", type: "text", title: "App Name", submitOnChange: true)
+            if(thisName) {
+                app.updateLabel("$thisName")
+            } else {
+                app.updateSetting("thisName", "Power Cycle Monitor")
+            }
+        }
+    }  
+} 
+
+def installed() {
+    infolog "installed"
+    initialize()
+}
+
+def updated() {
+    infolog "updated"
+    unsubscribe()
+    unschedule()
+    initialize()
+}
+
+def initialize() {
+    infolog "initialize"
+    unschedule() 
+    unsubscribe()
+    subscribeToEvents()
+    state.deviceOn = false
+    state.cycleHistory = []
+    state.leftOnDetected = false
+    state.lastActivity = now()
+    updateAppLabel()
+}
+
+def uninstalled() {
+    unschedule()
+    unsubscribe()
+    infolog "uninstalled"
+}
+
+def subscribeToEvents() {
+    if (pwrMeter) {
+        subscribe(pwrMeter, "power", powerHandler)
+        infolog "Subscribed to power meter: ${pwrMeter}"
+    }
+}
+
+def powerHandler(evt) {
+    // Check if we can run based on restrictions
+    if (!canWeRun()) {
+        debuglog "Restrictions prevent running"
+        return
+    }
+    
+    dblePower = Double.parseDouble(evt.value)
+    rndPower = dblePower.round(0)
+    debuglog "Power: ${rndPower}W from ${evt.device}"
+    
+    // Sanity check - ignore erroneous readings
+    if (rndPower > 10000) {
+        log.warn "Ignoring erroneous power reading: ${rndPower}W"
+        return
+    }
+    
+    // Update last activity time
+    state.lastActivity = now()
+    
+    // Determine if device is currently ON or OFF
+    def isOn = (rndPower > watts)
+    
+    // Detect state change (cycle)
+    if (isOn && !state.deviceOn) {
+        // Device just turned ON - record a cycle
+        state.deviceOn = true
+        recordCycle()
+        infolog "Device turned ON (${rndPower}W)"
+    } else if (!isOn && state.deviceOn) {
+        // Device just turned OFF
+        state.deviceOn = false
+        infolog "Device turned OFF (${rndPower}W)"
+    }
+    
+    // Check if we've detected enough cycles to indicate "left on"
+    evaluateCyclePattern()
+    
+    // Schedule check for timeout (device truly off)
+    unschedule(checkDeviceOff)
+    runIn(60 * offTimeout.toInteger(), checkDeviceOff)
+}
+
+def recordCycle() {
+    // Add current time to cycle history
+    def currentTime = now()
+    
+    if (!state.cycleHistory) {
+        state.cycleHistory = []
+    }
+    
+    state.cycleHistory.add(currentTime)
+    
+    // Remove old cycles outside the time window
+    def windowMillis = timeWindow * 60 * 1000
+    state.cycleHistory = state.cycleHistory.findAll { cycleTime ->
+        (currentTime - cycleTime) < windowMillis
+    }
+    
+    debuglog "Cycle recorded. Total cycles in last ${timeWindow} minutes: ${state.cycleHistory.size()}"
+}
+
+def evaluateCyclePattern() {
+    def cyclesInWindow = state.cycleHistory?.size() ?: 0
+    
+    if (cyclesInWindow >= cycleCount && !state.leftOnDetected) {
+        // Device has cycled enough times - it's "left on"
+        state.leftOnDetected = true
+        state.alertTime = new Date().format("yyyy-MM-dd HH:mm:ss")
+        
+        infolog "ALERT: Device has cycled ${cyclesInWindow} times in ${timeWindow} minutes! Device appears to be LEFT ON."
+        
+        if (alertSwitch.latestValue("switch") != "on") {
+            alertSwitch.on()
+        }
+        
+        updateAppLabel()
+    }
+}
+
+def checkDeviceOff() {
+    // This runs if no activity for offTimeout minutes
+    def minutesSinceActivity = ((now() - state.lastActivity) / 1000 / 60).round(1)
+    
+    infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF."
+    
+    // Reset everything
+    state.cycleHistory = []
+    state.deviceOn = false
+    state.leftOnDetected = false
+    
+    // Turn off alert switch
+    if (alertSwitch.latestValue("switch") == "on") {
+        infolog "Turning OFF alert switch"
+        alertSwitch.off()
+    }
+    
+    updateAppLabel()
+}
+
+def canWeRun() {
+    def restrictionOk = true
+    def modeOk = true
+    
+    // Check restriction switch
+    if (restrictSwitch) {
+        if (restrictSwitch.currentValue('switch') != 'on') {
+            restrictionOk = false
+            debuglog "Restriction switch is OFF - not running"
+        }
+    }
+    
+    // Check mode restrictions
+    if (noRunModes) {
+        if (noRunModes.contains(location.mode)) {
+            modeOk = false
+            debuglog "Mode ${location.mode} is restricted - not running"
+        }
+    }
+    
+    return (restrictionOk && modeOk)
+}
+
+def updateAppLabel() {
+    if (!thisName) return
+    
+    def label = thisName
+    def cyclesInWindow = state.cycleHistory?.size() ?: 0
+    
+    if (state.leftOnDetected) {
+        // Alert has been triggered
+        label += " <span style=\"color:red;\">(LEFT ON - ${cyclesInWindow} cycles - ${state.alertTime})</span>"
+    } else if (cyclesInWindow > 0) {
+        // Cycles detected but not enough yet
+        def remaining = cycleCount - cyclesInWindow
+        label += " <span style=\"color:orange;\">(${cyclesInWindow}/${cycleCount} cycles - ${remaining} more needed)</span>"
+    } else {
+        // Normal monitoring
+        label += " <span style=\"color:green;\">(Monitoring - No cycles)</span>"
+    }
+    
+    app.updateLabel(label)
+}
+
+def getFormat(type, myText="") {
+    if(type == "header-green") return "<div style='color:#ffffff;font-weight: bold;background-color:#81BC00;border: 1px solid;box-shadow: 2px 3px #A9A9A9'>${myText}</div>"
+    if(type == "line") return "<hr style='background-color:#1A77C9; height: 1px; border: 0;'>"
+    if(type == "title") return "<h2 style='color:#1A77C9;font-weight: bold'>${myText}</h2>"
+    if(type == "title2") return "<div style='color:#1A77C9;font-weight: bold'>${myText}</div>"
+}
+
+def debuglog(statement) {   
+    def logL = 0
+    if (logLevel) logL = logLevel.toInteger()
+    if (logL == 0) {return}
+    else if (logL >= 2) {
+        log.debug("$thisName: " + statement)
+    }
+}
+
+def infolog(statement) {       
+    def logL = 0
+    if (logLevel) logL = logLevel.toInteger()
+    if (logL == 0) {return}
+    else if (logL >= 1) {
+        log.info("$thisName: " + statement)
+    }
+}
+
+def getLogLevels() {
+    return [["0":"None"],["1":"Running"],["2":"NeedHelp"]]
+}
