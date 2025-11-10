@@ -169,6 +169,7 @@ def evaluateCyclePattern() {
     if (cyclesInWindow >= cycleCount && !state.leftOnDetected) {
         // Device has cycled enough times - it's "left on"
         state.leftOnDetected = true
+        state.onStartTime = now()  // Record when device officially turned ON
         state.alertTime = new Date().format("yyyy-MM-dd HH:mm:ss")
         
         infolog "ALERT: Device has cycled ${cyclesInWindow} times in ${timeWindow} minutes! Device appears to be LEFT ON."
@@ -185,7 +186,23 @@ def checkDeviceOff() {
     // This runs if no activity for offTimeout minutes
     def minutesSinceActivity = new BigDecimal((now() - state.lastActivity) / 1000.0 / 60.0).setScale(1, BigDecimal.ROUND_HALF_UP)
     
-    infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF."
+    // Calculate total runtime if device was detected as ON
+    if (state.leftOnDetected && state.onStartTime && state.lastActivity) {
+        def totalRuntimeMinutes = new BigDecimal((state.lastActivity - state.onStartTime) / 1000.0 / 60.0).setScale(1, BigDecimal.ROUND_HALF_UP)
+        def hours = (totalRuntimeMinutes / 60).toInteger()
+        def minutes = (totalRuntimeMinutes % 60).round(1)
+        
+        if (hours > 0) {
+            infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF. Total runtime: ${hours}h ${minutes}m"
+        } else {
+            infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF. Total runtime: ${totalRuntimeMinutes} minutes"
+        }
+        
+        state.lastRuntime = totalRuntimeMinutes
+        state.lastRuntimeDisplay = hours > 0 ? "${hours}h ${minutes}m" : "${totalRuntimeMinutes}m"
+    } else {
+        infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF."
+    }
     
     // Reset everything
     state.cycleHistory = []
@@ -238,8 +255,12 @@ def updateAppLabel() {
         def remaining = cycleCount - cyclesInWindow
         label += " <span style=\"color:orange;\">(${cyclesInWindow}/${cycleCount} cycles - ${remaining} more needed)</span>"
     } else {
-        // Normal monitoring
-        label += " <span style=\"color:green;\">(Monitoring - No cycles)</span>"
+        // Normal monitoring - show last runtime if available
+        if (state.lastRuntimeDisplay) {
+            label += " <span style=\"color:green;\">(Monitoring - Last runtime: ${state.lastRuntimeDisplay})</span>"
+        } else {
+            label += " <span style=\"color:green;\">(Monitoring - No cycles)</span>"
+        }
     }
     
     app.updateLabel(label)
