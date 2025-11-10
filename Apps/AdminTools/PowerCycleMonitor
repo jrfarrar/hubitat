@@ -187,10 +187,13 @@ def checkDeviceOff() {
     def minutesSinceActivity = new BigDecimal((now() - state.lastActivity) / 1000.0 / 60.0).setScale(1, BigDecimal.ROUND_HALF_UP)
     
     // Calculate total runtime if device was detected as ON
-    if (state.leftOnDetected && state.onStartTime && state.lastActivity) {
-        def totalRuntimeMinutes = new BigDecimal((state.lastActivity - state.onStartTime) / 1000.0 / 60.0).setScale(1, BigDecimal.ROUND_HALF_UP)
-        def hours = (totalRuntimeMinutes / 60).toInteger()
-        def minutes = (totalRuntimeMinutes % 60).round(1)
+    if (state.leftOnDetected && state.cycleHistory && state.cycleHistory.size() > 0 && state.lastActivity) {
+        // Get the earliest cycle time (first time device turned on)
+        def firstCycleTime = state.cycleHistory.min()
+        def totalRuntimeMinutes = new BigDecimal((state.lastActivity - firstCycleTime) / 1000.0 / 60.0).setScale(1, BigDecimal.ROUND_HALF_UP)
+        def totalMinutes = totalRuntimeMinutes.toDouble()
+        def hours = (totalMinutes / 60).toInteger()
+        def minutes = new BigDecimal(totalMinutes % 60).setScale(1, BigDecimal.ROUND_HALF_UP)
         
         if (hours > 0) {
             infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF. Total runtime: ${hours}h ${minutes}m"
