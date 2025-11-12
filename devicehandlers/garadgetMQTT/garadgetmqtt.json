@@ -4,7 +4,7 @@
   "version": "1.4.3",
   "minimumHEVersion": "2.1.9",
   "communityLink":"https://community.hubitat.com/t/release-garadget-mqtt-device-handler/43377",
-  "dateReleased": "2021-11-15",
+  "dateReleased": "2025-11-12",
   "releaseNotes": "Code cleanup: fixed syntax error, blocking loop, null safety, variable declarations",
   "drivers": [
     {
@@ -16,5 +16,6 @@
     }
   ]
 }
+
 
 
