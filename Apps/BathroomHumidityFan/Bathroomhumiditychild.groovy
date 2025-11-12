@@ -5,7 +5,6 @@
 *    -Uses TRUE humidity change rate (% per minute) for rapid response
 *    -Timeout option when manaully controled (for stench mitigation)
 *    -Child/Parent with pause/resume (Thanks to Lewis.Heidrick!)
-*  
 *
 *  v1.1.47 - TRUE RATE CALCULATION
 *  - Calculates humidity change rate as % per minute (not simple delta)
@@ -1222,7 +1221,7 @@ def humidityHandlerVariablesBefore() {
 	ifTrace("humidityHandlerVariablesBefore: state.currentHumidityDate = ${state.currentHumidityDate}")
 	ifTrace("humidityHandlerVariablesBefore: state.startingHumidity = ${state.startingHumidity}")
 	ifTrace("humidityHandlerVariablesBefore: state.highestHumidity = ${state.highestHumidity}")
-	ifTrace("humidityHandlerVariablesBefore: state.humidityChangeRate = ${state.humidityChangeRate?.toFloat()?.round(2)}")
+	ifTrace("humidityHandlerVariablesBefore: state.humidityChangeRate = ${state.humidityChangeRate ? String.format('%.2f', state.humidityChangeRate) : 'null'}")
 	ifTrace("humidityHandlerVariablesBefore: state.targetHumidity = ${state.targetHumidity}")
     if (settings.humidityResponseMethod?.contains("3") || settings.humidityResponseMethod?.contains("4")) {
         ifTrace("humidityHandlerVariablesBefore: state.compareHumidity = ${state.compareHumidity}")
@@ -1299,7 +1298,12 @@ def configureHumidityVariables() {
                 // Calculate TRUE rate: change per minute
                 state.humidityChangeRate = humidityChange / timeElapsedMinutes
                 
-                ifTrace("configureHumidityVariables: Humidity changed ${humidityChange.round(2)}% over ${timeElapsedMinutes.round(2)} minutes = ${state.humidityChangeRate.round(2)}% per minute")
+                // Format for logging (avoid BigDecimal.round() issue)
+                def changeStr = String.format("%.2f", humidityChange)
+                def timeStr = String.format("%.2f", timeElapsedMinutes)
+                def rateStr = String.format("%.2f", state.humidityChangeRate)
+                
+                ifTrace("configureHumidityVariables: Humidity changed ${changeStr}% over ${timeStr} minutes = ${rateStr}% per minute")
             } else {
                 // Time too small to calculate rate reliably
                 state.humidityChangeRate = 0.0
@@ -1353,7 +1357,7 @@ def humidityHandlerVariablesAfter() {
 	ifTrace("humidityHandlerVariablesAfter: state.currentHumidityDate = ${state.currentHumidityDate}")
 	ifTrace("humidityHandlerVariablesAfter: state.startingHumidity = ${state.startingHumidity}")
 	ifTrace("humidityHandlerVariablesAfter: state.highestHumidity = ${state.highestHumidity}")
-	ifTrace("humidityHandlerVariablesAfter: state.humidityChangeRate = ${state.humidityChangeRate?.round(2)}")
+	ifTrace("humidityHandlerVariablesAfter: state.humidityChangeRate = ${state.humidityChangeRate ? String.format('%.2f', state.humidityChangeRate) : 'null'}")
 	ifTrace("humidityHandlerVariablesAfter: state.targetHumidity = ${state.targetHumidity}")
     if ((settings.humidityResponseMethod?.contains("3")) || (settings.humidityResponseMethod?.contains("4"))) {
         ifTrace("humidityHandlerVariablesAfter: state.compareHumidity = ${state.compareHumidity}")
