@@ -5,7 +5,7 @@
   "minimumHEVersion": "2.1.9",
   "communityLink":"https://community.hubitat.com/t/release-garadget-mqtt-device-handler/43377",
   "dateReleased": "2021-11-15",
-  "releaseNotes": "settings update(show/hide) fixed retryTime (should have been seconds not minutes)",
+  "releaseNotes": "Code cleanup: fixed syntax error, blocking loop, null safety, variable declarations",
   "drivers": [
     {
       "id": "58801d01-51bd-4116-a271-2e7a7c9e24a0",
@@ -16,4 +16,5 @@
     }
   ]
 }
+
 
