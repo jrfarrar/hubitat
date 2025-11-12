@@ -2,34 +2,39 @@
 *  Bathroom Humidity Fan
 *
 *  Turns on a fan when you start taking a shower... turns it back off when you are done.
-*    -Uses humidity change rate for rapid response
+*    -Uses TRUE humidity change rate (% per minute) for rapid response
 *    -Timeout option when manaully controled (for stench mitigation)
 *    -Child/Parent with pause/resume (Thanks to Lewis.Heidrick!)
 *
-*  Copyright 2018 Craig Romei
-*  GNU General Public License v2 (https://www.gnu.org/licenses/gpl-2.0.txt)
+*  Taken from code by Craig Romei
+*  
 *
-*  CORRECTED VERSION - Issues fixed by code review
+*  v1.1.47 - TRUE RATE CALCULATION
+*  - Calculates humidity change rate as % per minute (not simple delta)
+*  - Prevents false triggers from sensors with varying report intervals
+*  - Example: 5% change over 1 minute = 5%/min (rapid)
+*            5% change over 60 minutes = 0.083%/min (slow)
+*  - All other logic unchanged (proven turn-off approach retained)
 */
 import groovy.transform.Field
 import hubitat.helper.RMUtils
 
 def setVersion() {
-    state.version = "1.1.46" // Race condition fix for turnOffFan state checking
+    state.version = "1.1.47" // Added true rate of change calculation (% per minute)
     state.InternalName = "BathroomHumidityFan"   // this is the name used in the JSON file for this app
 }
 
 definition(
     name: "Bathroom Humidity Fan Child",
-    namespace: "Craig.Romei",
-    author: "Craig Romei",
+    namespace: "jrfarrar",
+    author: "J.R. Farrar",
     description: "Control a fan (switch) based on relative humidity.",
     category: "Convenience",
-    parent: "Craig.Romei:Bathroom Humidity Fan",
+    parent: "jrfarrar:Bathroom Humidity Fan",
     iconUrl: "",
     iconX2Url: "",
     iconX3Url: "",
-    importUrl: "https://raw.githubusercontent.com/napalmcsr/Hubitat_Napalmcsr/master/Apps/BathroomHumidityFan/BathroomHumidityChild.src")
+    importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/refs/heads/master/Apps/BathroomHumidityFan/Bathroomhumiditychild.groovy")
 
 preferences {
     page(name: "mainPage")
@@ -83,8 +88,8 @@ def mainPage() {
         }
     }
 	section("<b><u>Fan Activation</u></b>"){
-        if (detailedInstructions == true) {paragraph "Humidity increase rate: This checks the change between humidity samplings.  The sampling rate is device dependent, room size also plays a large part in how fast the humidity will increase. Typical values are around 3 to 6."}
-        if (settings.humidityResponseMethod?.contains("1") || settings.humidityResponseMethod?.contains("3")) {input "humidityIncreaseRate", "decimal", title: "Humidity Increase Rate, Range: 1-20, Default value: 3", required: true, defaultValue: 3}
+        if (detailedInstructions == true) {paragraph "Humidity increase rate: This is the TRUE rate of humidity change in % per minute. The app calculates how fast humidity is rising by dividing the change by the time elapsed. Room size and ventilation affect this rate. Typical shower values are 3-6% per minute. A sensor reporting every 5 minutes with a 15% increase would calculate as 3%/min."}
+        if (settings.humidityResponseMethod?.contains("1") || settings.humidityResponseMethod?.contains("3")) {input "humidityIncreaseRate", "decimal", title: "Humidity Increase Rate (%/min), Range: 1-20, Default value: 3", required: true, defaultValue: 3}
         if (detailedInstructions == true) {paragraph "Humidity threshold: This is the trigger point when humidity goes above or below this value."}
         if (settings.humidityResponseMethod?.contains("2")) {input "humidityThreshold", "decimal", title: "Humidity Threshold (%), Range 1-100, Default Value: 65", required: false, defaultValue: 65}
         if (detailedInstructions == true) {paragraph "Fan on delay: When a trigger tries to turn on the fan, it will wait for this delay before kicking on."}
@@ -1278,9 +1283,38 @@ def configureHumidityVariables() {
         state.lastHumidity = state.lastHumidity.toFloat()
     }
     
-    // Calculate humidity change rate
+    // Calculate TRUE humidity change rate (% per minute)
     if ((state.currentHumidity != null) && (state.lastHumidity != null)) {
-        state.humidityChangeRate = (state.currentHumidity - state.lastHumidity)
+        // Get current time in milliseconds
+        def currentTime = now()
+        
+        // Check if we have a previous timestamp
+        if (state.lastHumidityTime != null) {
+            // Calculate time elapsed in minutes
+            def timeElapsedMs = currentTime - state.lastHumidityTime
+            def timeElapsedMinutes = timeElapsedMs / 60000.0  // Convert ms to minutes
+            
+            if (timeElapsedMinutes > 0) {
+                // Calculate humidity change
+                def humidityChange = state.currentHumidity - state.lastHumidity
+                
+                // Calculate TRUE rate: change per minute
+                state.humidityChangeRate = humidityChange / timeElapsedMinutes
+                
+                ifTrace("configureHumidityVariables: Humidity changed ${humidityChange.round(2)}% over ${timeElapsedMinutes.round(2)} minutes = ${state.humidityChangeRate.round(2)}% per minute")
+            } else {
+                // Time too small to calculate rate reliably
+                state.humidityChangeRate = 0.0
+                ifTrace("configureHumidityVariables: Time elapsed too small to calculate rate")
+            }
+        } else {
+            // First reading - no previous timestamp yet
+            state.humidityChangeRate = 0.0
+            ifTrace("configureHumidityVariables: First humidity reading, rate = 0")
+        }
+        
+        // Store timestamp for next calculation
+        state.lastHumidityTime = currentTime
     } else {
         state.humidityChangeRate = 0.0
     }
