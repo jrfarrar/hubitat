@@ -20,15 +20,15 @@ def setVersion(){
 
 definition(
     name: "Bathroom Humidity Fan",
-    namespace: "Craig.Romei",
+    namespace: "jrfarrar",
     singleInstance: true,
-    author: "Craig Romei",
+    author: "J.R. Farrar",
     description: "Control a fan (switch) based on relative humidity. - Parent",
     category: "Convenience",
     iconUrl: "",
     iconX2Url: "",
     iconX3Url: "",
-    importUrl: "https://raw.githubusercontent.com/napalmcsr/Hubitat_Napalmcsr/master/Apps/BathroomHumidityFan/BathroomHumidity.src")
+    importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/refs/heads/master/Apps/BathroomHumidityFan/Bathroomhumidityparent.groovy")
 
 preferences {
 	page(name: "mainPage")
