@@ -162,7 +162,8 @@ def powerHandler(evt) {
             
             // Calculate runtime in minutes
             def durationMs = state.offTime - state.onTime
-            state.duration = ((durationMs / 1000) / 60).round(2)
+            def durationMinutes = (durationMs / 1000) / 60
+            state.duration = (durationMinutes as double).round(2)
             
             infolog "Pump shut off, time: ${state.lastoff}"
             infolog "Run time: ${state.duration} minutes"
