@@ -5,8 +5,6 @@
 *    -Uses TRUE humidity change rate (% per minute) for rapid response
 *    -Timeout option when manaully controled (for stench mitigation)
 *    -Child/Parent with pause/resume (Thanks to Lewis.Heidrick!)
-*
-*  Taken from code by Craig Romei
 *  
 *
 *  v1.1.47 - TRUE RATE CALCULATION
