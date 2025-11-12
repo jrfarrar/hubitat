@@ -1,7 +1,7 @@
 {
   "packageName": "Garadget MQTT Driver",
   "author": "J.R. Farrar",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "minimumHEVersion": "2.1.9",
   "communityLink":"https://community.hubitat.com/t/release-garadget-mqtt-device-handler/43377",
   "dateReleased": "2021-11-15",
@@ -16,3 +16,4 @@
     }
   ]
 }
+
