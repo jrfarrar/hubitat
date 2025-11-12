@@ -4,7 +4,18 @@
  *  Parent app for managing multiple bathroom humidity fan instances
  *  and creating a combined average humidity sensor.
  * 
- *  CORRECTED VERSION - v1.1.46
+ *  Copyright 2018 Craig Romei
+ *  GNU General Public License v2 (https://www.gnu.org/licenses/gpl-2.0.txt)
+ * 
+ *  Modified by J.R. Farrar
+ * 
+ *  v1.1.47 - LOGGING CONTROLS ADDED
+ *  - Added Info/Debug/Trace logging toggles with 30-minute auto-disable
+ *  - Added permanent logging level setting
+ *  - Replaced all direct log calls with conditional helpers
+ *  - Matches child app logging functionality
+ * 
+ *  v1.1.46 - BUG FIXES (by Claude AI)
  *  - Fixed division by zero risk
  *  - Fixed integer division bug
  *  - Added comprehensive error handling
@@ -14,7 +25,7 @@
  */
 
 def setVersion(){
-	state.version = "1.1.46" // Version number to match child app
+	state.version = "1.1.47" // Added logging controls (Info/Debug/Trace toggles)
 	state.InternalName = "BathroomHumidityFan"
 }
 
@@ -42,7 +53,7 @@ def mainPage() {
         }
         else {
         	section("<b>Create a new Bathroom Humidity Fan Instance.</b>") {
-            	app(name: "childApps", appName: "Bathroom Humidity Fan Child", namespace: "Craig.Romei", 
+            	app(name: "childApps", appName: "Bathroom Humidity Fan Child", namespace: "jrfarrar", 
                     title: "New Bathroom Humidity Fan Instance", multiple: true)
         	}
             section("<b>Create a combined humidity sensor.</b>") {
@@ -54,20 +65,34 @@ def mainPage() {
                     paragraph "Current average is ${averageHumid()}%"
                 }
 		    }
+            section(title: "Logging Options:", hideable: true, hidden: hideLoggingSection()) {
+                input name: "isInfo", type: "bool", title: "Enable Info logging for 30 minutes?", defaultValue: false
+                input name: "isDebug", type: "bool", title: "Enable Debug logging for 30 minutes?", defaultValue: false
+                input name: "isTrace", type: "bool", title: "Enable Trace logging for 30 minutes?", defaultValue: false
+                input "ifLevel","enum", title: "Permanent logging level", required: false, multiple: true, submitOnChange: false, options: logLevelOptions
+                paragraph "NOTE: Permanent logging level overrides the temporary 30-minute logging selections."
+            }
     	}
     }
 }
 
 def installed() {
-    log.info "Bathroom Humidity Fan Parent installed"
+    ifInfo("Bathroom Humidity Fan Parent installed")
     state.ShfInstalled = true
     initializeState()
+    if (isInfo) runIn(1800, infoOff)
+    if (isDebug) runIn(1800, debugOff)
+    if (isTrace) runIn(1800, traceOff)
 	initialize()
 }
 
 def updated() {
-    log.info "Bathroom Humidity Fan Parent updated"
+    ifInfo("Bathroom Humidity Fan Parent updated")
     initializeState()
+    unschedule()
+    if (isInfo) runIn(1800, infoOff)
+    if (isDebug) runIn(1800, debugOff)
+    if (isTrace) runIn(1800, traceOff)
 	initialize()
 }
 
@@ -78,7 +103,7 @@ private void initializeState() {
 }
 
 def initialize() {
-    log.debug "Initializing Bathroom Humidity Fan Parent"
+    ifDebug("Initializing Bathroom Humidity Fan Parent")
     
     try {
         def deviceId = "AverageHumid_${app.id}"
@@ -89,7 +114,7 @@ def initialize() {
             def avg = averageHumid()
             if (avg != null) {
                 avgDevice.setHumidity(avg)
-                log.debug "Set average humidity device to ${avg}%"
+                ifDebug("Set average humidity device to ${avg}%")
             }
         }
         
@@ -97,7 +122,7 @@ def initialize() {
         unsubscribe()  // Clear old subscriptions first
         if (humidSensors) {
             subscribe(humidSensors, "humidity", handler)
-            log.debug "Subscribed to ${humidSensors.size()} humidity sensors"
+            ifDebug("Subscribed to ${humidSensors.size()} humidity sensors")
         }
         
         setCreateCombinedSensorButtonName()
@@ -110,7 +135,7 @@ def initialize() {
 def averageHumid() {
     // Check if sensors configured
     if (!humidSensors || humidSensors.size() == 0) {
-        log.warn "averageHumid: No humidity sensors configured"
+        ifWarn("averageHumid: No humidity sensors configured")
         return 0.0
     }
     
@@ -129,22 +154,22 @@ def averageHumid() {
                     total += humidity
                     validSensors++
                 } else {
-                    log.warn "Sensor ${sensor.displayName} returned out-of-range value: ${humidity}%"
+                    ifWarn("Sensor ${sensor.displayName} returned out-of-range value: ${humidity}%")
                 }
             } else {
-                log.warn "Sensor ${sensor?.displayName} returned null humidity"
+                ifWarn("Sensor ${sensor?.displayName} returned null humidity")
             }
         }
         
         // Check if we have any valid readings
         if (validSensors == 0) {
-            log.warn "averageHumid: No sensors returned valid humidity values"
+            ifWarn("averageHumid: No sensors returned valid humidity values")
             return 0.0
         }
         
         // Calculate average - safe division with Float
         def average = (total / validSensors).toDouble().round(1)
-        log.debug "Average humidity: ${average}% from ${validSensors} sensors"
+        ifDebug("Average humidity: ${average}% from ${validSensors} sensors")
         
         return average
         
@@ -156,7 +181,7 @@ def averageHumid() {
 
 // FIXED: Safe handler with error handling and no duplicate calls
 def handler(evt) {
-    log.debug "Humidity sensor event from ${evt.displayName}: ${evt.value}%"
+    ifDebug("Humidity sensor event from ${evt.displayName}: ${evt.value}%")
     
     try {
         // Calculate new average
@@ -168,9 +193,9 @@ def handler(evt) {
         
         if (avgDevice && avg != null) {
             avgDevice.setHumidity(avg)
-            log.debug "Updated average humidity device to ${avg}%"
+            ifDebug("Updated average humidity device to ${avg}%")
         } else if (!avgDevice) {
-            log.debug "Average humidity device not found, skipping update"
+            ifDebug("Average humidity device not found, skipping update")
         }
     } catch (Exception e) {
         log.error "Error in humidity handler: ${e.message}"
@@ -190,14 +215,14 @@ def setCreateCombinedSensorButtonName() {
 
 // FIXED: Simplified button handler with error handling
 def appButtonHandler(btn) {
-    log.debug "Button pressed: ${btn}"
+    ifDebug("Button pressed: ${btn}")
     
     def deviceId = "AverageHumid_${app.id}"
     def device = getChildDevice(deviceId)
     
     if (!device) {
         // Create the average humidity device
-        log.info "Creating average humidity sensor"
+        ifInfo("Creating average humidity sensor")
         
         try {
             addChildDevice(
@@ -208,7 +233,7 @@ def appButtonHandler(btn) {
                 [label: "Average Humidity Sensor", name: "Average Humidity Sensor"]
             )
             
-            log.info "Successfully created average humidity sensor"
+            ifInfo("Successfully created average humidity sensor")
             
             // Set initial value
             def newDevice = getChildDevice(deviceId)
@@ -216,7 +241,7 @@ def appButtonHandler(btn) {
                 def avg = averageHumid()
                 if (avg != null) {
                     newDevice.setHumidity(avg)
-                    log.debug "Set initial humidity to ${avg}%"
+                    ifDebug("Set initial humidity to ${avg}%")
                 }
             }
             
@@ -228,11 +253,11 @@ def appButtonHandler(btn) {
         
     } else {
         // Delete the average humidity device
-        log.info "Deleting average humidity sensor"
+        ifInfo("Deleting average humidity sensor")
         
         try {
             deleteChildDevice(deviceId)
-            log.info "Successfully deleted average humidity sensor"
+            ifInfo("Successfully deleted average humidity sensor")
             
         } catch (Exception e) {
             log.error "Failed to delete average humidity device: ${e.message}"
@@ -247,7 +272,7 @@ def appButtonHandler(btn) {
 
 // Uninstall cleanup
 def uninstalled() {
-    log.info "Uninstalling Bathroom Humidity Fan Parent"
+    ifInfo("Uninstalling Bathroom Humidity Fan Parent")
     
     try {
         def deviceId = "AverageHumid_${app.id}"
@@ -255,9 +280,66 @@ def uninstalled() {
         
         if (device) {
             deleteChildDevice(deviceId)
-            log.info "Deleted average humidity sensor during uninstall"
+            ifInfo("Deleted average humidity sensor during uninstall")
         }
     } catch (Exception e) {
-        log.warn "Could not delete average humidity device during uninstall: ${e.message}"
+        ifWarn("Could not delete average humidity device during uninstall: ${e.message}")
     }
+}
+
+// Logging level options
+import groovy.transform.Field
+
+@Field static List<Map<String,String>> logLevelOptions = [
+    ["0": "None"],
+    ["1": "Info"],
+    ["2": "Debug"],
+    ["3": "Trace"]
+]
+
+// Helper function for hiding logging section
+private hideLoggingSection() {
+    return (isInfo || isDebug || isTrace || ifLevel) ? false : true
+}
+
+// Logging control functions
+def infoOff() {
+    app.updateSetting("isInfo",[value:"false",type:"bool"])
+    if (!isInfo) {
+        log.warn "Bathroom Humidity Fan Parent: Info logging disabled."
+    }
+}
+
+def debugOff() {
+    app.updateSetting("isDebug",[value:"false",type:"bool"])
+    if (!isDebug) {
+        log.warn "Bathroom Humidity Fan Parent: Debug logging disabled."
+    }
+}
+
+def traceOff() {
+    app.updateSetting("isTrace",[value:"false",type:"bool"])
+    if (!isTrace) {
+        log.warn "Bathroom Humidity Fan Parent: Trace logging disabled."
+    }
+}
+
+// Logging helper functions
+def ifWarn(msg) {
+    log.warn "Bathroom Humidity Fan Parent: ${msg}"
+}
+
+def ifInfo(msg) {
+    if (!settings.ifLevel?.contains("1") && !isInfo) return
+    log.info "Bathroom Humidity Fan Parent: ${msg}"
+}
+
+def ifDebug(msg) {
+    if (!settings.ifLevel?.contains("2") && !isDebug) return
+    log.debug "Bathroom Humidity Fan Parent: ${msg}"
+}
+
+def ifTrace(msg) {
+    if (!settings.ifLevel?.contains("3") && !isTrace) return
+    log.trace "Bathroom Humidity Fan Parent: ${msg}"
 }
