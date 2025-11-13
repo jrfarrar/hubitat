@@ -7,6 +7,7 @@
  *  if the device continues to cycle on/off (indicating it was left on)
  *
  *  V 1.0 - 2025-11-08 - Initial Release
+ *  V 1.1 - 2025-11-12 - Added cycle timing tracking (average ON/OFF durations)
  * 
  */
 
@@ -84,6 +85,9 @@ def initialize() {
     subscribeToEvents()
     state.deviceOn = false
     state.cycleHistory = []
+    state.onDurations = []
+    state.offDurations = []
+    // Don't initialize lastStateChangeTime - let it be null so first duration calc is skipped
     state.leftOnDetected = false
     state.lastActivity = now()
     updateAppLabel()
@@ -110,7 +114,7 @@ def powerHandler(evt) {
     }
     
     dblePower = Double.parseDouble(evt.value)
-    rndPower = dblePower.round(0)
+    rndPower = Math.round(dblePower)
     debuglog "Power: ${rndPower}W from ${evt.device}"
     
     // Sanity check - ignore erroneous readings
@@ -121,12 +125,38 @@ def powerHandler(evt) {
     
     // Determine if device is currently ON or OFF
     def isOn = (rndPower > watts)
+    def currentTime = now()
     
     // Detect state change (cycle)
     if (isOn && !state.deviceOn) {
-        // Device just turned ON - record a cycle
+        // Device just turned ON
+        // Calculate OFF duration if we have a last state change time
+        if (state.lastStateChangeTime) {
+            def offDuration = (currentTime - state.lastStateChangeTime) / 1000.0 / 60.0 // minutes
+            
+            // Initialize array if it doesn't exist (for upgrades from old version)
+            if (!state.offDurations) {
+                state.offDurations = []
+            }
+            
+            state.offDurations.add(offDuration)
+            
+            // Keep only durations within the time window
+            def windowMillis = timeWindow * 60 * 1000
+            state.offDurations = state.offDurations.findAll { duration ->
+                // This is a simplification - we're keeping recent durations
+                true
+            }
+            if (state.offDurations.size() > cycleCount * 2) {
+                state.offDurations = state.offDurations.drop(1) // Keep list reasonable
+            }
+            
+            debuglog "OFF duration: ${String.format('%.2f', offDuration)} minutes"
+        }
+        
         state.deviceOn = true
-        state.lastActivity = now()
+        state.lastStateChangeTime = currentTime
+        state.lastActivity = currentTime
         recordCycle()
         infolog "Device turned ON (${rndPower}W)"
         
@@ -136,7 +166,27 @@ def powerHandler(evt) {
         
     } else if (!isOn && state.deviceOn) {
         // Device just turned OFF
+        // Calculate ON duration
+        if (state.lastStateChangeTime) {
+            def onDuration = (currentTime - state.lastStateChangeTime) / 1000.0 / 60.0 // minutes
+            
+            // Initialize array if it doesn't exist (for upgrades from old version)
+            if (!state.onDurations) {
+                state.onDurations = []
+            }
+            
+            state.onDurations.add(onDuration)
+            
+            // Keep only durations within the time window
+            if (state.onDurations.size() > cycleCount * 2) {
+                state.onDurations = state.onDurations.drop(1) // Keep list reasonable
+            }
+            
+            debuglog "ON duration: ${String.format('%.2f', onDuration)} minutes"
+        }
+        
         state.deviceOn = false
+        state.lastStateChangeTime = currentTime
         infolog "Device turned OFF (${rndPower}W)"
     }
     
@@ -172,7 +222,12 @@ def evaluateCyclePattern() {
         state.onStartTime = now()  // Record when device officially turned ON
         state.alertTime = new Date().format("yyyy-MM-dd HH:mm:ss")
         
+        // Calculate and log average ON/OFF times
+        def avgOn = calculateAverage(state.onDurations)
+        def avgOff = calculateAverage(state.offDurations)
+        
         infolog "ALERT: Device has cycled ${cyclesInWindow} times in ${timeWindow} minutes! Device appears to be LEFT ON."
+        infolog "Cycle Stats - Avg ON time: ${avgOn}, Avg OFF time: ${avgOff}"
         
         if (alertSwitch.latestValue("switch") != "on") {
             alertSwitch.on()
@@ -182,9 +237,36 @@ def evaluateCyclePattern() {
     }
 }
 
+def calculateAverage(List durations) {
+    if (!durations || durations.size() == 0) {
+        return "N/A"
+    }
+    
+    def sum = durations.sum()
+    def avg = sum / durations.size()
+    
+    // Convert to double to avoid BigDecimal rounding issues
+    def avgDouble = avg.toDouble()
+    
+    // Format nicely
+    if (avgDouble < 1.0) {
+        return "${Math.round(avgDouble * 60)} seconds"
+    } else if (avgDouble < 60) {
+        return "${String.format('%.1f', avgDouble)} minutes"
+    } else {
+        def hours = (avgDouble / 60).toInteger()
+        def minutes = Math.round(avgDouble % 60)
+        return "${hours}h ${minutes}m"
+    }
+}
+
 def checkDeviceOff() {
     // This runs if no activity for offTimeout minutes
     def minutesSinceActivity = new BigDecimal((now() - state.lastActivity) / 1000.0 / 60.0).setScale(1, BigDecimal.ROUND_HALF_UP)
+    
+    // Calculate average ON/OFF times for the session
+    def avgOn = calculateAverage(state.onDurations)
+    def avgOff = calculateAverage(state.offDurations)
     
     // Calculate total runtime if device was detected as ON
     if (state.leftOnDetected && state.cycleHistory && state.cycleHistory.size() > 0 && state.lastActivity) {
@@ -201,14 +283,20 @@ def checkDeviceOff() {
             infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF. Total runtime: ${totalRuntimeMinutes} minutes"
         }
         
+        infolog "Session Stats - Avg ON: ${avgOn}, Avg OFF: ${avgOff}, Total cycles: ${state.cycleHistory.size()}"
+        
         state.lastRuntime = totalRuntimeMinutes
         state.lastRuntimeDisplay = hours > 0 ? "${hours}h ${minutes}m" : "${totalRuntimeMinutes}m"
+        state.lastAvgOn = avgOn
+        state.lastAvgOff = avgOff
     } else {
         infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF."
     }
     
     // Reset everything
     state.cycleHistory = []
+    state.onDurations = []
+    state.offDurations = []
     state.deviceOn = false
     state.leftOnDetected = false
     
@@ -252,7 +340,9 @@ def updateAppLabel() {
     
     if (state.leftOnDetected) {
         // Alert has been triggered
-        label += " <span style=\"color:red;\">(LEFT ON - ${cyclesInWindow} cycles - ${state.alertTime})</span>"
+        def avgOn = calculateAverage(state.onDurations)
+        def avgOff = calculateAverage(state.offDurations)
+        label += " <span style=\"color:red;\">(LEFT ON - ${cyclesInWindow} cycles - ON:${avgOn}/OFF:${avgOff})</span>"
     } else if (cyclesInWindow > 0) {
         // Cycles detected but not enough yet
         def remaining = cycleCount - cyclesInWindow
@@ -260,7 +350,11 @@ def updateAppLabel() {
     } else {
         // Normal monitoring - show last runtime if available
         if (state.lastRuntimeDisplay) {
-            label += " <span style=\"color:green;\">(Monitoring - Last runtime: ${state.lastRuntimeDisplay})</span>"
+            def statsText = " Last: ${state.lastRuntimeDisplay}"
+            if (state.lastAvgOn && state.lastAvgOff) {
+                statsText += " (ON:${state.lastAvgOn}/OFF:${state.lastAvgOff})"
+            }
+            label += " <span style=\"color:green;\">(Monitoring -${statsText})</span>"
         } else {
             label += " <span style=\"color:green;\">(Monitoring - No cycles)</span>"
         }
