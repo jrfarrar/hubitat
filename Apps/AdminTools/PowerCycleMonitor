@@ -8,6 +8,14 @@
  *
  *  V 1.0 - 2025-11-08 - Initial Release
  *  V 1.1 - 2025-11-12 - Added cycle timing tracking (average ON/OFF durations)
+ *  V 2.0 - 2025-11-14 - Production Release
+ *                     - Fixed BigDecimal rounding issues
+ *                     - Fixed null pointer exceptions on upgrade
+ *                     - Fixed OFF duration calculation including idle time
+ *                     - Added current statistics display
+ *                     - Added manual reset capability
+ *                     - Enhanced error handling and validation
+ *                     - Improved logging with context
  * 
  */
 
@@ -32,21 +40,52 @@ def pageConfig() {
     dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval:0) { 
         
         section(getFormat("header-green", "DEVICES")) {
-            paragraph "- Monitor a power meter for cycling patterns. If device cycles on/off repeatedly, it indicates it was 'left on'."
+            paragraph "Monitor a power meter for cycling patterns. If device cycles on/off repeatedly, it indicates it was 'left on'."
             input (name: "pwrMeter", type: "capability.powerMeter", title: "Power Meter to Monitor", submitOnChange: true, required: true)
             input (name: "alertSwitch", type: "capability.switch", title: "Switch to turn ON when cycling detected", submitOnChange: true, required: true, multiple: false)
         }
         
         section(getFormat("header-green", "CYCLE DETECTION SETTINGS")) {
             paragraph "Device is considered 'left on' if it cycles multiple times within a time window"
-            input (name: "watts", type: "number", title: "Watt threshold (power above = ON, below = OFF)", required: true, defaultValue: 100)
-            input (name: "cycleCount", type: "number", title: "Number of cycles to detect", required: true, defaultValue: 3, description: "How many on/off cycles indicate 'left on'")
-            input (name: "timeWindow", type: "number", title: "Time window in minutes", required: true, defaultValue: 30, description: "Cycles must occur within this time window")
-            input (name: "offTimeout", type: "number", title: "Minutes off before considering 'turned off'", required: true, defaultValue: 60, description: "If no cycles for this long, device is considered off")
+            input (name: "watts", type: "number", title: "Watt threshold (power above = ON, below = OFF)", required: true, defaultValue: 100, range: "1..10000")
+            input (name: "cycleCount", type: "number", title: "Number of cycles to detect", required: true, defaultValue: 3, range: "2..20", description: "How many on/off cycles indicate 'left on'")
+            input (name: "timeWindow", type: "number", title: "Time window in minutes", required: true, defaultValue: 30, range: "5..180", description: "Cycles must occur within this time window")
+            input (name: "offTimeout", type: "number", title: "Minutes off before considering 'turned off'", required: true, defaultValue: 60, range: "5..480", description: "If no cycles for this long, device is considered off")
+        }
+        
+        if (state.leftOnDetected || (state.cycleHistory && state.cycleHistory.size() > 0)) {
+            section(getFormat("header-green", "CURRENT STATUS")) {
+                def status = getCurrentStatusText()
+                paragraph getFormat("title2", status)
+                
+                if (state.leftOnDetected) {
+                    paragraph "<b>Alert Active Since:</b> ${state.alertTime}"
+                }
+                
+                def cyclesInWindow = state.cycleHistory?.size() ?: 0
+                if (cyclesInWindow > 0) {
+                    paragraph "<b>Cycles in Window:</b> ${cyclesInWindow} of ${cycleCount} needed"
+                    
+                    def avgOn = calculateAverage(state.onDurations)
+                    def avgOff = calculateAverage(state.offDurations)
+                    if (avgOn != "N/A" || avgOff != "N/A") {
+                        paragraph "<b>Average Times:</b> ON: ${avgOn}, OFF: ${avgOff}"
+                    }
+                }
+                
+                if (state.lastRuntimeDisplay) {
+                    paragraph "<b>Last Session Runtime:</b> ${state.lastRuntimeDisplay}"
+                    if (state.lastAvgOn && state.lastAvgOff) {
+                        paragraph "<b>Last Session Averages:</b> ON: ${state.lastAvgOn}, OFF: ${state.lastAvgOff}"
+                    }
+                }
+                
+                input (name: "btnReset", type: "button", title: "Reset Statistics", width: 4)
+            }
         }
         
         section(getFormat("header-green", "RESTRICTIONS")) {
-            paragraph "- Optional: Restrict when this monitor is active"
+            paragraph "Optional: Restrict when this monitor is active"
             input (name: "restrictSwitch", type: "capability.switch", title: "Only run when this switch is ON", submitOnChange: true, required: false, multiple: false)
             input (name: "noRunModes", type: "mode", title: "Do NOT run in these modes", submitOnChange: true, required: false, multiple: true)
         }
@@ -64,15 +103,24 @@ def pageConfig() {
             }
         }
     }  
-} 
+}
+
+def appButtonHandler(btn) {
+    switch(btn) {
+        case "btnReset":
+            infolog "Manual reset requested"
+            resetStatistics()
+            break
+    }
+}
 
 def installed() {
-    infolog "installed"
+    infolog "installed - version 2.0"
     initialize()
 }
 
 def updated() {
-    infolog "updated"
+    infolog "updated - version 2.0"
     unsubscribe()
     unschedule()
     initialize()
@@ -83,13 +131,19 @@ def initialize() {
     unschedule() 
     unsubscribe()
     subscribeToEvents()
-    state.deviceOn = false
-    state.cycleHistory = []
-    state.onDurations = []
-    state.offDurations = []
+    
+    // Initialize all state variables with null-safe defaults
+    if (state.deviceOn == null) state.deviceOn = false
+    if (!state.cycleHistory) state.cycleHistory = []
+    if (!state.onDurations) state.onDurations = []
+    if (!state.offDurations) state.offDurations = []
     // Don't initialize lastStateChangeTime - let it be null so first duration calc is skipped
-    state.leftOnDetected = false
-    state.lastActivity = now()
+    if (state.leftOnDetected == null) state.leftOnDetected = false
+    if (!state.lastActivity) state.lastActivity = now()
+    
+    // Validate settings
+    validateSettings()
+    
     updateAppLabel()
 }
 
@@ -102,7 +156,26 @@ def uninstalled() {
 def subscribeToEvents() {
     if (pwrMeter) {
         subscribe(pwrMeter, "power", powerHandler)
-        infolog "Subscribed to power meter: ${pwrMeter}"
+        infolog "Subscribed to power meter: ${pwrMeter.displayName}"
+    } else {
+        log.warn "No power meter selected for monitoring"
+    }
+}
+
+def validateSettings() {
+    def issues = []
+    
+    if (!pwrMeter) issues.add("No power meter selected")
+    if (!alertSwitch) issues.add("No alert switch selected")
+    if (watts && (watts < 1 || watts > 10000)) issues.add("Watt threshold out of range")
+    if (cycleCount && (cycleCount < 2 || cycleCount > 20)) issues.add("Cycle count out of range")
+    if (timeWindow && (timeWindow < 5 || timeWindow > 180)) issues.add("Time window out of range")
+    if (offTimeout && (offTimeout < 5 || offTimeout > 480)) issues.add("Off timeout out of range")
+    
+    if (issues.size() > 0) {
+        log.warn "Configuration issues: ${issues.join(', ')}"
+    } else {
+        debuglog "Configuration validated successfully"
     }
 }
 
@@ -113,13 +186,21 @@ def powerHandler(evt) {
         return
     }
     
-    dblePower = Double.parseDouble(evt.value)
-    rndPower = Math.round(dblePower)
-    debuglog "Power: ${rndPower}W from ${evt.device}"
+    // Parse and validate power reading
+    def dblePower = 0.0
+    try {
+        dblePower = Double.parseDouble(evt.value)
+    } catch (Exception e) {
+        log.error "Failed to parse power value '${evt.value}': ${e.message}"
+        return
+    }
+    
+    def rndPower = Math.round(dblePower)
+    debuglog "Power: ${rndPower}W from ${evt.device.displayName}"
     
     // Sanity check - ignore erroneous readings
-    if (rndPower > 10000) {
-        log.warn "Ignoring erroneous power reading: ${rndPower}W"
+    if (rndPower < 0 || rndPower > 10000) {
+        log.warn "Ignoring erroneous power reading: ${rndPower}W from ${evt.device.displayName}"
         return
     }
     
@@ -129,8 +210,7 @@ def powerHandler(evt) {
     
     // Detect state change (cycle)
     if (isOn && !state.deviceOn) {
-        // Device just turned ON
-        // Calculate OFF duration if we have a last state change time
+        // Device just turned ON - calculate OFF duration
         if (state.lastStateChangeTime) {
             def offDuration = (currentTime - state.lastStateChangeTime) / 1000.0 / 60.0 // minutes
             
@@ -141,14 +221,9 @@ def powerHandler(evt) {
             
             state.offDurations.add(offDuration)
             
-            // Keep only durations within the time window
-            def windowMillis = timeWindow * 60 * 1000
-            state.offDurations = state.offDurations.findAll { duration ->
-                // This is a simplification - we're keeping recent durations
-                true
-            }
+            // Keep list size reasonable
             if (state.offDurations.size() > cycleCount * 2) {
-                state.offDurations = state.offDurations.drop(1) // Keep list reasonable
+                state.offDurations = state.offDurations.drop(1)
             }
             
             debuglog "OFF duration: ${String.format('%.2f', offDuration)} minutes"
@@ -165,8 +240,7 @@ def powerHandler(evt) {
         runIn(60 * offTimeout.toInteger(), checkDeviceOff)
         
     } else if (!isOn && state.deviceOn) {
-        // Device just turned OFF
-        // Calculate ON duration
+        // Device just turned OFF - calculate ON duration
         if (state.lastStateChangeTime) {
             def onDuration = (currentTime - state.lastStateChangeTime) / 1000.0 / 60.0 // minutes
             
@@ -177,9 +251,9 @@ def powerHandler(evt) {
             
             state.onDurations.add(onDuration)
             
-            // Keep only durations within the time window
+            // Keep list size reasonable
             if (state.onDurations.size() > cycleCount * 2) {
-                state.onDurations = state.onDurations.drop(1) // Keep list reasonable
+                state.onDurations = state.onDurations.drop(1)
             }
             
             debuglog "ON duration: ${String.format('%.2f', onDuration)} minutes"
@@ -229,8 +303,14 @@ def evaluateCyclePattern() {
         infolog "ALERT: Device has cycled ${cyclesInWindow} times in ${timeWindow} minutes! Device appears to be LEFT ON."
         infolog "Cycle Stats - Avg ON time: ${avgOn}, Avg OFF time: ${avgOff}"
         
-        if (alertSwitch.latestValue("switch") != "on") {
-            alertSwitch.on()
+        // Turn on alert switch
+        try {
+            if (alertSwitch.currentValue("switch") != "on") {
+                alertSwitch.on()
+                infolog "Alert switch turned ON"
+            }
+        } catch (Exception e) {
+            log.error "Failed to turn on alert switch: ${e.message}"
         }
         
         updateAppLabel()
@@ -248,7 +328,7 @@ def calculateAverage(List durations) {
     // Convert to double to avoid BigDecimal rounding issues
     def avgDouble = avg.toDouble()
     
-    // Format nicely
+    // Format nicely based on magnitude
     if (avgDouble < 1.0) {
         return "${Math.round(avgDouble * 60)} seconds"
     } else if (avgDouble < 60) {
@@ -263,6 +343,8 @@ def calculateAverage(List durations) {
 def checkDeviceOff() {
     // This runs if no activity for offTimeout minutes
     def minutesSinceActivity = new BigDecimal((now() - state.lastActivity) / 1000.0 / 60.0).setScale(1, BigDecimal.ROUND_HALF_UP)
+    
+    infolog "Checking device status - ${minutesSinceActivity} minutes since last activity"
     
     // Calculate average ON/OFF times for the session
     def avgOn = calculateAverage(state.onDurations)
@@ -293,20 +375,61 @@ def checkDeviceOff() {
         infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF."
     }
     
-    // Reset everything
+    // Reset everything for next session
     state.cycleHistory = []
     state.onDurations = []
     state.offDurations = []
     state.deviceOn = false
     state.leftOnDetected = false
+    state.lastStateChangeTime = null  // Critical: reset so next cycle doesn't include idle time
     
     // Turn off alert switch
-    if (alertSwitch.latestValue("switch") == "on") {
-        infolog "Turning OFF alert switch"
-        alertSwitch.off()
+    try {
+        if (alertSwitch.currentValue("switch") == "on") {
+            infolog "Turning OFF alert switch"
+            alertSwitch.off()
+        }
+    } catch (Exception e) {
+        log.error "Failed to turn off alert switch: ${e.message}"
     }
     
     updateAppLabel()
+}
+
+def resetStatistics() {
+    infolog "Resetting all statistics"
+    
+    // Clear current session data
+    state.cycleHistory = []
+    state.onDurations = []
+    state.offDurations = []
+    state.deviceOn = false
+    state.leftOnDetected = false
+    state.lastStateChangeTime = null
+    
+    // Clear historical data
+    state.lastRuntime = null
+    state.lastRuntimeDisplay = null
+    state.lastAvgOn = null
+    state.lastAvgOff = null
+    state.alertTime = null
+    state.onStartTime = null
+    
+    // Turn off alert switch if it's on
+    try {
+        if (alertSwitch && alertSwitch.currentValue("switch") == "on") {
+            alertSwitch.off()
+            infolog "Alert switch turned OFF"
+        }
+    } catch (Exception e) {
+        log.error "Failed to turn off alert switch: ${e.message}"
+    }
+    
+    // Cancel any pending timeout checks
+    unschedule(checkDeviceOff)
+    
+    updateAppLabel()
+    infolog "Statistics reset complete"
 }
 
 def canWeRun() {
@@ -315,9 +438,14 @@ def canWeRun() {
     
     // Check restriction switch
     if (restrictSwitch) {
-        if (restrictSwitch.currentValue('switch') != 'on') {
+        try {
+            if (restrictSwitch.currentValue('switch') != 'on') {
+                restrictionOk = false
+                debuglog "Restriction switch is OFF - not running"
+            }
+        } catch (Exception e) {
+            log.error "Error checking restriction switch: ${e.message}"
             restrictionOk = false
-            debuglog "Restriction switch is OFF - not running"
         }
     }
     
@@ -332,6 +460,17 @@ def canWeRun() {
     return (restrictionOk && modeOk)
 }
 
+def getCurrentStatusText() {
+    if (state.leftOnDetected) {
+        return "🔴 ALERT ACTIVE - Device is cycling and appears to be LEFT ON"
+    } else if (state.cycleHistory && state.cycleHistory.size() > 0) {
+        def remaining = cycleCount - state.cycleHistory.size()
+        return "🟡 MONITORING - ${remaining} more cycle(s) needed to trigger alert"
+    } else {
+        return "🟢 MONITORING - No active cycles detected"
+    }
+}
+
 def updateAppLabel() {
     if (!thisName) return
     
@@ -342,7 +481,7 @@ def updateAppLabel() {
         // Alert has been triggered
         def avgOn = calculateAverage(state.onDurations)
         def avgOff = calculateAverage(state.offDurations)
-        label += " <span style=\"color:red;\">(LEFT ON - ${cyclesInWindow} cycles - ON:${avgOn}/OFF:${avgOff})</span>"
+        label += " <span style=\"color:red;\">(ALERT: ${cyclesInWindow} cycles - ON:${avgOn}/OFF:${avgOff})</span>"
     } else if (cyclesInWindow > 0) {
         // Cycles detected but not enough yet
         def remaining = cycleCount - cyclesInWindow
@@ -350,13 +489,13 @@ def updateAppLabel() {
     } else {
         // Normal monitoring - show last runtime if available
         if (state.lastRuntimeDisplay) {
-            def statsText = " Last: ${state.lastRuntimeDisplay}"
+            def statsText = "Last: ${state.lastRuntimeDisplay}"
             if (state.lastAvgOn && state.lastAvgOff) {
                 statsText += " (ON:${state.lastAvgOn}/OFF:${state.lastAvgOff})"
             }
-            label += " <span style=\"color:green;\">(Monitoring -${statsText})</span>"
+            label += " <span style=\"color:green;\">(${statsText})</span>"
         } else {
-            label += " <span style=\"color:green;\">(Monitoring - No cycles)</span>"
+            label += " <span style=\"color:green;\">(Monitoring)</span>"
         }
     }
     
@@ -375,7 +514,7 @@ def debuglog(statement) {
     if (logLevel) logL = logLevel.toInteger()
     if (logL == 0) {return}
     else if (logL >= 2) {
-        log.debug("$thisName: " + statement)
+        log.debug("${app.label}: ${statement}")
     }
 }
 
@@ -384,7 +523,7 @@ def infolog(statement) {
     if (logLevel) logL = logLevel.toInteger()
     if (logL == 0) {return}
     else if (logL >= 1) {
-        log.info("$thisName: " + statement)
+        log.info("${app.label}: ${statement}")
     }
 }
 
