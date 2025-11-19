@@ -407,14 +407,13 @@ def powerHandler(evt) {
 }
 
 def handleDeviceOn(currentTime, power) {
-    log.info "Device turned ON (${power}W)"
-    
     // Track wattage for history
     if (!state.currentSessionWattages) state.currentSessionWattages = []
     state.currentSessionWattages.add(power)
-    
+
     if (!state.deviceOn) {
         // Device just turned ON
+        log.info "Device turned ON (${power}W)"
         state.deviceOn = true
         state.continuousOnStart = currentTime
         
@@ -448,10 +447,9 @@ def handleDeviceOn(currentTime, power) {
 }
 
 def handleDeviceOff(currentTime) {
-    log.info "Device turned OFF (0W)"
-    
     if (state.deviceOn) {
         // Device just turned OFF - this completes a cycle
+        log.info "Device turned OFF (0W)"
         state.deviceOn = false
         
         // Calculate ON duration
