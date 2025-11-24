@@ -1,10 +1,11 @@
 /**
- *  Shelly Gateway Status MQTT Device Handler
+ * Shelly Gateway Status MQTT Device Handler
  *
- *  Modified from BI MQTT Motion by J.R. Farrar
- *  Tracks Shelly Gateway online/offline status
+ * Modified from BI MQTT Motion by J.R. Farrar
+ * Tracks Shelly Gateway online/offline status
  *
  * 1.0.0 - 11/08/25 - Initial Release for Gateway Status Tracking
+ * 1.1.0 - 11/24/25 - Added throttling for lastSeen updates to reduce DB noise (max 1/min)
  */
 
 metadata {
@@ -22,18 +23,18 @@ metadata {
         attribute "presence", "enum", ["present", "not present"]
         attribute "lastSeen", "string"
 
-preferences {
-    section("Settings for connection from HE to Broker") {
-        input name: "gatewayName", type: "text", title: "Gateway Name/ID (e.g., shellyblugw-08d1f90435e4)", required: true, description: "The gateway device ID"
-        input name: "ipAddr", type: "text", title: "IP Address of MQTT broker", required: true
-        input name: "ipPort", type: "text", title: "Port # of MQTT broker", defaultValue: "1883", required: true
-        input name: "username", type: "text", title: "MQTT Username:", description: "(blank if none)", required: false
-	    input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)", required: false
-        input name: "retryTime", type: "number", title: "Number of seconds between retries to connect if broker goes down", defaultValue: 300, required: true
-        input name: "watchDogSched", type: "bool", title: "Check for connection to MQTT broker on a schedule?", defaultValue: false, required: true
-        input name: "watchDogTime", type: "number", title: "This number of minutes to check for connection to MQTT broker", defaultValue: 15, range: "1..59", required: true
-        input name: "offlineTimeout", type: "number", title: "Minutes without update before marking offline", defaultValue: 10, range: "1..60", required: true
-        input name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum", options: getLogLevels(), submitOnChange : false, defaultValue : "1"
+    preferences {
+        section("Settings for connection from HE to Broker") {
+            input name: "gatewayName", type: "text", title: "Gateway Name/ID (e.g., shellyblugw-08d1f90435e4)", required: true, description: "The gateway device ID"
+            input name: "ipAddr", type: "text", title: "IP Address of MQTT broker", required: true
+            input name: "ipPort", type: "text", title: "Port # of MQTT broker", defaultValue: "1883", required: true
+            input name: "username", type: "text", title: "MQTT Username:", description: "(blank if none)", required: false
+            input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)", required: false
+            input name: "retryTime", type: "number", title: "Number of seconds between retries to connect if broker goes down", defaultValue: 300, required: true
+            input name: "watchDogSched", type: "bool", title: "Check for connection to MQTT broker on a schedule?", defaultValue: false, required: true
+            input name: "watchDogTime", type: "number", title: "This number of minutes to check for connection to MQTT broker", defaultValue: 15, range: "1..59", required: true
+            input name: "offlineTimeout", type: "number", title: "Minutes without update before marking offline", defaultValue: 10, range: "1..60", required: true
+            input name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum", options: getLogLevels(), submitOnChange : false, defaultValue : "1"
         }
      }
   }
@@ -41,7 +42,7 @@ preferences {
 
 def setVersion(){
     state.name = "Shelly Gateway Status MQTT"
-	state.version = "1.0.0 - Shelly Gateway Status MQTT Device Handler"   
+    state.version = "1.1.0 - Shelly Gateway Status MQTT Device Handler"   
 }
 
 void installed() {
@@ -49,6 +50,7 @@ void installed() {
     setVersion()
     sendEvent(name: "online", value: "false")
     sendEvent(name: "presence", value: "not present")
+    state.lastSeenMillis = 0
 }
 
 // Parse incoming device messages to generate events
@@ -67,12 +69,11 @@ void parse(String description) {
         return
     }
     
-    // Update last seen timestamp whenever we receive any message
+    // Update last seen timestamp (Throttled inside the function)
     updateLastSeen()
     
     // Handle the online topic (true/false)
     if (topicType == "online") {
-        infolog "Gateway online status: ${message}"
         setOnlineStatus(message)
         return
     }
@@ -112,26 +113,40 @@ void setOnlineStatus(status) {
     def onlineValue = isOnline ? "true" : "false"
     def presenceValue = isOnline ? "present" : "not present"
     
+    // Only send event and log if status actually changes
     if (device.currentValue("online") != onlineValue) {
         infolog "Gateway status changed to: ${onlineValue}"
         sendEvent(name: "online", value: onlineValue)
         sendEvent(name: "presence", value: presenceValue)
+    } else {
+        debuglog "Gateway reported ${onlineValue} (no change)"
     }
 }
 
 void updateLastSeen() {
-    def timestamp = new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone)
-    sendEvent(name: "lastSeen", value: timestamp)
-    state.lastSeenMillis = now()
+    // THROTTLING LOGIC:
+    // Only update the DB and reset the timer if it's been > 60 seconds
+    // or if this is the very first run.
     
-    // Cancel any pending offline check
-    unschedule(checkOffline)
+    def now = now()
+    def lastUpdate = state.lastSeenMillis ?: 0
     
-    // Schedule a check to mark offline if no updates received
-    runIn(offlineTimeout * 60, checkOffline)
+    if (now - lastUpdate > 60000) {
+        def timestamp = new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone)
+        sendEvent(name: "lastSeen", value: timestamp)
+        state.lastSeenMillis = now
+        
+        // Reset the offline check timer
+        // We only need to do this when we update the timestamp
+        unschedule(checkOffline)
+        runIn(offlineTimeout * 60, checkOffline)
+        debuglog "Updated lastSeen and reset offline timer"
+    }
 }
 
 void checkOffline() {
+    // Double check logic: ensure we really haven't seen it in a while
+    // (in case a reboot cleared the schedule but state persisted)
     def timeoutMillis = offlineTimeout * 60 * 1000
     def lastSeen = state.lastSeenMillis ?: 0
     def currentTime = now()
@@ -139,6 +154,11 @@ void checkOffline() {
     if (currentTime - lastSeen > timeoutMillis) {
         log.warn "No updates received for ${offlineTimeout} minutes - marking gateway offline"
         setOnlineStatus("false")
+    } else {
+        // This is a safety catch. If we are here, but time hasn't elapsed, 
+        // it means we got an update recently. Reschedule the check.
+        def timeRemaining = ((lastSeen + timeoutMillis) - currentTime) / 1000
+        if (timeRemaining > 0) runIn(timeRemaining.toInteger(), checkOffline)
     }
 }
 
@@ -202,7 +222,7 @@ void configure(){
 }
 
 def watchDog() {
-    debuglog "Checking MQTT status"    
+    debuglog "Checking MQTT status"     
     // If not connected, re-initialize
     if(!interfaces.mqtt.isConnected()) { 
         debuglog "MQTT Connected: (${interfaces.mqtt.isConnected()})"
@@ -211,7 +231,7 @@ def watchDog() {
 }
 
 void mqttClientStatus(String message) {
-	log.warn "${device.label?device.label:device.name}: **** Received status message: ${message} ****"
+    log.warn "${device.label?device.label:device.name}: **** Received status message: ${message} ****"
     if (message.contains("Connection lost")) {
         connectionLost()
     }
@@ -235,21 +255,21 @@ def logsOff(){
 }
 
 def debuglog(statement) {   
-	def logL = 0
+    def logL = 0
     if (logLevel) logL = logLevel.toInteger()
     if (logL == 0) {return} // bail
     else if (logL >= 2) {
-		log.debug("${device.label?device.label:device.name}: " + statement)
-	}
+        log.debug("${device.label?device.label:device.name}: " + statement)
+    }
 }
 
-def infolog(statement) {       
-	def logL = 0
+def infolog(statement) {        
+    def logL = 0
     if (logLevel) logL = logLevel.toInteger()
     if (logL == 0) {return} // bail
     else if (logL >= 1) {
-		log.info("${device.label?device.label:device.name}: " + statement)
-	}
+        log.info("${device.label?device.label:device.name}: " + statement)
+    }
 }
 
 def getLogLevels(){
