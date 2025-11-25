@@ -1,532 +1,729 @@
-/*
- *	Power Cycle Monitor
+// hubitat start
+// hub: 192.168.13.36
+// type: app
+// id: 390
+// hubitat end
+
+/**
+ * Power Cycle Monitor v2.36 (Smart Dashboard)
  *
- *	Author: J.R. Farrar
- * 
- *  Monitors a device's power cycling pattern and triggers a switch
- *  if the device continues to cycle on/off (indicating it was left on)
+ * Monitor power meters to detect cycling patterns and stuck-on failures
+ * with historical tracking and trend analysis.
  *
- *  V 1.0 - 2025-11-08 - Initial Release
- *  V 1.1 - 2025-11-12 - Added cycle timing tracking (average ON/OFF durations)
- *  V 2.0 - 2025-11-14 - Production Release
- *                     - Fixed BigDecimal rounding issues
- *                     - Fixed null pointer exceptions on upgrade
- *                     - Fixed OFF duration calculation including idle time
- *                     - Added current statistics display
- *                     - Added manual reset capability
- *                     - Enhanced error handling and validation
- *                     - Improved logging with context
- * 
+ * v2.36 Changes:
+ * - FEATURE: Split reset functionality into two clearly labeled buttons
+ * - NEW: "Clear Recent Sessions Table" button (below Recent Sessions section)
+ * - NEW: "Reset All Historical Data" button (at bottom with warnings)
+ * - UI: Clear descriptions explain exactly what each reset button does
+ * - SAFETY: Historical reset now includes warning message before action
+ *
+ * v2.35 Changes:
+ * - UI: Renamed "History & Trends" to "Historical Analysis and Anomaly Detection"
+ * - UI: Renamed "System Status" to "Current Session"
+ * - UI: Moved CSV Logging section to separate section below Monthly History
+ * - UI: CSV Logging is now a standalone section (not nested in Historical Analysis)
+ *
+ * v2.34 Changes:
+ * - UI: Major layout reorganization for a more logical and intuitive user experience.
+ * - FEATURE: Separated "Historical Analysis" from "CSV Logging" with independent controls.
+ * - FIX: Proper section nesting using styled headers (Hubitat limitation workaround)
  */
 
+import java.math.RoundingMode
+
 definition(
-  name: "Power Cycle Monitor Child",
-  namespace: "jrfarrar",
-  author: "J.R. Farrar",
-  description: "Monitor power cycling and trigger switch if device is left on",
-  parent: "jrfarrar:Admin tools",    
-  iconUrl: "",
-  iconX2Url: "",
-  iconX3Url: "",
-  importUrl: ""
+        name: "Power Cycle Monitor",
+        namespace: "jrfarrar",
+        author: "J.R. Farrar",
+        description: "Monitor power meters to detect cycling patterns and stuck-on failures with historical tracking",
+        category: "Convenience",
+        iconUrl: "",
+        iconX2Url: "",
+        iconX3Url: ""
 )
 
-
 preferences {
-    page(name: "pageConfig")
+    page(name: "mainPage")
+    page(name: "toggleHistoryDisplay")
 }
 
-def pageConfig() {
-    dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval:0) { 
-        
-        section(getFormat("header-green", "DEVICES")) {
-            paragraph "Monitor a power meter for cycling patterns. If device cycles on/off repeatedly, it indicates it was 'left on'."
-            input (name: "pwrMeter", type: "capability.powerMeter", title: "Power Meter to Monitor", submitOnChange: true, required: true)
-            input (name: "alertSwitch", type: "capability.switch", title: "Switch to turn ON when cycling detected", submitOnChange: true, required: true, multiple: false)
+def mainPage() {
+    dynamicPage(name: "mainPage", title: "Power Cycle Monitor v2.36", install: true, uninstall: true) {
+
+        // 1. Device to Monitor
+        section("Device to Monitor") {
+            input "powerMeter", "capability.powerMeter", title: "Select Power Meter", required: true, multiple: false
+            input "wattThreshold", "number", title: "Watt Threshold (ON > this)", required: true, defaultValue: 100, description: "Watts"
         }
-        
-        section(getFormat("header-green", "CYCLE DETECTION SETTINGS")) {
-            paragraph "Device is considered 'left on' if it cycles multiple times within a time window"
-            input (name: "watts", type: "number", title: "Watt threshold (power above = ON, below = OFF)", required: true, defaultValue: 100, range: "1..10000")
-            input (name: "cycleCount", type: "number", title: "Number of cycles to detect", required: true, defaultValue: 3, range: "2..20", description: "How many on/off cycles indicate 'left on'")
-            input (name: "timeWindow", type: "number", title: "Time window in minutes", required: true, defaultValue: 30, range: "5..180", description: "Cycles must occur within this time window")
-            input (name: "offTimeout", type: "number", title: "Minutes off before considering 'turned off'", required: true, defaultValue: 60, range: "5..480", description: "If no cycles for this long, device is considered off")
+
+        // 2. Cycling Detection (Usage Monitor)
+        section("Cycling Detection (Usage Monitor)") {
+            input "cycleCount", "number", title: "Cycles to Log/Alert", required: true, defaultValue: 3, description: "Sessions with fewer cycles will be ignored"
+            input "timeWindow", "number", title: "Time Window (minutes)", required: true, defaultValue: 30
+            input "offTimeout", "number", title: "Reset triggers if OFF for (min)", required: true, defaultValue: 60
+            input "cycleAlertSwitch", "capability.switch", title: "Active Usage Switch (Optional)", required: false, description: "Turns ON when cycling detected"
         }
-        
-        if (state.leftOnDetected || (state.cycleHistory && state.cycleHistory.size() > 0)) {
-            section(getFormat("header-green", "CURRENT STATUS")) {
-                def status = getCurrentStatusText()
-                paragraph getFormat("title2", status)
-                
-                if (state.leftOnDetected) {
-                    paragraph "<b>Alert Active Since:</b> ${state.alertTime}"
-                }
-                
-                def cyclesInWindow = state.cycleHistory?.size() ?: 0
-                if (cyclesInWindow > 0) {
-                    paragraph "<b>Cycles in Window:</b> ${cyclesInWindow} of ${cycleCount} needed"
-                    
-                    def avgOn = calculateAverage(state.onDurations)
-                    def avgOff = calculateAverage(state.offDurations)
-                    if (avgOn != "N/A" || avgOff != "N/A") {
-                        paragraph "<b>Average Times:</b> ON: ${avgOn}, OFF: ${avgOff}"
-                    }
-                }
-                
-                if (state.lastRuntimeDisplay) {
-                    paragraph "<b>Last Session Runtime:</b> ${state.lastRuntimeDisplay}"
-                    if (state.lastAvgOn && state.lastAvgOff) {
-                        paragraph "<b>Last Session Averages:</b> ON: ${state.lastAvgOn}, OFF: ${state.lastAvgOff}"
-                    }
-                }
-                
-                input (name: "btnReset", type: "button", title: "Reset Statistics", width: 4)
-            }
+
+        // 3. Stuck-ON Detection (Failure Monitor)
+        section("Stuck-ON Detection (Failure Monitor)") {
+            input "stuckOnTimeout", "number", title: "Alert if ON longer than (min)", required: true, defaultValue: 15
+            input "stuckOnAlertSwitch", "capability.switch", title: "Stuck-ON Switch (Optional)", required: false, description: "Turns ON when stuck detected"
         }
-        
-        section(getFormat("header-green", "RESTRICTIONS")) {
-            paragraph "Optional: Restrict when this monitor is active"
-            input (name: "restrictSwitch", type: "capability.switch", title: "Only run when this switch is ON", submitOnChange: true, required: false, multiple: false)
-            input (name: "noRunModes", type: "mode", title: "Do NOT run in these modes", submitOnChange: true, required: false, multiple: true)
+
+        // 4. Current Session (always visible)
+        section("Current Session") {
+            paragraph getSmartDashboardHtml()
         }
-        
-        section(getFormat("header-green", "LOGGING")){                       
-            input(name: "logLevel", title: "IDE logging level", multiple: false, required: true, type: "enum", options: getLogLevels(), submitOnChange: false, defaultValue: "1")
-        }
-        
-        section(getFormat("header-green", "APP NAME")){
-            input (name: "thisName", type: "text", title: "App Name", submitOnChange: true)
-            if(thisName) {
-                app.updateLabel("$thisName")
+
+        // 5. Recent Sessions (always visible)
+        section("Recent Sessions") {
+            if (!state.recentSessions) state.recentSessions = []
+
+            if (state.recentSessions.size() == 0) {
+                paragraph "<div style='background-color:#f0f0f0; padding:10px; border-radius:5px; margin-top:-10px;'><b>No session history yet...</b><br>Completed sessions will be shown here.</div>"
             } else {
-                app.updateSetting("thisName", "Power Cycle Monitor")
+                paragraph getHistoryTableHtml()
+            }
+            
+            // Reset Recent Sessions button with description
+            paragraph "<hr style='margin-top:15px; margin-bottom:10px;'>"
+            input "btnResetRecent", "button", title: "Clear Recent Sessions Table"
+            paragraph "<small style='color:#666;'>Clears only the table above and ends the current active session. All historical data (Monthly History, Baseline, CSV files) is preserved.</small>"
+        }
+
+        // 6. Historical Analysis and Anomaly Detection (master section for optional features)
+        section("Historical Analysis and Anomaly Detection") {
+            input "enableHistoryTracking", "bool", title: "Enable Historical Analysis", defaultValue: true, submitOnChange: true
+            
+            if (settings.enableHistoryTracking) {
+                // Anomaly Detection
+                paragraph "<div style='font-weight:bold; margin-top:15px; margin-bottom:10px; font-size:1.1em;'>Anomaly Detection</div>"
+                input "anomalyThreshold", "number", title: "Anomaly Threshold (%)", range: "15..50", required: true, defaultValue: 25
+                input "anomalySwitch", "capability.switch", title: "Anomaly Switch (Latching)", required: false
+                
+                // Baseline Management
+                paragraph "<div style='font-weight:bold; margin-top:15px; margin-bottom:10px; font-size:1.1em;'>Baseline Management</div>"
+                input "lockBaseline", "bool", title: "Lock Current Baseline", defaultValue: false, submitOnChange: true
+                paragraph getBaselineDisplayHtml()
             }
         }
-    }  
-}
 
-def appButtonHandler(btn) {
-    switch(btn) {
-        case "btnReset":
-            infolog "Manual reset requested"
-            resetStatistics()
-            break
+        // 7. Monthly History (only if Historical Analysis enabled)
+        if (settings.enableHistoryTracking) {
+            section("Monthly History") {
+                if (!state.monthlySnapshots) state.monthlySnapshots = []
+
+                def monthsToShow = state.showFullHistory ? 12 : 6
+
+                if (state.monthlySnapshots.size() == 0) {
+                    paragraph "<div style='background-color:#f0f0f0; padding:10px; border-radius:5px; margin-top:-10px;'><b>Establishing Baseline...</b><br>Need at least 2 months of data for trend analysis.<br>Sessions this month: ${state.sessionsThisMonth ?: 0}</div>"
+                } else {
+                    paragraph getMonthlyHistoryTableHtml(monthsToShow)
+
+                    // Toggle button for 6/12 months
+                    if (state.monthlySnapshots.size() > 6) {
+                        def btnText = state.showFullHistory ? "Show Less" : "Show 12 Months"
+                        href name: "btnToggleHistory", title: btnText, description: "", page: "toggleHistoryDisplay"
+                    }
+                }
+            }
+            
+            // 8. CSV Logging (only if Historical Analysis enabled)
+            section("CSV Logging") {
+                input "enableCsvLogging", "bool", title: "Enable CSV File Logging", defaultValue: true, submitOnChange: true
+                
+                // CSV download link - RIGHT UNDER the CSV logging switch
+                if (settings.enableCsvLogging) {
+                    def fileName = getFileName()
+                    def fileUrl = getFileManagerUrl(fileName)
+                    paragraph "<div style='text-align:left; margin-top:5px;'><a href='${fileUrl}' target='_blank' style='font-weight:bold; text-decoration:none;'>📥 Download Full History (CSV)</a></div>"
+                }
+            }
+        }
+
+        // 9. Reset Historical Data
+        section("⚠️ Reset Historical Data") {
+            paragraph "<div style='background-color:#fff3cd; padding:10px; border-radius:5px; border-left:4px solid #ff9800;'><b>Warning:</b> This action will permanently delete all historical tracking data including Monthly History, Baseline calculations, and monthly snapshots. CSV log files will remain on disk but can be manually deleted.</div>"
+            input "btnResetHistory", "button", title: "⚠️ Reset All Historical Data"
+            paragraph "<small style='color:#666;'>This will clear: Monthly History table, Baseline data, all monthly snapshots, and monthly counters. This action cannot be undone. Recent Sessions and CSV files are not affected.</small>"
+        }
+
+        // 10. App Settings
+        section("App Settings") {
+            input "labelPrefix", "text", title: "App Label Prefix", required: false
+            input "logEnable", "bool", title: "Enable Debug Logging", defaultValue: false
+        }
     }
 }
 
+def toggleHistoryDisplay() {
+    state.showFullHistory = !state.showFullHistory
+    mainPage()
+}
+
+// ----------------------------------------------------------------------------
+//   DISPLAY HELPERS (SMART DASHBOARD)
+// ----------------------------------------------------------------------------
+
+def getSmartDashboardHtml() {
+    def status = getSystemStatus()
+    def row = ""
+
+    if (state.deviceOn || state.sessionCycleCount > 0) {
+        def cycles = state.sessionCycleCount
+        def avgOn = getAverage(state.onDurations)
+        def avgOff = (state.sessionCycleCount > 1) ? "${String.format('%.1f', getAverage(state.offDurations))}s" : "N/A"
+        def runtime = state.deviceOn ? getOnDuration() : "${String.format('%.1f', (avgOn * cycles) / 60.0)}m"
+        
+        row = "<tr><td style='color:${status.color};'>Live</td><td>${cycles}</td><td>${String.format('%.1f', avgOn)}s</td><td>${avgOff}</td><td>${runtime}</td></tr>"
+    } else {
+        if (state.lastSessionStats) {
+            def stats = state.lastSessionStats
+            row = "<tr><td>${stats.time}</td><td>${stats.cycles}</td><td>${stats.avgOn}s</td><td>${stats.avgOff}s</td><td>${stats.runtime}m</td></tr>"
+        } else {
+            return "<div style='background-color:#f0f0f0; padding:10px; border-radius:5px; margin-top:-10px;'><b>Waiting for first run...</b></div>"
+        }
+    }
+
+    return """
+    <table style='width:100%; font-size:0.9em; border-collapse:collapse; margin-top:-10px;' border='1' bordercolor='#ddd'>
+        <tr style='background-color:#f5f5f5; font-weight:bold;'>
+            <td>Time</td><td>Cycles</td><td>Avg On</td><td>Avg Off</td><td>Runtime</td>
+        </tr>
+        ${row}
+    </table>
+    """
+}
+
+def getBaselineDisplayHtml() {
+    def bCycle = state.baselineCycleTime ? "${safeToBigDecimal(state.baselineCycleTime).setScale(1, RoundingMode.HALF_UP)}s" : "N/A"
+    def bOn = state.baselineAvgOn ? "${safeToBigDecimal(state.baselineAvgOn).setScale(0, RoundingMode.HALF_UP)}s" : "N/A"
+    def bOff = state.baselineAvgOff ? "${safeToBigDecimal(state.baselineAvgOff).setScale(0, RoundingMode.HALF_UP)}s" : "N/A"
+    def statusText = lockBaseline ? "(Locked)" : "(Dynamic)"
+
+    return "Current Baseline ${statusText}: ${bCycle} Cycle (${bOn} ON / ${bOff} OFF)"
+}
+
+def getHistoryTableHtml() {
+    def rows = ""
+    state.recentSessions.each { sess ->
+        rows += "<tr>"
+        rows += "<td>${sess.time}</td>"
+        rows += "<td>${sess.cycles}</td>"
+        rows += "<td>${sess.avgOn}s</td>"
+        rows += "<td>${sess.avgOff}s</td>"
+        rows += "<td>${sess.runtime}m</td>"
+        rows += "</tr>"
+    }
+
+    return """
+    <table style='width:100%; font-size:0.9em; border-collapse:collapse; margin-top:-10px;' border='1' bordercolor='#ddd'>
+        <tr style='background-color:#f5f5f5; font-weight:bold;'>
+            <td>Time</td><td>Cycles</td><td>Avg On</td><td>Avg Off</td><td>Runtime</td>
+        </tr>
+        ${rows}
+    </table>
+    """
+}
+
+def getMonthlyHistoryTableHtml(limit) {
+    def rows = ""
+    def list = state.monthlySnapshots.take(limit)
+
+    list.each { snap ->
+        def warn = (snap.stuckOnEvents > 0) ? "!" : ""
+        def anom = (snap.anomaly) ? "!" : ""
+        def bg = (snap.stuckOnEvents > 0 || snap.anomaly) ? "#fff0f0" : "#ffffff"
+
+        rows += "<tr style='background-color:${bg}'>"
+        rows += "<td>${snap.monthYear}</td>"
+        rows += "<td>${snap.cycles}</td>"
+        rows += "<td>${Math.round(safeToBigDecimal(snap.avgOn))}s</td>"
+        rows += "<td>${Math.round(safeToBigDecimal(snap.avgOff))}s</td>"
+        rows += "<td>${snap.sessionsPerDay}</td>"
+        rows += "<td>${warn}${anom}</td>"
+        rows += "</tr>"
+    }
+
+    return """
+    <table style='width:100%; font-size:0.9em; border-collapse:collapse; margin-top:-10px;' border='1' bordercolor='#ddd'>
+        <tr style='background-color:#f5f5f5; font-weight:bold;'>
+            <td>Month</td><td>Cyc</td><td>On</td><td>Off</td><td>/Day</td><td>Alert</td>
+        </tr>
+        ${rows}
+    </table>
+    """
+}
+
+
+// ----------------------------------------------------------------------------
+//   CORE LOGIC & HANDLERS
+// ----------------------------------------------------------------------------
+
 def installed() {
-    infolog "installed - version 2.0"
     initialize()
 }
 
 def updated() {
-    infolog "updated - version 2.0"
     unsubscribe()
     unschedule()
     initialize()
 }
 
 def initialize() {
-    infolog "initialize"
-    unschedule() 
-    unsubscribe()
-    subscribeToEvents()
-    
-    // Initialize all state variables with null-safe defaults
+    logDebug "Initializing..."
+
     if (state.deviceOn == null) state.deviceOn = false
     if (!state.cycleHistory) state.cycleHistory = []
     if (!state.onDurations) state.onDurations = []
     if (!state.offDurations) state.offDurations = []
-    // Don't initialize lastStateChangeTime - let it be null so first duration calc is skipped
-    if (state.leftOnDetected == null) state.leftOnDetected = false
-    if (!state.lastActivity) state.lastActivity = now()
-    
-    // Validate settings
-    validateSettings()
-    
+    if (state.sessionCycleCount == null) state.sessionCycleCount = 0
+    if (!state.recentSessions) state.recentSessions = []
+
+    if (enableHistoryTracking) {
+        if (!state.monthlySnapshots) state.monthlySnapshots = []
+        if (!state.currentMonthSessions) state.currentMonthSessions = []
+        if (!state.currentMonth) state.currentMonth = new Date().format("yyyy-MM")
+
+        schedule("0 0 1 1 * ?", "checkMonthRollover") // Run yearly, but we check monthly
+    }
+
+    subscribe(powerMeter, "power", powerHandler)
+    runEvery5Minutes("heartbeat")
     updateAppLabel()
 }
 
-def uninstalled() {
-    unschedule()
-    unsubscribe()
-    infolog "uninstalled"
-}
-
-def subscribeToEvents() {
-    if (pwrMeter) {
-        subscribe(pwrMeter, "power", powerHandler)
-        infolog "Subscribed to power meter: ${pwrMeter.displayName}"
-    } else {
-        log.warn "No power meter selected for monitoring"
-    }
-}
-
-def validateSettings() {
-    def issues = []
-    
-    if (!pwrMeter) issues.add("No power meter selected")
-    if (!alertSwitch) issues.add("No alert switch selected")
-    if (watts && (watts < 1 || watts > 10000)) issues.add("Watt threshold out of range")
-    if (cycleCount && (cycleCount < 2 || cycleCount > 20)) issues.add("Cycle count out of range")
-    if (timeWindow && (timeWindow < 5 || timeWindow > 180)) issues.add("Time window out of range")
-    if (offTimeout && (offTimeout < 5 || offTimeout > 480)) issues.add("Off timeout out of range")
-    
-    if (issues.size() > 0) {
-        log.warn "Configuration issues: ${issues.join(', ')}"
-    } else {
-        debuglog "Configuration validated successfully"
-    }
-}
-
 def powerHandler(evt) {
-    // Check if we can run based on restrictions
-    if (!canWeRun()) {
-        debuglog "Restrictions prevent running"
-        return
-    }
-    
-    // Parse and validate power reading
-    def dblePower = 0.0
-    try {
-        dblePower = Double.parseDouble(evt.value)
-    } catch (Exception e) {
-        log.error "Failed to parse power value '${evt.value}': ${e.message}"
-        return
-    }
-    
-    def rndPower = Math.round(dblePower)
-    debuglog "Power: ${rndPower}W from ${evt.device.displayName}"
-    
-    // Sanity check - ignore erroneous readings
-    if (rndPower < 0 || rndPower > 10000) {
-        log.warn "Ignoring erroneous power reading: ${rndPower}W from ${evt.device.displayName}"
-        return
-    }
-    
-    // Determine if device is currently ON or OFF
-    def isOn = (rndPower > watts)
+    def power = safeToBigDecimal(evt.value)
     def currentTime = now()
-    
-    // Detect state change (cycle)
-    if (isOn && !state.deviceOn) {
-        // Device just turned ON - calculate OFF duration
-        if (state.lastStateChangeTime) {
-            def offDuration = (currentTime - state.lastStateChangeTime) / 1000.0 / 60.0 // minutes
-            
-            // Initialize array if it doesn't exist (for upgrades from old version)
-            if (!state.offDurations) {
-                state.offDurations = []
-            }
-            
-            state.offDurations.add(offDuration)
-            
-            // Keep list size reasonable
-            if (state.offDurations.size() > cycleCount * 2) {
-                state.offDurations = state.offDurations.drop(1)
-            }
-            
-            debuglog "OFF duration: ${String.format('%.2f', offDuration)} minutes"
-        }
-        
+
+    state.lastActivity = currentTime
+    checkDayRollover()
+
+    if (power >= wattThreshold) {
+        handleDeviceOn(currentTime, power)
+    } else {
+        handleDeviceOff(currentTime)
+    }
+}
+
+def handleDeviceOn(currentTime, power) {
+    if (!state.currentSessionWattages) state.currentSessionWattages = []
+    state.currentSessionWattages.add(power)
+
+    if (!state.deviceOn) {
+        log.info "${powerMeter} turned ON (power: ${power}W)"
         state.deviceOn = true
-        state.lastStateChangeTime = currentTime
-        state.lastActivity = currentTime
-        recordCycle()
-        infolog "Device turned ON (${rndPower}W)"
-        
-        // Schedule check for timeout (device truly off)
-        unschedule(checkDeviceOff)
-        runIn(60 * offTimeout.toInteger(), checkDeviceOff)
-        
-    } else if (!isOn && state.deviceOn) {
-        // Device just turned OFF - calculate ON duration
+        state.continuousOnStart = currentTime
+
+        // Pressure Tank Logic (Ignore long idle)
         if (state.lastStateChangeTime) {
-            def onDuration = (currentTime - state.lastStateChangeTime) / 1000.0 / 60.0 // minutes
-            
-            // Initialize array if it doesn't exist (for upgrades from old version)
-            if (!state.onDurations) {
-                state.onDurations = []
+            def offSeconds = (currentTime - state.lastStateChangeTime) / 1000.0
+            def thresholdSeconds = offTimeout * 60
+
+            if (offSeconds < thresholdSeconds) {
+                state.offDurations.add(offSeconds)
+                logDebug "OFF Duration: ${formatDuration(offSeconds)} (Recorded)"
+            } else {
+                logDebug "OFF Duration: ${formatDuration(offSeconds)} (Ignored - exceeded idle threshold)"
+                if (state.sessionCycleCount == 0) {
+                    state.onDurations = []
+                    state.offDurations = []
+                }
             }
-            
-            state.onDurations.add(onDuration)
-            
-            // Keep list size reasonable
-            if (state.onDurations.size() > cycleCount * 2) {
-                state.onDurations = state.onDurations.drop(1)
-            }
-            
-            debuglog "ON duration: ${String.format('%.2f', onDuration)} minutes"
         }
-        
-        state.deviceOn = false
+
         state.lastStateChangeTime = currentTime
-        infolog "Device turned OFF (${rndPower}W)"
-    }
-    
-    // Check if we've detected enough cycles to indicate "left on"
-    evaluateCyclePattern()
-}
 
-def recordCycle() {
-    // Add current time to cycle history
-    def currentTime = now()
-    
-    if (!state.cycleHistory) {
-        state.cycleHistory = []
-    }
-    
-    state.cycleHistory.add(currentTime)
-    
-    // Remove old cycles outside the time window
-    def windowMillis = timeWindow * 60 * 1000
-    state.cycleHistory = state.cycleHistory.findAll { cycleTime ->
-        (currentTime - cycleTime) < windowMillis
-    }
-    
-    debuglog "Cycle recorded. Total cycles in last ${timeWindow} minutes: ${state.cycleHistory.size()}"
-}
-
-def evaluateCyclePattern() {
-    def cyclesInWindow = state.cycleHistory?.size() ?: 0
-    
-    if (cyclesInWindow >= cycleCount && !state.leftOnDetected) {
-        // Device has cycled enough times - it's "left on"
-        state.leftOnDetected = true
-        state.onStartTime = now()  // Record when device officially turned ON
-        state.alertTime = new Date().format("yyyy-MM-dd HH:mm:ss")
-        
-        // Calculate and log average ON/OFF times
-        def avgOn = calculateAverage(state.onDurations)
-        def avgOff = calculateAverage(state.offDurations)
-        
-        infolog "ALERT: Device has cycled ${cyclesInWindow} times in ${timeWindow} minutes! Device appears to be LEFT ON."
-        infolog "Cycle Stats - Avg ON time: ${avgOn}, Avg OFF time: ${avgOff}"
-        
-        // Turn on alert switch
-        try {
-            if (alertSwitch.currentValue("switch") != "on") {
-                alertSwitch.on()
-                infolog "Alert switch turned ON"
-            }
-        } catch (Exception e) {
-            log.error "Failed to turn on alert switch: ${e.message}"
+        if (state.stuckOnDetected) {
+            log.warn "Stuck-ON Cleared: Device cycled off/on."
+            state.stuckOnDetected = false
+            if (stuckOnAlertSwitch) stuckOnAlertSwitch.off()
         }
-        
+
+        runInMillis((stuckOnTimeout * 60 * 1000).toInteger(), "checkStuckOn")
         updateAppLabel()
     }
 }
 
-def calculateAverage(List durations) {
-    if (!durations || durations.size() == 0) {
-        return "N/A"
-    }
-    
-    def sum = durations.sum()
-    def avg = sum / durations.size()
-    
-    // Convert to double to avoid BigDecimal rounding issues
-    def avgDouble = avg.toDouble()
-    
-    // Format nicely based on magnitude
-    if (avgDouble < 1.0) {
-        return "${Math.round(avgDouble * 60)} seconds"
-    } else if (avgDouble < 60) {
-        return "${String.format('%.1f', avgDouble)} minutes"
-    } else {
-        def hours = (avgDouble / 60).toInteger()
-        def minutes = Math.round(avgDouble % 60)
-        return "${hours}h ${minutes}m"
+def handleDeviceOff(currentTime) {
+    if (state.deviceOn) {
+        def onSeconds = (currentTime - state.continuousOnStart) / 1000.0
+        def avgWatts = getAverage(state.currentSessionWattages)
+        def peakWatts = state.currentSessionWattages.max()
+
+        log.info "${powerMeter} turned OFF. Last run: ${formatDuration(onSeconds)}, Avg Power: ${avgWatts.toInteger()}W, Peak: ${peakWatts.toInteger()}W"
+        state.deviceOn = false
+
+        if (state.continuousOnStart) {
+            state.onDurations.add(onSeconds)
+        }
+
+        state.lastStateChangeTime = currentTime
+        state.continuousOnStart = null
+
+        recordCycle(currentTime)
+        checkForCyclingAlert()
+        updateAppLabel()
     }
 }
 
-def checkDeviceOff() {
-    // This runs if no activity for offTimeout minutes
-    def minutesSinceActivity = new BigDecimal((now() - state.lastActivity) / 1000.0 / 60.0).setScale(1, BigDecimal.ROUND_HALF_UP)
-    
-    infolog "Checking device status - ${minutesSinceActivity} minutes since last activity"
-    
-    // Calculate average ON/OFF times for the session
-    def avgOn = calculateAverage(state.onDurations)
-    def avgOff = calculateAverage(state.offDurations)
-    
-    // Calculate total runtime if device was detected as ON
-    if (state.leftOnDetected && state.cycleHistory && state.cycleHistory.size() > 0 && state.lastActivity) {
-        // Get the earliest cycle time (first time device turned on)
-        def firstCycleTime = state.cycleHistory.min()
-        def totalRuntimeMinutes = new BigDecimal((state.lastActivity - firstCycleTime) / 1000.0 / 60.0).setScale(1, BigDecimal.ROUND_HALF_UP)
-        def totalMinutes = totalRuntimeMinutes.toDouble()
-        def hours = (totalMinutes / 60).toInteger()
-        def minutes = new BigDecimal(totalMinutes % 60).setScale(1, BigDecimal.ROUND_HALF_UP)
-        
-        if (hours > 0) {
-            infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF. Total runtime: ${hours}h ${minutes}m"
+def recordCycle(currentTime) {
+    if (!state.cycleHistory) state.cycleHistory = []
+    state.cycleHistory.add(currentTime)
+    state.sessionCycleCount = (state.sessionCycleCount ?: 0) + 1
+
+    def windowMs = timeWindow * 60 * 1000
+    state.cycleHistory = state.cycleHistory.findAll { it > (currentTime - windowMs) }
+
+    if (state.sessionCycleCount == 1) {
+        log.info "--- NEW SESSION STARTED ---"
+    }
+
+    log.info "Cycle #${state.sessionCycleCount} | Window: ${state.cycleHistory.size()}/${cycleCount}"
+}
+
+def checkForCyclingAlert() {
+    if (state.cycleHistory.size() >= cycleCount && !state.leftOnDetected) {
+        log.info "CYCLING DETECTED: ${state.cycleHistory.size()} cycles detected in ${timeWindow} min (Usage Monitor)"
+        state.leftOnDetected = true
+        if (cycleAlertSwitch) cycleAlertSwitch.on()
+    }
+}
+
+def checkStuckOn() {
+    if (!state.deviceOn || !state.continuousOnStart) return
+
+    def onDurationMinutes = (now() - state.continuousOnStart) / 1000.0 / 60.0
+
+    if (onDurationMinutes >= stuckOnTimeout && !state.stuckOnDetected) {
+        log.warn "STUCK-ON ALERT: Device ON for ${String.format('%.1f', onDurationMinutes)} min"
+        state.stuckOnDetected = true
+
+        if (stuckOnAlertSwitch) stuckOnAlertSwitch.on()
+
+        if (enableHistoryTracking) {
+            recordSessionData("stuck-on")
+        }
+
+        updateAppLabel()
+    }
+}
+
+def heartbeat() {
+    checkDeviceOffReset()
+    if (state.deviceOn && !state.stuckOnDetected) {
+        checkStuckOn()
+    }
+}
+
+def checkDeviceOffReset() {
+    if (state.deviceOn) return
+    if (!state.lastActivity) return
+
+    def minsSinceActivity = (now() - state.lastActivity) / 1000.0 / 60.0
+
+    if (minsSinceActivity >= offTimeout && (state.sessionCycleCount > 0 || state.leftOnDetected)) {
+        log.info "--- SESSION ENDED (${String.format('%.1f', minsSinceActivity)}m idle) ---"
+        finishSession()
+    }
+}
+
+def finishSession() {
+    // 1. Capture Last Session Stats for Dashboard (Memory Only)
+    if (state.sessionCycleCount > 0) {
+        def avgOn = getAverage(state.onDurations)
+        def avgOff = getAverage(state.offDurations)
+        def totalSeconds = (avgOn * state.sessionCycleCount) + (avgOff * state.sessionCycleCount)
+
+        def session = [
+                time: new Date().format("h:mm a"),
+                cycles: state.sessionCycleCount,
+                avgOn: String.format('%.1f', avgOn),
+                avgOff: String.format('%.1f', avgOff),
+                runtime: String.format('%.1f', totalSeconds / 60.0)
+        ]
+        state.lastSessionStats = session
+
+        if (!state.recentSessions) state.recentSessions = []
+        state.recentSessions.add(0, session)
+        if (state.recentSessions.size() > 10) state.recentSessions = state.recentSessions.take(10)
+    }
+
+    // 2. Log to CSV only if it meets threshold
+    if (enableHistoryTracking) {
+        if (state.sessionCycleCount >= cycleCount) {
+            recordSessionData("normal")
         } else {
-            infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF. Total runtime: ${totalRuntimeMinutes} minutes"
+            logDebug "Ignored session with ${state.sessionCycleCount} cycles (Threshold: ${cycleCount})"
         }
-        
-        infolog "Session Stats - Avg ON: ${avgOn}, Avg OFF: ${avgOff}, Total cycles: ${state.cycleHistory.size()}"
-        
-        state.lastRuntime = totalRuntimeMinutes
-        state.lastRuntimeDisplay = hours > 0 ? "${hours}h ${minutes}m" : "${totalRuntimeMinutes}m"
-        state.lastAvgOn = avgOn
-        state.lastAvgOff = avgOff
-    } else {
-        infolog "No activity detected for ${minutesSinceActivity} minutes. Device appears to be truly OFF."
     }
-    
-    // Reset everything for next session
+
+    // 3. Reset
     state.cycleHistory = []
+    state.sessionCycleCount = 0
     state.onDurations = []
     state.offDurations = []
-    state.deviceOn = false
     state.leftOnDetected = false
-    state.lastStateChangeTime = null  // Critical: reset so next cycle doesn't include idle time
-    
-    // Turn off alert switch
-    try {
-        if (alertSwitch.currentValue("switch") == "on") {
-            infolog "Turning OFF alert switch"
-            alertSwitch.off()
-        }
-    } catch (Exception e) {
-        log.error "Failed to turn off alert switch: ${e.message}"
+    state.currentSessionWattages = []
+
+    if (cycleAlertSwitch && cycleAlertSwitch.currentValue("switch") == "on") {
+        cycleAlertSwitch.off()
     }
-    
+
+    if (state.anomalyDetected) {
+        state.anomalyDetected = false
+        state.anomalyMessage = null
+    }
+
     updateAppLabel()
 }
 
-def resetStatistics() {
-    infolog "Resetting all statistics"
-    
-    // Clear current session data
-    state.cycleHistory = []
-    state.onDurations = []
-    state.offDurations = []
-    state.deviceOn = false
-    state.leftOnDetected = false
-    state.lastStateChangeTime = null
-    
-    // Clear historical data
-    state.lastRuntime = null
-    state.lastRuntimeDisplay = null
-    state.lastAvgOn = null
-    state.lastAvgOff = null
-    state.alertTime = null
-    state.onStartTime = null
-    
-    // Turn off alert switch if it's on
-    try {
-        if (alertSwitch && alertSwitch.currentValue("switch") == "on") {
-            alertSwitch.off()
-            infolog "Alert switch turned OFF"
-        }
-    } catch (Exception e) {
-        log.error "Failed to turn off alert switch: ${e.message}"
-    }
-    
-    // Cancel any pending timeout checks
-    unschedule(checkDeviceOff)
-    
-    updateAppLabel()
-    infolog "Statistics reset complete"
-}
+// ----------------------------------------------------------------------------
+//   DATA LOGGING & BASELINE
+// ----------------------------------------------------------------------------
 
-def canWeRun() {
-    def restrictionOk = true
-    def modeOk = true
-    
-    // Check restriction switch
-    if (restrictSwitch) {
-        try {
-            if (restrictSwitch.currentValue('switch') != 'on') {
-                restrictionOk = false
-                debuglog "Restriction switch is OFF - not running"
-            }
-        } catch (Exception e) {
-            log.error "Error checking restriction switch: ${e.message}"
-            restrictionOk = false
-        }
-    }
-    
-    // Check mode restrictions
-    if (noRunModes) {
-        if (noRunModes.contains(location.mode)) {
-            modeOk = false
-            debuglog "Mode ${location.mode} is restricted - not running"
-        }
-    }
-    
-    return (restrictionOk && modeOk)
-}
+def recordSessionData(type) {
+    def data = [:]
+    data.timestamp = new Date().format("yyyy-MM-dd HH:mm:ss")
+    data.type = type
 
-def getCurrentStatusText() {
-    if (state.leftOnDetected) {
-        return "🔴 ALERT ACTIVE - Device is cycling and appears to be LEFT ON"
-    } else if (state.cycleHistory && state.cycleHistory.size() > 0) {
-        def remaining = cycleCount - state.cycleHistory.size()
-        return "🟡 MONITORING - ${remaining} more cycle(s) needed to trigger alert"
+    if (type == "stuck-on") {
+        data.cycles = 0
+        data.avgOn = state.continuousOnStart ? (now() - state.continuousOnStart) / 1000.0 : 0.0
+        data.avgOff = 0.0
+        data.runtime = data.avgOn / 60.0
+        state.stuckOnEventCountThisMonth = (state.stuckOnEventCountThisMonth ?: 0) + 1
     } else {
-        return "🟢 MONITORING - No active cycles detected"
+        data.cycles = state.sessionCycleCount ?: 0
+        data.avgOn = getAverage(state.onDurations)
+        data.avgOff = getAverage(state.offDurations)
+
+        def totalSeconds = (data.avgOn * data.cycles) + (data.avgOff * data.cycles)
+        data.runtime = totalSeconds / 60.0
     }
+
+    if (!state.currentMonthSessions) state.currentMonthSessions = []
+    state.currentMonthSessions.add(data)
+    state.sessionsThisMonth = (state.sessionsThisMonth ?: 0) + 1
+
+    if (settings.enableCsvLogging) {
+        logSessionToFile(data)
+    }
+
+    if (type == "normal" && state.baselineMonthsCollected >= 2) {
+        checkForAnomalies(data)
+    }
+}
+
+def logSessionToFile(data) {
+    def fileName = getFileName()
+    def line = "${data.timestamp},${data.type},${data.cycles}," +
+            "${String.format('%.1f', safeToBigDecimal(data.avgOn))}," +
+            "${String.format('%.1f', safeToBigDecimal(data.avgOff))}," +
+            "${String.format('%.2f', safeToBigDecimal(data.runtime))}"
+
+    def fileContent = ""
+    try {
+        def existingBytes = downloadHubFile(fileName)
+        if (existingBytes) {
+            fileContent = new String(existingBytes)
+        }
+    } catch (e) {
+        logDebug "Creating new log file: ${fileName}"
+    }
+
+    if (!fileContent) {
+        fileContent = "Time,Type,Cycles,AvgOn,AvgOff,SessionDurationMin\n"
+    }
+
+    try {
+        fileContent += "${line}\n"
+        uploadHubFile(fileName, fileContent.bytes)
+        logDebug "Saved session to CSV"
+    } catch (e) {
+        log.error "Failed to write CSV: ${e.message}"
+    }
+}
+
+def checkMonthRollover() {
+    def nowMonth = new Date().format("yyyy-MM")
+    if (state.currentMonth != nowMonth) {
+        log.info "Month Rollover: ${state.currentMonth} -> ${nowMonth}"
+        updateMonthlySnapshot()
+        state.currentMonth = nowMonth
+        state.currentMonthSessions = []
+        state.stuckOnEventCountThisMonth = 0
+        state.sessionsThisMonth = 0
+    }
+}
+
+def updateMonthlySnapshot() {
+    if (!state.currentMonthSessions) return
+
+    def validSessions = state.currentMonthSessions.findAll { it.type == "normal" }
+    if (validSessions.size() == 0) return
+
+    validSessions.sort { it.runtime }
+    def median = validSessions[ (int)(validSessions.size() / 2) ]
+
+    def snap = [
+            monthYear: new Date().parse("yyyy-MM", state.currentMonth).format("MMM yyyy"),
+            cycles: median.cycles,
+            avgOn: median.avgOn,
+            avgOff: median.avgOff,
+            stuckOnEvents: state.stuckOnEventCountThisMonth ?: 0,
+            sessionsPerDay: String.format('%.1f', (state.sessionsThisMonth / 30.0)),
+            anomaly: state.anomalyDetected
+    ]
+
+    state.monthlySnapshots.add(0, snap)
+    if (state.monthlySnapshots.size() > 12) state.monthlySnapshots = state.monthlySnapshots.take(12)
+
+    state.baselineMonthsCollected = (state.baselineMonthsCollected ?: 0) + 1
+    calculateBaseline()
+}
+
+def calculateBaseline() {
+    if (settings.lockBaseline) {
+        log.info "Baseline is LOCKED. Skipping update."
+        return
+    }
+
+    def list = state.monthlySnapshots.take(12)
+    if (list.size() < 2) return
+
+    def totOn = 0.0
+    def totOff = 0.0
+    list.each {
+        totOn += safeToBigDecimal(it.avgOn)
+        totOff += safeToBigDecimal(it.avgOff)
+    }
+
+    state.baselineAvgOn = totOn / list.size()
+    state.baselineAvgOff = totOff / list.size()
+    state.baselineCycleTime = state.baselineAvgOn + state.baselineAvgOff
+
+    log.info "Baseline Updated: ${state.baselineCycleTime}s Cycle"
+}
+
+def checkForAnomalies(data) {
+    def baseCycle = safeToBigDecimal(state.baselineCycleTime)
+    if (baseCycle == 0) return
+
+    def curCycle = safeToBigDecimal(data.avgOn) + safeToBigDecimal(data.avgOff)
+    def diff = (curCycle - baseCycle).abs()
+    def pct = (diff / baseCycle) * 100.0
+
+    if (pct > anomalyThreshold) {
+        def msg = "Cycle time deviated by ${String.format('%.0f', pct)}%"
+        state.anomalyDetected = true
+        state.anomalyMessage = msg
+        log.warn "Anomaly Detected: ${msg}"
+        if (anomalySwitch) anomalySwitch.on()
+    }
+}
+
+// ----------------------------------------------------------------------------
+//   UTILITIES
+// ----------------------------------------------------------------------------
+
+def getSystemStatus() {
+    if (state.stuckOnDetected) {
+        return [text: "STUCK ON ALERT", color: "#cc0000"]
+    } else if (state.leftOnDetected) {
+        return [text: "Cycling Detected", color: "#e67e22"]
+    } else if (state.deviceOn) {
+        return [text: "Pump Running", color: "#27ae60"]
+    }
+    return [text: "System Idle", color: "#666"]
 }
 
 def updateAppLabel() {
-    if (!thisName) return
-    
-    def label = thisName
-    def cyclesInWindow = state.cycleHistory?.size() ?: 0
-    
-    if (state.leftOnDetected) {
-        // Alert has been triggered
-        def avgOn = calculateAverage(state.onDurations)
-        def avgOff = calculateAverage(state.offDurations)
-        label += " <span style=\"color:red;\">(ALERT: ${cyclesInWindow} cycles - ON:${avgOn}/OFF:${avgOff})</span>"
-    } else if (cyclesInWindow > 0) {
-        // Cycles detected but not enough yet
-        def remaining = cycleCount - cyclesInWindow
-        label += " <span style=\"color:orange;\">(${cyclesInWindow}/${cycleCount} cycles - ${remaining} more needed)</span>"
-    } else {
-        // Normal monitoring - show last runtime if available
-        if (state.lastRuntimeDisplay) {
-            def statsText = "Last: ${state.lastRuntimeDisplay}"
-            if (state.lastAvgOn && state.lastAvgOff) {
-                statsText += " (ON:${state.lastAvgOn}/OFF:${state.lastAvgOff})"
-            }
-            label += " <span style=\"color:green;\">(${statsText})</span>"
-        } else {
-            label += " <span style=\"color:green;\">(Monitoring)</span>"
+    def prefix = labelPrefix ?: powerMeter.displayName
+    def status = getSystemStatus()
+    app.updateLabel("${prefix} - ${status.text}")
+}
+
+def appButtonHandler(btn) {
+    if (btn == "btnResetRecent") {
+        log.info "Clearing Recent Sessions table and ending current session"
+        state.recentSessions = []
+        finishSession()
+    } else if (btn == "btnResetHistory") {
+        log.warn "⚠️ RESETTING ALL HISTORICAL DATA - This cannot be undone!"
+        
+        // Clear all historical tracking data
+        state.monthlySnapshots = []
+        state.currentMonthSessions = []
+        state.baselineAvgOn = null
+        state.baselineAvgOff = null
+        state.baselineCycleTime = null
+        state.baselineMonthsCollected = 0
+        state.stuckOnEventCountThisMonth = 0
+        state.sessionsThisMonth = 0
+        state.sessionsToday = 0
+        state.anomalyDetected = false
+        state.anomalyMessage = null
+        state.showFullHistory = false
+        
+        // Turn off anomaly switch if it was on
+        if (anomalySwitch && anomalySwitch.currentValue("switch") == "on") {
+            anomalySwitch.off()
+            log.info "Turned off anomaly alert switch"
         }
-    }
-    
-    app.updateLabel(label)
-}
-
-def getFormat(type, myText="") {
-    if(type == "header-green") return "<div style='color:#ffffff;font-weight: bold;background-color:#81BC00;border: 1px solid;box-shadow: 2px 3px #A9A9A9'>${myText}</div>"
-    if(type == "line") return "<hr style='background-color:#1A77C9; height: 1px; border: 0;'>"
-    if(type == "title") return "<h2 style='color:#1A77C9;font-weight: bold'>${myText}</h2>"
-    if(type == "title2") return "<div style='color:#1A77C9;font-weight: bold'>${myText}</div>"
-}
-
-def debuglog(statement) {   
-    def logL = 0
-    if (logLevel) logL = logLevel.toInteger()
-    if (logL == 0) {return}
-    else if (logL >= 2) {
-        log.debug("${app.label}: ${statement}")
+        
+        log.info "All historical data has been reset. CSV files remain on disk."
     }
 }
 
-def infolog(statement) {       
-    def logL = 0
-    if (logLevel) logL = logLevel.toInteger()
-    if (logL == 0) {return}
-    else if (logL >= 1) {
-        log.info("${app.label}: ${statement}")
+def checkDayRollover() {
+    def today = new Date().format("yyyy-MM-dd")
+    if (state.lastSessionDate != today) {
+        state.sessionsToday = 0
+        state.lastSessionDate = today
     }
 }
 
-def getLogLevels() {
-    return [["0":"None"],["1":"Running"],["2":"NeedHelp"]]
+def safeToBigDecimal(val) {
+    if (val == null) return BigDecimal.ZERO
+    try {
+        if (val instanceof BigDecimal) return val
+        def clean = val.toString().replaceAll("[^\\d.-]", "")
+        return clean ? new BigDecimal(clean) : BigDecimal.ZERO
+    } catch (e) {
+        return BigDecimal.ZERO
+    }
+}
+
+def getAverage(list) {
+    if (!list || list.size() == 0) return BigDecimal.ZERO
+    def sum = list.collect { safeToBigDecimal(it) }.sum()
+    return (sum / new BigDecimal(list.size()))
+}
+
+def getFileName() {
+    def cleanName = powerMeter.displayName.replaceAll(/[^a-zA-Z0-9]/, "")
+    def dateStr = new Date().format("yyyy-MM")
+    return "power-cycle-${cleanName}-${dateStr}.csv"
+}
+
+def getFileManagerUrl(filename) {
+    return "/local/${filename}"
+}
+
+def getOnDuration() {
+    if (!state.continuousOnStart) return ""
+    def sec = (now() - state.continuousOnStart) / 1000
+    return formatDuration(sec)
+}
+
+def formatDuration(seconds) {
+    def s = safeToBigDecimal(seconds)
+    if (s < 60) return "${s.setScale(0, RoundingMode.HALF_UP)}s"
+    return "${(s/60).setScale(1, RoundingMode.HALF_UP)}m"
+}
+
+def logDebug(msg) {
+    if (logEnable) log.debug msg
 }
