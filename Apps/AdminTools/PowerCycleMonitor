@@ -5,10 +5,18 @@
 // hubitat end
 
 /**
- * Power Cycle Monitor v2.36 (Smart Dashboard)
+ * Power Cycle Monitor v2.37 (Smart Dashboard)
  *
  * Monitor power meters to detect cycling patterns and stuck-on failures
  * with historical tracking and trend analysis.
+ *
+ * v2.37 Changes:
+ * - IMPROVED: Session end timing now much more accurate
+ * - Changed heartbeat to run every 1 minute (was 5 minutes)
+ * - Added immediate timeout check on every device OFF event
+ * - Added scheduled check at exact timeout time for precision
+ * - Session ends within ~1 minute of timeout instead of up to 5 minutes late
+ * - FIX: Corrected subscription method reference format
  *
  * v2.36 Changes:
  * - FEATURE: Split reset functionality into two clearly labeled buttons
@@ -16,17 +24,6 @@
  * - NEW: "Reset All Historical Data" button (at bottom with warnings)
  * - UI: Clear descriptions explain exactly what each reset button does
  * - SAFETY: Historical reset now includes warning message before action
- *
- * v2.35 Changes:
- * - UI: Renamed "History & Trends" to "Historical Analysis and Anomaly Detection"
- * - UI: Renamed "System Status" to "Current Session"
- * - UI: Moved CSV Logging section to separate section below Monthly History
- * - UI: CSV Logging is now a standalone section (not nested in Historical Analysis)
- *
- * v2.34 Changes:
- * - UI: Major layout reorganization for a more logical and intuitive user experience.
- * - FEATURE: Separated "Historical Analysis" from "CSV Logging" with independent controls.
- * - FIX: Proper section nesting using styled headers (Hubitat limitation workaround)
  */
 
 import java.math.RoundingMode
@@ -48,7 +45,7 @@ preferences {
 }
 
 def mainPage() {
-    dynamicPage(name: "mainPage", title: "Power Cycle Monitor v2.36", install: true, uninstall: true) {
+    dynamicPage(name: "mainPage", title: "Power Cycle Monitor v2.37", install: true, uninstall: true) {
 
         // 1. Device to Monitor
         section("Device to Monitor") {
@@ -152,6 +149,7 @@ def mainPage() {
         section("App Settings") {
             input "labelPrefix", "text", title: "App Label Prefix", required: false
             input "logEnable", "bool", title: "Enable Debug Logging", defaultValue: false
+            input "btnRefresh", "button", title: "🔄 Refresh Subscriptions"
         }
     }
 }
@@ -288,8 +286,8 @@ def initialize() {
         schedule("0 0 1 1 * ?", "checkMonthRollover") // Run yearly, but we check monthly
     }
 
-    subscribe(powerMeter, "power", powerHandler)
-    runEvery5Minutes("heartbeat")
+    subscribe(powerMeter, "power", "powerHandler")
+    runEvery1Minute("heartbeat")  // Check every minute for better timeout responsiveness
     updateAppLabel()
 }
 
@@ -364,6 +362,12 @@ def handleDeviceOff(currentTime) {
 
         recordCycle(currentTime)
         checkForCyclingAlert()
+        checkDeviceOffReset()  // Check immediately if session should end
+        
+        // Schedule a check at exactly the timeout time for precision
+        def timeoutSeconds = offTimeout * 60
+        runIn(timeoutSeconds, "checkDeviceOffReset")
+        
         updateAppLabel()
     }
 }
