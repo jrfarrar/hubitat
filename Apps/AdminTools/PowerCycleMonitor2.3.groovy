@@ -1,8 +1,15 @@
 /**
- * Power Cycle Monitor v2.37 (Smart Dashboard)
+ * Power Cycle Monitor v2.39 (Smart Dashboard)
  *
  * Monitor power meters to detect cycling patterns and stuck-on failures
  * with historical tracking and trend analysis.
+ *
+ * v2.39 Changes:
+ * - FIX: Runtime calculation now correctly uses (cycles - 1) for OFF periods
+ *   (3 cycles = 3 ON periods but only 2 OFF periods between them)
+ *
+ * v2.38 Changes:
+ * - IMPROVED: Recent Sessions now shows date with time (M/d h:mm a format)
  *
  * v2.37 Changes:
  * - IMPROVED: Session end timing now much more accurate
@@ -39,7 +46,7 @@ preferences {
 }
 
 def mainPage() {
-    dynamicPage(name: "mainPage", title: "Power Cycle Monitor v2.37", install: true, uninstall: true) {
+    dynamicPage(name: "mainPage", title: "Power Cycle Monitor v2.39", install: true, uninstall: true) {
 
         // 1. Device to Monitor
         section("Device to Monitor") {
@@ -432,10 +439,13 @@ def finishSession() {
     if (state.sessionCycleCount > 0) {
         def avgOn = getAverage(state.onDurations)
         def avgOff = getAverage(state.offDurations)
-        def totalSeconds = (avgOn * state.sessionCycleCount) + (avgOff * state.sessionCycleCount)
+        // Runtime = (ON time × cycles) + (OFF time × (cycles - 1))
+        // Because 3 cycles have 3 ON periods but only 2 OFF periods between them
+        def offPeriods = Math.max(0, state.sessionCycleCount - 1)
+        def totalSeconds = (avgOn * state.sessionCycleCount) + (avgOff * offPeriods)
 
         def session = [
-                time: new Date().format("h:mm a"),
+                time: new Date().format("M/d h:mm a"),
                 cycles: state.sessionCycleCount,
                 avgOn: String.format('%.1f', avgOn),
                 avgOff: String.format('%.1f', avgOff),
@@ -497,7 +507,9 @@ def recordSessionData(type) {
         data.avgOn = getAverage(state.onDurations)
         data.avgOff = getAverage(state.offDurations)
 
-        def totalSeconds = (data.avgOn * data.cycles) + (data.avgOff * data.cycles)
+        // Runtime = (ON time × cycles) + (OFF time × (cycles - 1))
+        def offPeriods = Math.max(0, data.cycles - 1)
+        def totalSeconds = (data.avgOn * data.cycles) + (data.avgOff * offPeriods)
         data.runtime = totalSeconds / 60.0
     }
 
