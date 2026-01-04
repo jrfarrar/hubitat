@@ -1,0 +1,904 @@
+/**
+ * Septic Pump Monitor v2.2
+ *
+ * Monitor septic pump runtime with historical tracking and trend analysis.
+ * Detects changes in pump behavior over time (perfect after pump replacement).
+ *
+ * V 2.2.1 - 2025-12-04
+ *   • FIX: All setScale() calls now wrap values in safeToBigDecimal() to prevent
+ *         MissingMethodException on Integer/Double types
+ *   • FIX: CSV logging rewritten to use download-append-upload pattern
+ *         (appendHubFile() doesn't exist in Hubitat)
+ *   • REMOVED: Notification device support (use virtual switches instead)
+ *
+ * V 2.2 - 2025-12-04
+ *   • FIX: hubFileExists() replaced with try/catch downloadHubFile()
+ *   • FIX: currentSwitch → currentValue("switch")
+ *   • FIX: baselineMin/baselineMax now calculated properly
+ *   • NEW: Gallons pumped estimation (configurable GPM)
+ *   • NEW: Rapid cycling detection (X runs in Y minutes)
+ *   • NEW: Daily run count alert
+ *   • NEW: Time between runs tracking
+ *   • NEW: Lifetime runtime hours (pump odometer)
+ *   • NEW: Interval anomaly detection
+ *
+ * V 2.1 - 2025-12-02
+ *   • Single yearly CSV file
+ *   • Daily scheduled health check
+ *   • Wattage buffer capped at 600 readings
+ *   • Chart.js median duration trend graph
+ *
+ * V 2.0 - 2025-12-02
+ *   • Initial historical analysis version
+ */
+
+import java.math.RoundingMode
+
+definition(
+    name: "Septic Pump Monitor",
+    namespace: "jrfarrar",
+    author: "J.R. Farrar",
+    description: "Septic Pump Monitor with Historical Tracking and Trend Analysis",
+    parent: "jrfarrar:Admin tools",
+    iconUrl: "",
+    iconX2Url: "",
+    iconX3Url: "",
+    importUrl: ""
+)
+
+preferences {
+    page(name: "pageConfig")
+    page(name: "toggleHistoryDisplay")
+}
+
+def pageConfig() {
+    dynamicPage(name: "", title: "Septic Pump Monitor v2.2.1", install: true, uninstall: true, refreshInterval: 0) {
+
+        // 1. Device Configuration
+        section(getFormat("header-green", "Device Configuration")) {
+            input "pwrClamp", "capability.powerMeter", title: "Power Meter", required: true, submitOnChange: true
+            input "watts", "number", title: "Watt Threshold (pump ON above this)", required: true, defaultValue: 100
+            input "pumpGPM", "decimal", title: "Pump Flow Rate (GPM) - for gallons estimation", required: false, defaultValue: 0
+        }
+
+        // 2. Alert Switches
+        section(getFormat("header-green", "Alert Switches")) {
+            input "pumpSwitch", "capability.switch", title: "Switch ON while pump running (optional)", required: false
+            input "tempSwitch", "capability.switch", title: "Switch ON if pump hasn't run in X days", required: false
+            input "xdays", "number", title: "Days without running before alert", required: true, defaultValue: 7
+            input "tooLongSwitch", "capability.switch", title: "Switch ON if pump runs too long", required: false
+            input "tooLong", "number", title: "Minutes before 'running too long' alert", required: true, defaultValue: 15
+        }
+
+        // 3. Rapid Cycling Detection
+        section(getFormat("header-green", "Rapid Cycling Detection")) {
+            paragraph "<small>Alert if pump runs multiple times in quick succession (may indicate float switch issues or leak)</small>"
+            input "enableRapidCycleDetection", "bool", title: "Enable Rapid Cycling Detection", defaultValue: true, submitOnChange: true
+            if (enableRapidCycleDetection) {
+                input "rapidCycleCount", "number", title: "Alert if pump runs X times...", required: true, defaultValue: 3
+                input "rapidCycleWindow", "number", title: "...within Y minutes", required: true, defaultValue: 30
+                input "rapidCycleSwitch", "capability.switch", title: "Rapid Cycling Alert Switch (optional)", required: false
+            }
+        }
+
+        // 4. Daily Run Limit
+        section(getFormat("header-green", "Daily Run Limit")) {
+            paragraph "<small>Alert if pump runs excessively in one day</small>"
+            input "enableDailyRunLimit", "bool", title: "Enable Daily Run Limit Alert", defaultValue: true, submitOnChange: true
+            if (enableDailyRunLimit) {
+                input "maxDailyRuns", "number", title: "Maximum runs per day before alert", required: true, defaultValue: 15
+                input "dailyRunSwitch", "capability.switch", title: "Excessive Daily Runs Switch (optional)", required: false
+            }
+        }
+
+
+        // 6. Current Status Dashboard
+        section(getFormat("header-green", "Current Status")) {
+            paragraph getStatusDashboardHtml()
+        }
+
+        // 7. Statistics
+        section(getFormat("header-green", "Statistics")) {
+            paragraph getStatisticsHtml()
+        }
+
+        // 8. Recent Runs
+        section(getFormat("header-green", "Recent Runs")) {
+            if (!state.recentRuns) state.recentRuns = []
+            if (state.recentRuns.size() == 0) {
+                paragraph "<div style='background-color:#f0f0f0;padding:10px;border-radius:5px;'><b>No run history yet...</b><br>Completed pump runs will appear here.</div>"
+            } else {
+                paragraph getRecentRunsTableHtml()
+            }
+            paragraph "<hr style='margin-top:15px;margin-bottom:10px;'>"
+            input "btnResetRecent", "button", title: "Clear Recent Runs Table"
+            paragraph "<small style='color:#666;'>Clears only the table above. Historical data and CSV preserved.</small>"
+        }
+
+        // 9. Historical Analysis
+        section(getFormat("header-green", "Historical Analysis")) {
+            input "enableHistoryTracking", "bool", title: "Enable Historical Analysis", defaultValue: true, submitOnChange: true
+
+            if (settings.enableHistoryTracking) {
+                paragraph "<div style='font-weight:bold;margin-top:15px;margin-bottom:10px;'>Anomaly Detection</div>"
+                input "anomalyThreshold", "number", title: "Duration Anomaly Threshold (%)", range: "15..100", required: true, defaultValue: 30
+                input "anomalySwitch", "capability.switch", title: "Anomaly Alert Switch (optional)", required: false
+
+                paragraph "<div style='font-weight:bold;margin-top:15px;margin-bottom:10px;'>Baseline Management</div>"
+                input "lockBaseline", "bool", title: "Lock Current Baseline", defaultValue: false, submitOnChange: true
+                paragraph getBaselineDisplayHtml()
+                paragraph "<small style='color:#666;'><b>Tip:</b> Lock baseline after pump replacement once stable. Unlock to adapt gradually.</small>"
+            }
+        }
+
+        // 10. Monthly History & Trend
+        if (settings.enableHistoryTracking) {
+            section(getFormat("header-green", "Monthly History & Trend")) {
+                if (!state.monthlySnapshots) state.monthlySnapshots = []
+
+                def monthsToShow = state.showFullHistory ? 12 : 6
+
+                if (state.monthlySnapshots.size() == 0) {
+                    paragraph "<div style='background-color:#f0f0f0;padding:10px;border-radius:5px;'><b>Establishing Baseline...</b><br>Need at least 2 months. Runs this month: ${state.runsThisMonth ?: 0}</div>"
+                } else {
+                    paragraph getMonthlyHistoryTableHtml(monthsToShow)
+
+                    if (state.monthlySnapshots.size() > 6) {
+                        def btnText = state.showFullHistory ? "Show Less" : "Show 12 Months"
+                        href name: "btnToggleHistory", title: btnText, description: "", page: "toggleHistoryDisplay"
+                    }
+                }
+            }
+
+            // 11. CSV Logging
+            section(getFormat("header-green", "CSV Logging")) {
+                input "enableCsvLogging", "bool", title: "Enable CSV File Logging", defaultValue: true, submitOnChange: true
+                if (settings.enableCsvLogging) {
+                    def fileName = getFileName()
+                    def fileUrl = getFileManagerUrl(fileName)
+                    paragraph "<div style='text-align:left;margin-top:5px;'><a href='${fileUrl}' target='_blank' style='font-weight:bold;text-decoration:none;'>📥 Download Full History (CSV)</a></div>"
+                }
+            }
+        }
+
+        // 12. Reset Historical Data
+        section(getFormat("header-green", "⚠️ Reset Historical Data")) {
+            paragraph "<div style='background-color:#fff3cd;padding:10px;border-radius:5px;border-left:4px solid #ff9800;'><b>Warning:</b> Permanently deletes all historical data (monthly snapshots, baseline, lifetime stats). CSV file remains.</div>"
+            input "btnResetHistory", "button", title: "⚠️ Reset All Historical Data"
+        }
+
+        // 13. App Settings
+        section(getFormat("header-green", "App Settings")) {
+            input "thisName", "text", title: "App Name", submitOnChange: true
+            input "logLevel", "enum", title: "Logging Level", options: getLogLevels(), defaultValue: "1", required: true
+            input "btnRefresh", "button", title: "🔄 Refresh Subscriptions"
+        }
+    }
+}
+
+def toggleHistoryDisplay() {
+    state.showFullHistory = !state.showFullHistory
+    pageConfig()
+}
+
+// ----------------------------------------------------------------------------
+//   DISPLAY HELPERS
+// ----------------------------------------------------------------------------
+
+def getStatusDashboardHtml() {
+    def statusColor = "#666"
+    def statusText = "Idle"
+    def details = ""
+
+    if (state.running) {
+        statusColor = "#27ae60"
+        statusText = "RUNNING"
+        def runningFor = state.onTime ? formatDuration((now() - state.onTime) / 1000) : "?"
+        details = "Running for: ${runningFor}"
+        if (pumpGPM && pumpGPM > 0) {
+            def runningMinutes = (now() - state.onTime) / 60000.0
+            def estimatedGallons = safeToBigDecimal(runningMinutes * pumpGPM).setScale(0, RoundingMode.HALF_UP)
+            details += "<br>Estimated: ~${estimatedGallons} gallons so far"
+        }
+    } else if (state.lastrun) {
+        def lastDuration = state.duration ? "${state.duration} min" : "N/A"
+        def gallonsText = ""
+        if (state.lastRunGallons && state.lastRunGallons > 0) {
+            gallonsText = " (~${safeToBigDecimal(state.lastRunGallons).setScale(0, RoundingMode.HALF_UP)} gal)"
+        }
+        details = "Last run: ${state.lastrun}<br>Duration: ${lastDuration}${gallonsText}"
+        
+        def daysSince = daysSinceLast()
+        if (daysSince >= xdays) {
+            statusColor = "#cc0000"
+            statusText = "OVERDUE"
+            details += "<br><span style='color:#cc0000;'>⚠️ ${daysSince} days since last run!</span>"
+        } else {
+            details += "<br>Days since last run: ${daysSince}"
+        }
+    } else {
+        details = "Waiting for first pump run..."
+    }
+
+    return """
+    <div style='background:#f8f8f8;padding:15px;border-radius:8px;border-left:5px solid ${statusColor};'>
+        <div style='font-size:1.2em;font-weight:bold;color:${statusColor};'>${statusText}</div>
+        <div style='margin-top:8px;color:#333;'>${details}</div>
+    </div>
+    """
+}
+
+def getStatisticsHtml() {
+    def runsToday = state.runsToday ?: 0
+    def runsThisMonth = state.runsThisMonth ?: 0
+    def lifetimeMinutes = safeToBigDecimal(state.lifetimeRuntimeMinutes ?: 0)
+    def lifetimeHours = (lifetimeMinutes / 60.0).setScale(1, RoundingMode.HALF_UP)
+    def lifetimeGallons = safeToBigDecimal(state.lifetimeGallons ?: 0)
+    def monthlyGallons = safeToBigDecimal(state.gallonsThisMonth ?: 0)
+
+    def gallonsRow = ""
+    if (pumpGPM && pumpGPM > 0) {
+        gallonsRow = """
+        <tr><td><b>Gallons This Month:</b></td><td>${monthlyGallons.setScale(0, RoundingMode.HALF_UP)}</td></tr>
+        <tr><td><b>Lifetime Gallons:</b></td><td>${lifetimeGallons.setScale(0, RoundingMode.HALF_UP)}</td></tr>
+        """
+    }
+
+    return """
+    <div style='background:#f0f8ff;padding:10px;border-radius:5px;'>
+        <table style='width:100%;font-size:0.9em;'>
+            <tr><td><b>Runs Today:</b></td><td>${runsToday}</td></tr>
+            <tr><td><b>Runs This Month:</b></td><td>${runsThisMonth}</td></tr>
+            <tr><td><b>Lifetime Runtime:</b></td><td>${lifetimeHours} hours</td></tr>
+            ${gallonsRow}
+        </table>
+    </div>
+    """
+}
+
+def getRecentRunsTableHtml() {
+    def rows = ""
+    state.recentRuns.each { run ->
+        def flag = run.anomaly ? "<span style='color:#cc0000;'>⚠️</span>" : ""
+        def bg = run.anomaly ? "#fff0f0" : "#ffffff"
+        def gallonsCol = (pumpGPM && pumpGPM > 0) ? "<td>${run.gallons ?: '-'}</td>" : ""
+        def intervalCol = run.hoursSinceLast ? "<td>${run.hoursSinceLast}h</td>" : "<td>-</td>"
+        rows += "<tr style='background:${bg};'><td>${run.time}</td><td>${run.duration}m</td>${gallonsCol}<td>${run.peakWatts}W</td>${intervalCol}<td>${flag}</td></tr>"
+    }
+    
+    def gallonsHeader = (pumpGPM && pumpGPM > 0) ? "<td>Gal</td>" : ""
+    
+    return """
+    <table style='width:100%;font-size:0.9em;border-collapse:collapse;' border='1' bordercolor='#ddd'>
+        <tr style='background:#f5f5f5;font-weight:bold;'><td>Time</td><td>Dur</td>${gallonsHeader}<td>Peak</td><td>Int</td><td>Alert</td></tr>
+        ${rows}
+    </table>
+    <small style='color:#666;'>Int = Hours since previous run</small>
+    """
+}
+
+def getMonthlyHistoryTableHtml(monthsToShow) {
+    def rows = ""
+    def snaps = state.monthlySnapshots.take(monthsToShow)
+    
+    def gallonsHeader = (pumpGPM && pumpGPM > 0) ? "<td>Gal</td>" : ""
+    
+    snaps.each { snap ->
+        def flag = snap.hadAnomalies ? "⚠️" : ""
+        def bg = snap.hadAnomalies ? "#fff0f0" : "#ffffff"
+        def gallonsCol = (pumpGPM && pumpGPM > 0) ? "<td>${snap.totalGallons ?: '-'}</td>" : ""
+        rows += "<tr style='background:${bg};'><td>${snap.monthYear}</td><td>${snap.totalRuns}</td><td>${snap.medianDuration}m</td><td>${snap.avgDuration}m</td>${gallonsCol}<td>${snap.runsPerDay}</td><td>${flag}</td></tr>"
+    }
+
+    def chartHtml = ""
+    if (state.monthlySnapshots.size() >= 2) {
+        def labels = state.monthlySnapshots.collect { "'${it.monthYear}'" }.reverse().join(",")
+        def data = state.monthlySnapshots.collect { it.medianDuration }.reverse().join(",")
+        chartHtml = """
+        <div style='margin-top:20px;padding:15px;background:#f8f8f8;border-radius:8px;'>
+            <b>Median Duration Trend</b>
+            <div style='height:220px;'><canvas id='trendChart'></canvas></div>
+            <script src='https://cdn.jsdelivr.net/npm/chart.js'></script>
+            <script>
+                new Chart(document.getElementById('trendChart'), {
+                    type: 'line',
+                    data: { labels: [${labels}], datasets: [{ label: 'Median Duration (min)', data: [${data}], borderColor: '#27ae60', backgroundColor: 'rgba(39,174,96,0.1)', tension: 0.3, fill: true }] },
+                    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: false } } }
+                });
+            </script>
+        </div>
+        """
+    }
+
+    return """
+    <table style='width:100%;font-size:0.9em;border-collapse:collapse;margin-bottom:15px;' border='1' bordercolor='#ddd'>
+        <tr style='background:#f5f5f5;font-weight:bold;'><td>Month</td><td>Runs</td><td>Med</td><td>Avg</td>${gallonsHeader}<td>/Day</td><td>Alert</td></tr>
+        ${rows}
+    </table>
+    ${chartHtml}
+    """
+}
+
+def getBaselineDisplayHtml() {
+    def b = state.baselineDuration ? "${safeToBigDecimal(state.baselineDuration).setScale(1, RoundingMode.HALF_UP)}m" : "N/A"
+    def min = state.baselineMin ? "${safeToBigDecimal(state.baselineMin).setScale(1, RoundingMode.HALF_UP)}m" : "N/A"
+    def max = state.baselineMax ? "${safeToBigDecimal(state.baselineMax).setScale(1, RoundingMode.HALF_UP)}m" : "N/A"
+    def lock = lockBaseline ? "(Locked)" : "(Dynamic)"
+    def months = state.baselineMonthsCollected ?: 0
+
+    return """
+    <div style='background:#e8f4e8;padding:10px;border-radius:5px;'>
+        <b>Baseline Duration ${lock}:</b> ${b}<br>
+        <small>Range: ${min} - ${max} | Based on ${months} month(s)</small>
+    </div>
+    """
+}
+
+// ----------------------------------------------------------------------------
+//   CORE LOGIC & SCHEDULING
+// ----------------------------------------------------------------------------
+
+def installed() { infolog "installed"; initialize() }
+def updated() { infolog "updated"; unsubscribe(); unschedule(); initialize() }
+
+def initialize() {
+    infolog "initialize - v2.2.1"
+
+    // Initialize state variables
+    state.running = state.running ?: false
+    state.recentRuns = state.recentRuns ?: []
+    state.currentRunWattages = state.currentRunWattages ?: []
+    state.monthlySnapshots = state.monthlySnapshots ?: []
+    state.currentMonthRuns = state.currentMonthRuns ?: []
+    state.currentMonth = state.currentMonth ?: new Date().format("yyyy-MM")
+    state.runsThisMonth = state.runsThisMonth ?: 0
+    state.runsToday = state.runsToday ?: 0
+    state.recentRunTimes = state.recentRunTimes ?: []
+    state.lifetimeRuntimeMinutes = state.lifetimeRuntimeMinutes ?: 0
+    state.lifetimeGallons = state.lifetimeGallons ?: 0
+    state.gallonsThisMonth = state.gallonsThisMonth ?: 0
+
+    // Daily health check at 03:07
+    schedule("0 7 3 * * ?", "healthCheck")
+
+    // Subscribe to power meter
+    if (pwrClamp) {
+        subscribe(pwrClamp, "power", powerHandler)
+    }
+
+    // Recover running state on hub reboot
+    if (pwrClamp) {
+        def currentPower = pwrClamp.currentValue("power")
+        if (currentPower != null && safeToBigDecimal(currentPower) > watts) {
+            if (!state.running) {
+                state.running = true
+                state.onTime = now()
+                state.lastrun = new Date().format("yyyy-MM-dd HH:mm:ss")
+                infolog "Recovery: Pump running on startup (${currentPower}W)"
+                pumpSwitch?.on()
+                runIn(60 * tooLong, pumpRunningLong)
+            }
+        }
+    }
+
+    scheduleOverdueCheck()
+    updateAppLabel()
+}
+
+def healthCheck() {
+    checkDayRollover()
+    checkMonthRollover()
+    
+    // Reset daily alert switches at midnight
+    if (dailyRunSwitch?.currentValue("switch") == "on") {
+        dailyRunSwitch.off()
+        infolog "Daily run alert switch reset"
+    }
+    if (rapidCycleSwitch?.currentValue("switch") == "on") {
+        rapidCycleSwitch.off()
+        infolog "Rapid cycle alert switch reset"
+    }
+    
+    debuglog "Daily health check complete"
+}
+
+def powerHandler(evt) {
+    def power = safeToBigDecimal(evt.value).setScale(0, RoundingMode.HALF_UP).toInteger()
+    
+    // Filter erroneous readings
+    if (power >= 10000) {
+        log.warn "Ignoring erroneous reading: ${power}W"
+        return
+    }
+
+    if (power > watts) {
+        handlePumpOn(power)
+    } else {
+        handlePumpOff()
+    }
+}
+
+def handlePumpOn(power) {
+    // Track wattage readings (cap at 600 to prevent memory bloat)
+    state.currentRunWattages = state.currentRunWattages ?: []
+    state.currentRunWattages << power
+    if (state.currentRunWattages.size() > 600) {
+        state.currentRunWattages = state.currentRunWattages[-600..-1]
+    }
+
+    if (!state.running) {
+        // Pump just turned on
+        unschedule("pumpOverdue")
+        state.running = true
+        state.onTime = now()
+        state.lastrun = new Date().format("yyyy-MM-dd HH:mm:ss")
+        
+        infolog "Pump ON - ${state.lastrun}"
+        
+        pumpSwitch?.on()
+        
+        // Schedule "running too long" alert
+        runIn(60 * tooLong, pumpRunningLong)
+        
+        // Turn off overdue alert if it was on
+        if (tempSwitch?.currentValue("switch") == "on") {
+            tempSwitch.off()
+            infolog "Overdue alert cleared"
+        }
+        
+        updateAppLabel()
+    }
+}
+
+def handlePumpOff() {
+    if (state.running) {
+        // Pump just turned off
+        state.running = false
+        state.offTime = now()
+        state.lastoff = new Date().format("yyyy-MM-dd HH:mm:ss")
+
+        // Calculate duration
+        def durationMs = state.offTime - state.onTime
+        def durationMin = safeToBigDecimal(durationMs / 60000.0).setScale(2, RoundingMode.HALF_UP).toDouble()
+        state.duration = durationMin
+
+        // Calculate watts
+        def peak = state.currentRunWattages?.max() ?: 0
+        def avg = state.currentRunWattages ? getAverage(state.currentRunWattages).toInteger() : 0
+
+        // Calculate gallons
+        def gallons = 0.0
+        if (pumpGPM && pumpGPM > 0) {
+            gallons = safeToBigDecimal(durationMin * pumpGPM).setScale(1, RoundingMode.HALF_UP).toDouble()
+            state.lastRunGallons = gallons
+            state.gallonsThisMonth = (state.gallonsThisMonth ?: 0) + gallons
+            state.lifetimeGallons = (state.lifetimeGallons ?: 0) + gallons
+        }
+
+        // Update lifetime runtime
+        state.lifetimeRuntimeMinutes = (state.lifetimeRuntimeMinutes ?: 0) + durationMin
+
+        infolog "Pump OFF - Duration: ${durationMin}m, Peak: ${peak}W" + (gallons > 0 ? ", Gallons: ~${gallons}" : "")
+
+        pumpSwitch?.off()
+        unschedule("pumpRunningLong")
+        
+        // Turn off "running too long" alert if it was on
+        if (tooLongSwitch?.currentValue("switch") == "on") {
+            tooLongSwitch.off()
+        }
+
+        // Record the run
+        recordPumpRun(durationMin, peak, avg, gallons)
+        
+        // Check for rapid cycling
+        checkRapidCycling()
+        
+        // Check daily run count
+        checkDailyRunCount()
+
+        // Reset for next run
+        state.currentRunWattages = []
+        
+        // Schedule next overdue check
+        scheduleOverdueCheck()
+        
+        updateAppLabel()
+    }
+}
+
+def recordPumpRun(duration, peakWatts, avgWatts, gallons) {
+    def currentTime = now()
+    
+    // Calculate hours since last run
+    def hoursSinceLast = null
+    if (state.lastRunTimestamp) {
+        hoursSinceLast = safeToBigDecimal((currentTime - state.lastRunTimestamp) / 3600000.0).setScale(1, RoundingMode.HALF_UP).toDouble()
+    }
+    state.lastRunTimestamp = currentTime
+    
+    // Check for anomalies
+    def isAnomaly = false
+    if (enableHistoryTracking && state.baselineDuration && state.baselineMonthsCollected >= 2) {
+        isAnomaly = checkForAnomaly(duration)
+    }
+
+    // Create run record
+    def runRecord = [
+        time: new Date().format("M/d h:mm a"),
+        timestamp: new Date().format("yyyy-MM-dd HH:mm:ss"),
+        duration: String.format('%.1f', duration),
+        peakWatts: peakWatts,
+        avgWatts: avgWatts,
+        gallons: gallons > 0 ? String.format('%.0f', gallons) : null,
+        hoursSinceLast: hoursSinceLast ? String.format('%.1f', hoursSinceLast) : null,
+        anomaly: isAnomaly
+    ]
+
+    // Add to recent runs (max 10)
+    state.recentRuns = state.recentRuns ?: []
+    state.recentRuns.add(0, runRecord)
+    if (state.recentRuns.size() > 10) {
+        state.recentRuns = state.recentRuns.take(10)
+    }
+
+    // Update daily counter
+    checkDayRollover()
+    state.runsToday = (state.runsToday ?: 0) + 1
+
+    // Historical tracking
+    if (enableHistoryTracking) {
+        checkMonthRollover()
+        
+        state.currentMonthRuns = state.currentMonthRuns ?: []
+        state.currentMonthRuns << [
+            timestamp: runRecord.timestamp,
+            duration: duration,
+            peakWatts: peakWatts,
+            avgWatts: avgWatts,
+            gallons: gallons,
+            anomaly: isAnomaly
+        ]
+        state.runsThisMonth = (state.runsThisMonth ?: 0) + 1
+
+        // Log to CSV
+        if (settings.enableCsvLogging) {
+            logRunToFile(runRecord)
+        }
+    }
+}
+
+def checkForAnomaly(duration) {
+    def baseline = safeToBigDecimal(state.baselineDuration)
+    if (baseline == 0) return false
+
+    def diff = (safeToBigDecimal(duration) - baseline).abs()
+    def pct = (diff / baseline) * 100.0
+
+    if (pct > anomalyThreshold) {
+        def msg = "Duration anomaly: ${String.format('%.1f', duration)}m vs baseline ${String.format('%.1f', baseline)}m (${String.format('%.0f', pct)}% deviation)"
+        log.warn msg
+        state.anomalyDetected = true
+        state.anomalyMessage = msg
+        
+        anomalySwitch?.on()
+        
+        return true
+    }
+    return false
+}
+
+def checkRapidCycling() {
+    if (!enableRapidCycleDetection) return
+    
+    def windowMs = (rapidCycleWindow ?: 30) * 60000
+    def currentTime = now()
+    
+    // Add current run timestamp
+    state.recentRunTimes = state.recentRunTimes ?: []
+    state.recentRunTimes << currentTime
+    
+    // Keep only runs within window
+    state.recentRunTimes = state.recentRunTimes.findAll { it > (currentTime - windowMs) }
+    
+    def count = state.recentRunTimes.size()
+    def threshold = rapidCycleCount ?: 3
+    
+    if (count >= threshold) {
+        def msg = "Rapid cycling detected: ${count} runs in ${rapidCycleWindow} minutes!"
+        log.warn msg
+        rapidCycleSwitch?.on()
+    }
+}
+
+def checkDailyRunCount() {
+    if (!enableDailyRunLimit) return
+    
+    def runs = state.runsToday ?: 0
+    def limit = maxDailyRuns ?: 15
+    
+    if (runs >= limit && dailyRunSwitch?.currentValue("switch") != "on") {
+        def msg = "Excessive daily runs: ${runs} (limit: ${limit})"
+        log.warn msg
+        dailyRunSwitch?.on()
+    }
+}
+
+void pumpOverdue() {
+    if (tempSwitch?.currentValue("switch") != "on") {
+        def msg = "Pump hasn't run in ${xdays} days!"
+        log.warn msg
+        tempSwitch?.on()
+        updateAppLabel()
+    }
+}
+
+void pumpRunningLong() {
+    def msg = "Pump running longer than ${tooLong} minutes!"
+    log.warn msg
+    tooLongSwitch?.on()
+    updateAppLabel()
+}
+
+def scheduleOverdueCheck() {
+    if (state.lastrun && xdays) {
+        try {
+            def last = Date.parse("yyyy-MM-dd HH:mm:ss", state.lastrun)
+            def next = new Date(last.time + (xdays * 86400000))
+            if (next > new Date()) {
+                runOnce(next, pumpOverdue)
+                debuglog "Overdue check scheduled for: ${next}"
+            } else {
+                pumpOverdue()
+            }
+        } catch (e) {
+            log.error "Overdue scheduling error: ${e}"
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+//   ROLLOVER & BASELINE
+// ----------------------------------------------------------------------------
+
+def checkDayRollover() {
+    def today = new Date().format("yyyy-MM-dd")
+    if (state.lastRunDate != today) {
+        state.runsToday = 0
+        state.lastRunDate = today
+        debuglog "Day rollover - reset daily counters"
+    }
+}
+
+def checkMonthRollover() {
+    def nowMonth = new Date().format("yyyy-MM")
+    if (state.currentMonth != nowMonth) {
+        infolog "Month rollover: ${state.currentMonth} → ${nowMonth}"
+        updateMonthlySnapshot()
+        state.currentMonth = nowMonth
+        state.currentMonthRuns = []
+        state.runsThisMonth = 0
+        state.gallonsThisMonth = 0
+    }
+}
+
+def updateMonthlySnapshot() {
+    if (!state.currentMonthRuns || state.currentMonthRuns.size() == 0) return
+
+    def runs = state.currentMonthRuns
+    def durations = runs.collect { safeToBigDecimal(it.duration) }.sort()
+    def total = runs.size()
+    def median = durations[(int)(durations.size() / 2)]
+    def avg = durations.sum() / total
+    def minDur = durations.min()
+    def maxDur = durations.max()
+    def hadAnomalies = runs.any { it.anomaly }
+    def totalGallons = runs.collect { it.gallons ?: 0 }.sum()
+
+    def snap = [
+        monthYear: new Date().parse("yyyy-MM", state.currentMonth).format("MMM yyyy"),
+        totalRuns: total,
+        medianDuration: String.format('%.1f', median),
+        avgDuration: String.format('%.1f', avg),
+        minDuration: String.format('%.1f', minDur),
+        maxDuration: String.format('%.1f', maxDur),
+        runsPerDay: String.format('%.1f', total / 30.0),
+        totalGallons: totalGallons > 0 ? String.format('%.0f', totalGallons) : null,
+        hadAnomalies: hadAnomalies
+    ]
+
+    state.monthlySnapshots = state.monthlySnapshots ?: []
+    state.monthlySnapshots.add(0, snap)
+    if (state.monthlySnapshots.size() > 12) {
+        state.monthlySnapshots = state.monthlySnapshots.take(12)
+    }
+
+    state.baselineMonthsCollected = (state.baselineMonthsCollected ?: 0) + 1
+    calculateBaseline()
+}
+
+def calculateBaseline() {
+    if (lockBaseline) {
+        infolog "Baseline locked - skipping update"
+        return
+    }
+    
+    def list = state.monthlySnapshots.take(12)
+    if (list.size() < 2) return
+
+    def medians = list.collect { safeToBigDecimal(it.medianDuration) }
+    def mins = list.collect { safeToBigDecimal(it.minDuration) }
+    def maxs = list.collect { safeToBigDecimal(it.maxDuration) }
+    
+    state.baselineDuration = medians.sum() / medians.size()
+    state.baselineMin = mins.min()
+    state.baselineMax = maxs.max()
+    
+    infolog "Baseline updated: ${safeToBigDecimal(state.baselineDuration).setScale(1, RoundingMode.HALF_UP)}m (range: ${safeToBigDecimal(state.baselineMin).setScale(1, RoundingMode.HALF_UP)}m - ${safeToBigDecimal(state.baselineMax).setScale(1, RoundingMode.HALF_UP)}m)"
+}
+
+// ----------------------------------------------------------------------------
+//   CSV LOGGING - SINGLE YEARLY FILE
+// ----------------------------------------------------------------------------
+
+def logRunToFile(runRecord) {
+    def fileName = getFileName().toString()
+    def gallonsCol = runRecord.gallons ?: ""
+    def intervalCol = runRecord.hoursSinceLast ?: ""
+    def line = "${runRecord.timestamp},${runRecord.duration},${runRecord.peakWatts},${runRecord.avgWatts},${gallonsCol},${intervalCol},${runRecord.anomaly ? 'YES' : 'NO'}"
+
+    def fileContent = ""
+    try {
+        def existingBytes = downloadHubFile(fileName)
+        if (existingBytes) {
+            fileContent = new String(existingBytes)
+        }
+    } catch (e) {
+        debuglog "Creating new log file: ${fileName}"
+    }
+
+    // Add header if new file
+    if (!fileContent) {
+        fileContent = "Timestamp,DurationMin,PeakWatts,AvgWatts,Gallons,HoursSinceLast,Anomaly\n"
+    }
+
+    try {
+        fileContent += "${line}\n"
+        uploadHubFile(fileName, fileContent.toString().getBytes("UTF-8"))
+        debuglog "Logged to ${fileName}"
+    } catch (e) {
+        log.error "CSV write failed: ${e.message}"
+    }
+}
+
+def getFileName() {
+    def clean = pwrClamp?.displayName?.replaceAll(/[^a-zA-Z0-9]/, "") ?: "SepticPump"
+    def year = new Date().format("yyyy")
+    return "septic-pump-${clean}-${year}.csv"
+}
+
+def getFileManagerUrl(filename) {
+    return "/local/${filename}"
+}
+
+// ----------------------------------------------------------------------------
+//   UTILITIES & UI
+// ----------------------------------------------------------------------------
+
+def updateAppLabel() {
+    def prefix = thisName ?: "Septic Pump Monitor"
+    def status = ""
+
+    if (state.running) {
+        def runningFor = state.onTime ? formatDuration((now() - state.onTime) / 1000) : "?"
+        status = "<span style='color:#27ae60;'>(RUNNING ${runningFor})</span>"
+    } else if (state.lastrun) {
+        def days = daysSinceLast()
+        if (days >= xdays) {
+            status = "<span style='color:#cc0000;'>(OVERDUE - ${days} days)</span>"
+        } else {
+            status = "<span style='color:#666;'>(Last: ${state.duration}m)</span>"
+        }
+    }
+
+    app.updateLabel("${prefix} ${status}")
+}
+
+def daysSinceLast() {
+    if (!state.lastrun) return 999
+    try {
+        def last = Date.parse("yyyy-MM-dd HH:mm:ss", state.lastrun)
+        return ((now() - last.time) / 86400000).toInteger()
+    } catch (e) {
+        return 999
+    }
+}
+
+def appButtonHandler(btn) {
+    switch (btn) {
+        case "btnResetRecent":
+            state.recentRuns = []
+            infolog "Recent runs cleared"
+            break
+            
+        case "btnResetHistory":
+            log.warn "⚠️ RESETTING ALL HISTORICAL DATA"
+            state.monthlySnapshots = []
+            state.currentMonthRuns = []
+            state.baselineDuration = null
+            state.baselineMin = null
+            state.baselineMax = null
+            state.baselineMonthsCollected = 0
+            state.runsThisMonth = 0
+            state.gallonsThisMonth = 0
+            state.lifetimeRuntimeMinutes = 0
+            state.lifetimeGallons = 0
+            state.anomalyDetected = false
+            state.anomalyMessage = null
+            state.showFullHistory = false
+            state.recentRunTimes = []
+            
+            if (anomalySwitch?.currentValue("switch") == "on") anomalySwitch.off()
+            if (rapidCycleSwitch?.currentValue("switch") == "on") rapidCycleSwitch.off()
+            if (dailyRunSwitch?.currentValue("switch") == "on") dailyRunSwitch.off()
+            
+            infolog "All historical data reset"
+            break
+            
+        case "btnRefresh":
+            infolog "Refreshing subscriptions"
+            unsubscribe()
+            unschedule()
+            initialize()
+            break
+    }
+}
+
+def safeToBigDecimal(val) {
+    if (val == null) return BigDecimal.ZERO
+    try {
+        if (val instanceof BigDecimal) return val
+        def clean = val.toString().replaceAll("[^0-9.-]", "")
+        return clean ? new BigDecimal(clean) : BigDecimal.ZERO
+    } catch (e) {
+        return BigDecimal.ZERO
+    }
+}
+
+def getAverage(list) {
+    if (!list || list.size() == 0) return BigDecimal.ZERO
+    def sum = list.collect { safeToBigDecimal(it) }.sum()
+    return sum / list.size()
+}
+
+def formatDuration(seconds) {
+    def s = safeToBigDecimal(seconds)
+    if (s < 60) return "${s.setScale(0, RoundingMode.HALF_UP)}s"
+    return "${(s / 60).setScale(1, RoundingMode.HALF_UP)}m"
+}
+
+// ----------------------------------------------------------------------------
+//   LOGGING & FORMATTING
+// ----------------------------------------------------------------------------
+
+def getFormat(type, text = "") {
+    if (type == "header-green") {
+        return "<div style='color:#fff;font-weight:bold;background:#81BC00;border:1px solid;box-shadow:2px 3px #A9A9A9;padding:5px'>${text}</div>"
+    }
+}
+
+def debuglog(msg) {
+    if ((logLevel ?: "0").toInteger() >= 2) {
+        log.debug "${thisName ?: 'SepticPump'}: ${msg}"
+    }
+}
+
+def infolog(msg) {
+    if ((logLevel ?: "0").toInteger() >= 1) {
+        log.info "${thisName ?: 'SepticPump'}: ${msg}"
+    }
+}
+
+def getLogLevels() {
+    return [["0": "None"], ["1": "Info"], ["2": "Debug"]]
+}
