@@ -16,6 +16,8 @@
  * 1.4.2 - 11/24/25 - Added suppression of INFO logs for unchanged distance/battery values
  * 1.4.3 - 11/30/25 - Fixed cron expression error for watchDogTime values > 59 minutes
  * 1.4.4 - 11/30/25 - Added battery hysteresis to smooth out sensor noise/wild swings
+ * 1.5.0 - 12/01/25 - Added configurable distance smoothing modes (Stable Reading, Time-Based Average, Outlier Rejection)
+ * 1.6.0 - 01/07/26 - Added sensor health monitoring (detects when BLU sensor stops reporting)
  */
 
 metadata {
@@ -36,14 +38,18 @@ metadata {
         attribute "rssi", "number"
         attribute "lastUpdate", "string"
         attribute "thresholdTimer", "string"
+        attribute "rawDistance", "number"
+        attribute "smoothingStatus", "string"
+        attribute "healthStatus", "string"  // online, offline, unknown
         
         command "on"
         command "off"
         command "resetThresholdTimer"
+        command "clearSmoothingBuffer"
     }
 
     preferences {
-        section("Settings for connection from HE to Broker") {
+        section("MQTT Connection Settings") {
             input name: "bluAddress", type: "text", title: "BLE Device MAC Address", required: false, description: "Optional: MAC address to filter (e.g., f8:44:77:1c:e3:08). Leave blank to accept all BLE devices."
             input name: "showInches", type: "bool", title: "Display distance in inches (in addition to cm)?", defaultValue: false, required: true
             input name: "ipAddr", type: "text", title: "IP Address of MQTT broker", required: true
@@ -53,7 +59,7 @@ metadata {
             input name: "retryTime", type: "number", title: "Number of seconds between retries to connect if broker goes down", defaultValue: 300, required: true
             input name: "watchDogSched", type: "bool", title: "Check for connection to MQTT broker on a schedule?", defaultValue: false, required: true
             input name: "watchDogTime", type: "number", title: "Check MQTT broker connection interval", defaultValue: 15, range: "1..240", required: true, description: "1-59 = every X minutes, 60-240 = converted to hourly (e.g., 120 = every 2 hours)"
-            input name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum", options: getLogLevels(), submitOnChange : false, defaultValue : "1"
+            input name: "staleMinutes", type: "number", title: "Minutes before marking sensor offline", defaultValue: 15, range: "5..120", required: true, description: "If no messages received within this time, sensor marked offline"
         }
         section("Threshold Switch Settings") {
             input name: "enableThreshold", type: "bool", title: "Enable switch based on distance threshold?", defaultValue: false, required: true
@@ -67,12 +73,40 @@ metadata {
             input name: "batteryHysteresis", type: "number", title: "Battery change threshold (%)", defaultValue: 10, range: "1..25", required: true, description: "Only report battery when it changes by more than this amount (reduces noise)"
             input name: "rssiHysteresis", type: "number", title: "RSSI change threshold (dBm)", defaultValue: 5, range: "1..20", required: true, description: "Only report RSSI when it changes by more than this amount"
         }
+        section("Distance Smoothing") {
+            input name: "smoothingMode", type: "enum", title: "Smoothing Mode", options: [
+                "none": "None (instant updates)", 
+                "stable": "Stable Reading (require consecutive similar readings)",
+                "average": "Time-Based Average (average over time window)",
+                "outlier": "Outlier Rejection (ignore readings far from trend)"
+            ], defaultValue: "none", required: true, description: "Choose how to handle sensor noise"
+            
+            // Stable Reading options
+            input name: "stableReadingsRequired", type: "number", title: "Consecutive readings required (Stable mode)", defaultValue: 3, range: "2..10", required: false, description: "Number of similar readings before updating"
+            input name: "stableTolerance", type: "number", title: "Tolerance in mm (Stable mode)", defaultValue: 10, range: "1..100", required: false, description: "How close readings must be to count as 'similar'"
+            
+            // Time-Based Average options
+            input name: "averageWindowHours", type: "number", title: "Averaging window in hours (Average mode)", defaultValue: 24, range: "1..168", required: false, description: "Time window for averaging (1-168 hours)"
+            input name: "averageUpdateInterval", type: "enum", title: "Update interval (Average mode)", options: [
+                "1": "Every hour",
+                "6": "Every 6 hours",
+                "12": "Every 12 hours",
+                "24": "Once daily"
+            ], defaultValue: "24", required: false
+            
+            // Outlier Rejection options
+            input name: "outlierThreshold", type: "number", title: "Outlier threshold in mm (Outlier mode)", defaultValue: 50, range: "10..500", required: false, description: "Ignore readings that differ from recent average by more than this"
+            input name: "outlierBufferSize", type: "number", title: "Buffer size for trend (Outlier mode)", defaultValue: 5, range: "3..20", required: false, description: "Number of readings to establish trend"
+        }
+        section("Logging") {
+            input name: "logLevel", title: "IDE logging level", multiple: false, required: true, type: "enum", options: getLogLevels(), submitOnChange: false, defaultValue: "1"
+        }
     }
 }
 
 def setVersion(){
     state.name = "Shelly BLU Distance MQTT"
-    state.version = "1.4.4 - Shelly BLU Distance MQTT Device Handler"   
+    state.version = "1.6.0 - Shelly BLU Distance MQTT Device Handler"   
 }
 
 void installed() {
@@ -81,10 +115,23 @@ void installed() {
     sendEvent(name: "switch", value: "off")
     sendEvent(name: "thresholdTimer", value: "inactive")
     sendEvent(name: "rssi", value: -100, unit: "dBm")
+    sendEvent(name: "smoothingStatus", value: "idle")
+    sendEvent(name: "healthStatus", value: "unknown")
     state.thresholdExceededTime = null
     state.lastRssi = -100
     state.lastBattery = null
     state.lastTimerUpdate = 0
+    state.lastMessageReceived = 0
+    initializeSmoothingState()
+}
+
+void initializeSmoothingState() {
+    state.smoothingBuffer = []
+    state.stableReadingCount = 0
+    state.lastStableValue = null
+    state.stableConfirmed = false
+    state.averageReadings = []  // List of maps: [value: mm, timestamp: epoch]
+    state.lastAverageUpdate = 0
 }
 
 // Parse incoming device messages to generate events
@@ -135,6 +182,22 @@ void parse(String description) {
 
 // Parse BTHome sensor data
 void parseBTHomeData(bleData) {
+    // Track message receipt for health monitoring (regardless of data changes)
+    state.lastMessageReceived = now()
+    
+    // Update health status to online since we received a message
+    if (device.currentValue("healthStatus") != "online") {
+        infolog "Sensor is now reporting - marking online"
+        sendEvent(name: "healthStatus", value: "online")
+    }
+    
+    // Log Shelly timestamp for debugging (if present in payload)
+    if (bleData.timestamp) {
+        def shellyTime = new Date(bleData.timestamp as Long)
+        def latencyMs = now() - (bleData.timestamp as Long)
+        debuglog "Shelly timestamp: ${shellyTime.format("yyyy-MM-dd HH:mm:ss", location.timeZone)}, latency: ${latencyMs}ms"
+    }
+    
     debuglog "Parsing BTHome data: " + bleData
     
     def serviceData = bleData.service_data
@@ -142,31 +205,43 @@ void parseBTHomeData(bleData) {
     
     // Parse distance data
     if (serviceData.distance != null) {
-        def distanceMm = serviceData.distance
-        // Convert mm to cm - use BigDecimal to avoid scientific notation
-        def distanceCm = new BigDecimal(distanceMm / 10.0).setScale(1, BigDecimal.ROUND_HALF_UP)
+        def rawDistanceMm = serviceData.distance
         
-        // Check if value changed from last time (to suppress repetitive INFO logs)
-        def currentDist = device.currentValue("distance")
-        boolean distValChanged = (currentDist == null || currentDist.toInteger() != distanceMm.toInteger())
+        // Always update raw distance attribute for debugging
+        sendEvent(name: "rawDistance", value: rawDistanceMm, unit: "mm")
+        
+        // Apply smoothing and get the processed distance
+        def processedDistance = applySmoothing(rawDistanceMm)
+        
+        if (processedDistance != null) {
+            def distanceMm = processedDistance
+            // Convert mm to cm - use BigDecimal to avoid scientific notation
+            def distanceCm = new BigDecimal(distanceMm / 10.0).setScale(1, BigDecimal.ROUND_HALF_UP)
+            
+            // Check if value changed from last time (to suppress repetitive INFO logs)
+            def currentDist = device.currentValue("distance")
+            boolean distValChanged = (currentDist == null || currentDist.toInteger() != distanceMm.toInteger())
 
-        // Log and send events
-        if (showInches) {
-            // Convert mm to inches (1 inch = 25.4mm)
-            def distanceInch = new BigDecimal(distanceMm / 25.4).setScale(2, BigDecimal.ROUND_HALF_UP)
-            if (distValChanged) infolog "Distance changed: ${distanceCm} cm (${distanceInch} in, ${distanceMm} mm)"
-            sendEvent(name: "distanceInch", value: distanceInch, unit: "in")
+            // Log and send events
+            if (showInches) {
+                // Convert mm to inches (1 inch = 25.4mm)
+                def distanceInch = new BigDecimal(distanceMm / 25.4).setScale(2, BigDecimal.ROUND_HALF_UP)
+                if (distValChanged) infolog "Distance changed: ${distanceCm} cm (${distanceInch} in, ${distanceMm} mm)"
+                sendEvent(name: "distanceInch", value: distanceInch, unit: "in")
+            } else {
+                if (distValChanged) infolog "Distance changed: ${distanceCm} cm (${distanceMm} mm)"
+            }
+            
+            sendEvent(name: "distance", value: distanceMm, unit: "mm")
+            sendEvent(name: "distanceCm", value: distanceCm, unit: "cm")
+            dataChanged = true
+            
+            // Check threshold and update switch state
+            if (enableThreshold) {
+                evaluateThreshold(distanceMm, distanceCm)
+            }
         } else {
-            if (distValChanged) infolog "Distance changed: ${distanceCm} cm (${distanceMm} mm)"
-        }
-        
-        sendEvent(name: "distance", value: distanceMm, unit: "mm")
-        sendEvent(name: "distanceCm", value: distanceCm, unit: "cm")
-        dataChanged = true
-        
-        // Check threshold and update switch state
-        if (enableThreshold) {
-            evaluateThreshold(distanceMm, distanceCm)
+            debuglog "Smoothing returned null - waiting for stable reading"
         }
     }
     
@@ -213,6 +288,224 @@ void parseBTHomeData(bleData) {
     if (dataChanged) {
         def now = new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone)
         sendEvent(name: "lastUpdate", value: now)
+    }
+}
+
+/**
+ * Apply smoothing based on selected mode
+ * Returns processed distance in mm, or null if not ready to update
+ */
+def applySmoothing(rawMm) {
+    def mode = smoothingMode ?: "none"
+    
+    switch(mode) {
+        case "stable":
+            return applySmoothingStable(rawMm)
+        case "average":
+            return applySmoothingAverage(rawMm)
+        case "outlier":
+            return applySmoothingOutlier(rawMm)
+        default:
+            // No smoothing - return raw value
+            sendEvent(name: "smoothingStatus", value: "disabled")
+            return rawMm
+    }
+}
+
+/**
+ * Stable Reading Mode
+ * Requires N consecutive readings within tolerance before updating
+ */
+def applySmoothingStable(rawMm) {
+    def required = (stableReadingsRequired ?: 3).toInteger()
+    def tolerance = (stableTolerance ?: 10).toInteger()
+    
+    // Initialize state if needed
+    if (state.lastStableValue == null) {
+        state.lastStableValue = rawMm
+        state.stableReadingCount = 1
+        state.stableConfirmed = false
+        sendEvent(name: "smoothingStatus", value: "initializing (1/${required})")
+        debuglog "Stable mode: First reading ${rawMm}mm"
+        return rawMm  // Accept first reading to initialize
+    }
+    
+    // Check if this reading is within tolerance of the last stable candidate
+    def lastCandidate = state.smoothingBuffer?.size() > 0 ? state.smoothingBuffer[-1] : state.lastStableValue
+    
+    if (Math.abs(rawMm - lastCandidate) <= tolerance) {
+        // Reading is similar - increment count
+        state.stableReadingCount = (state.stableReadingCount ?: 0) + 1
+        
+        // Add to buffer
+        if (state.smoothingBuffer == null) state.smoothingBuffer = []
+        state.smoothingBuffer.add(rawMm)
+        
+        // Keep buffer size reasonable
+        while (state.smoothingBuffer.size() > required) {
+            state.smoothingBuffer.remove(0)
+        }
+        
+        debuglog "Stable mode: Reading ${rawMm}mm matches candidate ${lastCandidate}mm (${state.stableReadingCount}/${required})"
+        
+        if (state.stableReadingCount >= required) {
+            // We have enough stable readings - calculate average of buffer and update
+            def avgValue = Math.round(state.smoothingBuffer.sum() / state.smoothingBuffer.size()).toInteger()
+            
+            // Only log confirmation message when we first reach stability OR value changes
+            if (!state.stableConfirmed || state.lastStableValue != avgValue) {
+                infolog "Stable mode: Confirmed value ${avgValue}mm after ${required} consistent readings"
+                state.stableConfirmed = true
+            }
+            
+            state.lastStableValue = avgValue
+            sendEvent(name: "smoothingStatus", value: "stable (${required} readings)")
+            return avgValue
+        } else {
+            sendEvent(name: "smoothingStatus", value: "collecting (${state.stableReadingCount}/${required})")
+            return null  // Not ready yet
+        }
+    } else {
+        // Reading differs significantly - reset and start new candidate
+        debuglog "Stable mode: Reading ${rawMm}mm differs from candidate ${lastCandidate}mm by ${Math.abs(rawMm - lastCandidate)}mm (tolerance: ${tolerance}mm) - resetting"
+        state.smoothingBuffer = [rawMm]
+        state.stableReadingCount = 1
+        state.stableConfirmed = false  // Reset confirmation flag
+        sendEvent(name: "smoothingStatus", value: "reset - new candidate ${rawMm}mm (1/${required})")
+        return null  // Don't update yet
+    }
+}
+
+/**
+ * Time-Based Average Mode
+ * Averages readings over a time window, updates at configured interval
+ */
+def applySmoothingAverage(rawMm) {
+    def windowHours = (averageWindowHours ?: 24).toInteger()
+    def updateIntervalHours = (averageUpdateInterval ?: "24").toInteger()
+    def windowMs = windowHours * 3600000
+    def updateIntervalMs = updateIntervalHours * 3600000
+    def currentTime = now()
+    
+    // Initialize state if needed
+    if (state.averageReadings == null) state.averageReadings = []
+    if (state.lastAverageUpdate == null) state.lastAverageUpdate = 0
+    
+    // Add current reading with timestamp
+    state.averageReadings.add([value: rawMm, timestamp: currentTime])
+    
+    // Remove readings outside the window
+    def cutoffTime = currentTime - windowMs
+    state.averageReadings = state.averageReadings.findAll { it.timestamp >= cutoffTime }
+    
+    debuglog "Average mode: Added reading ${rawMm}mm. Buffer has ${state.averageReadings.size()} readings in last ${windowHours}h"
+    
+    // Check if it's time to update
+    def timeSinceLastUpdate = currentTime - state.lastAverageUpdate
+    
+    if (state.lastAverageUpdate == 0) {
+        // First reading - initialize
+        state.lastAverageUpdate = currentTime
+        sendEvent(name: "smoothingStatus", value: "averaging (${state.averageReadings.size()} readings)")
+        return rawMm  // Return first value to initialize
+    }
+    
+    if (timeSinceLastUpdate >= updateIntervalMs) {
+        // Time to calculate and report average
+        if (state.averageReadings.size() > 0) {
+            def sum = state.averageReadings.sum { it.value }
+            def avgValue = Math.round(sum / state.averageReadings.size()).toInteger()
+            state.lastAverageUpdate = currentTime
+            sendEvent(name: "smoothingStatus", value: "averaged ${state.averageReadings.size()} readings over ${windowHours}h")
+            infolog "Average mode: Reporting average ${avgValue}mm from ${state.averageReadings.size()} readings"
+            return avgValue
+        }
+    }
+    
+    sendEvent(name: "smoothingStatus", value: "collecting (${state.averageReadings.size()} readings, next update in ${Math.round((updateIntervalMs - timeSinceLastUpdate) / 3600000)}h)")
+    return null  // Not time to update yet
+}
+
+/**
+ * Outlier Rejection Mode
+ * Ignores readings that deviate significantly from recent trend
+ */
+def applySmoothingOutlier(rawMm) {
+    def threshold = (outlierThreshold ?: 50).toInteger()
+    def bufferSize = (outlierBufferSize ?: 5).toInteger()
+    
+    // Initialize state if needed
+    if (state.smoothingBuffer == null) state.smoothingBuffer = []
+    
+    // If buffer is empty or too small, accept reading and add to buffer
+    if (state.smoothingBuffer.size() < 2) {
+        state.smoothingBuffer.add(rawMm)
+        sendEvent(name: "smoothingStatus", value: "building trend (${state.smoothingBuffer.size()}/${bufferSize})")
+        debuglog "Outlier mode: Building buffer (${state.smoothingBuffer.size()}/${bufferSize}), accepting ${rawMm}mm"
+        return rawMm
+    }
+    
+    // Calculate current trend (average of buffer)
+    def trendAvg = Math.round(state.smoothingBuffer.sum() / state.smoothingBuffer.size()).toInteger()
+    def deviation = Math.abs(rawMm - trendAvg)
+    
+    if (deviation > threshold) {
+        // This is an outlier - reject it
+        sendEvent(name: "smoothingStatus", value: "rejected outlier ${rawMm}mm (trend: ${trendAvg}mm, deviation: ${deviation}mm)")
+        infolog "Outlier mode: Rejected ${rawMm}mm - deviates ${deviation}mm from trend ${trendAvg}mm (threshold: ${threshold}mm)"
+        return null  // Don't update
+    }
+    
+    // Reading is within acceptable range - add to buffer
+    state.smoothingBuffer.add(rawMm)
+    
+    // Keep buffer at configured size
+    while (state.smoothingBuffer.size() > bufferSize) {
+        state.smoothingBuffer.remove(0)
+    }
+    
+    sendEvent(name: "smoothingStatus", value: "accepted (trend: ${trendAvg}mm)")
+    debuglog "Outlier mode: Accepted ${rawMm}mm (deviation: ${deviation}mm within threshold ${threshold}mm)"
+    return rawMm
+}
+
+void clearSmoothingBuffer() {
+    infolog "Clearing smoothing buffer"
+    initializeSmoothingState()
+    sendEvent(name: "smoothingStatus", value: "buffer cleared")
+}
+
+/**
+ * Check if the sensor has stopped reporting
+ * Called on a schedule to detect stale/offline sensors
+ */
+void checkSensorHealth() {
+    def threshold = (staleMinutes ?: 15) * 60 * 1000
+    def lastMsg = state.lastMessageReceived ?: 0
+    def elapsed = now() - lastMsg
+    
+    if (lastMsg == 0) {
+        // Never received a message
+        if (device.currentValue("healthStatus") != "unknown") {
+            sendEvent(name: "healthStatus", value: "unknown")
+        }
+        debuglog "Sensor health: unknown (no messages ever received)"
+    } else if (elapsed > threshold) {
+        // Stale - no recent messages
+        def minsSince = Math.round(elapsed / 60000)
+        if (device.currentValue("healthStatus") != "offline") {
+            log.warn "${device.displayName} has not reported in ${minsSince} minutes - marking offline"
+            sendEvent(name: "healthStatus", value: "offline")
+        } else {
+            debuglog "Sensor still offline - last message ${minsSince} minutes ago"
+        }
+    } else {
+        // Healthy
+        if (device.currentValue("healthStatus") != "online") {
+            infolog "Sensor is reporting normally - marking online"
+            sendEvent(name: "healthStatus", value: "online")
+        }
+        debuglog "Sensor health: online (last message ${Math.round(elapsed / 60000)} minutes ago)"
     }
 }
 
@@ -361,6 +654,10 @@ void updated() {
         debuglog "Timer reset due to settings update"
     }
     
+    // Reset smoothing state when settings change
+    initializeSmoothingState()
+    sendEvent(name: "smoothingStatus", value: "reset - settings changed")
+    
     configure()
     unschedule()
     pauseExecution(1000)
@@ -378,6 +675,48 @@ void updated() {
             if (hours > 23) hours = 23
             debuglog "Setting schedule to check MQTT broker connection every ${hours} hour(s)"
             schedule("44 7 0/${hours} ? * *", watchDog)
+        }
+    }
+    
+    // Schedule average mode updates if needed
+    if (smoothingMode == "average") {
+        def intervalHours = (averageUpdateInterval ?: "24").toInteger()
+        debuglog "Scheduling average update every ${intervalHours} hour(s)"
+        schedule("0 0 0/${intervalHours} ? * *", triggerAverageUpdate)
+    }
+    
+    // Schedule sensor health check every 5 minutes
+    runEvery5Minutes(checkSensorHealth)
+    debuglog "Scheduled sensor health check every 5 minutes"
+}
+
+void triggerAverageUpdate() {
+    // Force an average calculation and update
+    if (smoothingMode == "average" && state.averageReadings?.size() > 0) {
+        def sum = state.averageReadings.sum { it.value }
+        def avgValue = Math.round(sum / state.averageReadings.size()).toInteger()
+        state.lastAverageUpdate = now()
+        
+        def distanceMm = avgValue
+        def distanceCm = new BigDecimal(distanceMm / 10.0).setScale(1, BigDecimal.ROUND_HALF_UP)
+        
+        infolog "Scheduled average update: ${avgValue}mm from ${state.averageReadings.size()} readings"
+        sendEvent(name: "distance", value: distanceMm, unit: "mm")
+        sendEvent(name: "distanceCm", value: distanceCm, unit: "cm")
+        
+        if (showInches) {
+            def distanceInch = new BigDecimal(distanceMm / 25.4).setScale(2, BigDecimal.ROUND_HALF_UP)
+            sendEvent(name: "distanceInch", value: distanceInch, unit: "in")
+        }
+        
+        sendEvent(name: "smoothingStatus", value: "scheduled update - averaged ${state.averageReadings.size()} readings")
+        
+        def now = new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone)
+        sendEvent(name: "lastUpdate", value: now)
+        
+        // Evaluate threshold with new average
+        if (enableThreshold) {
+            evaluateThreshold(distanceMm, distanceCm)
         }
     }
 }
@@ -407,9 +746,23 @@ void initialize() {
         sendEvent(name: "rssi", value: -100, unit: "dBm")
     }
     
+    // Initialize smoothing status
+    if (device.currentValue("smoothingStatus") == null) {
+        sendEvent(name: "smoothingStatus", value: "idle")
+    }
+    
+    // Initialize health status
+    if (device.currentValue("healthStatus") == null) {
+        sendEvent(name: "healthStatus", value: "unknown")
+    }
+    
     // Initialize state variables for hysteresis
     if (state.lastBattery == null) state.lastBattery = -100
     if (state.lastRssi == null) state.lastRssi = -100
+    if (state.lastMessageReceived == null) state.lastMessageReceived = 0
+    
+    // Initialize smoothing state
+    if (state.smoothingBuffer == null) initializeSmoothingState()
     
     try {
         // Open connection
