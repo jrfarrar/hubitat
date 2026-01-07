@@ -6,6 +6,8 @@
  *
  * 1.0.0 - 11/08/25 - Initial Release for Gateway Status Tracking
  * 1.1.0 - 11/24/25 - Added throttling for lastSeen updates to reduce DB noise (max 1/min)
+ * 1.2.0 - 01/07/26 - Added system status monitoring (uptime, RAM, filesystem, updates, dynamic script tracking)
+ * 1.3.0 - 01/07/26 - Added MQTT command to request immediate status updates, WiFi monitoring, fixed script tracking for deleted scripts
  */
 
 metadata {
@@ -19,9 +21,24 @@ metadata {
         capability "Sensor"
         capability "PresenceSensor"
         
+        command "requestStatusUpdate"
+        
         attribute "online", "enum", ["true", "false"]
         attribute "presence", "enum", ["present", "not present"]
         attribute "lastSeen", "string"
+        attribute "uptime", "string"
+        attribute "uptimeSeconds", "number"
+        attribute "ramFreePercent", "number"
+        attribute "fsFreePercent", "number"
+        attribute "restartRequired", "enum", ["true", "false"]
+        attribute "updateAvailable", "string"
+        attribute "scriptsTotal", "number"
+        attribute "scriptsRunning", "number"
+        attribute "allScriptsRunning", "enum", ["true", "false"]
+        attribute "scriptsSummary", "string"
+        attribute "wifiRssi", "number"
+        attribute "wifiIp", "string"
+        attribute "wifiSsid", "string"
 
     preferences {
         section("Settings for connection from HE to Broker") {
@@ -42,7 +59,7 @@ metadata {
 
 def setVersion(){
     state.name = "Shelly Gateway Status MQTT"
-    state.version = "1.1.0 - Shelly Gateway Status MQTT Device Handler"   
+    state.version = "1.3.0 - Shelly Gateway Status MQTT Device Handler"   
 }
 
 void installed() {
@@ -51,6 +68,7 @@ void installed() {
     sendEvent(name: "online", value: "false")
     sendEvent(name: "presence", value: "not present")
     state.lastSeenMillis = 0
+    state.scripts = [:]  // Map to track all scripts: [id: [running: bool, mem_used: int]]
 }
 
 // Parse incoming device messages to generate events
@@ -95,15 +113,78 @@ void parse(String description) {
         }
     }
     
-    // Handle status topic
-    if (topicType == "status") {
+    // Handle status topic (full status response from status_update command)
+    if (topicType == "status" && topic.size() == 2) {
+        // This is the full status payload from <gateway>/status (not <gateway>/status/sys)
         try {
             def jsonVal = parseJson(message)
-            debuglog "Parsed status JSON: " + jsonVal
-            // Gateway is online if it's publishing status
+            debuglog "Parsed full status JSON: " + jsonVal
             setOnlineStatus("true")
+            
+            // Parse sys data if present
+            if (jsonVal.sys) {
+                parseSysStatus(jsonVal.sys)
+            }
+            
+            // Parse wifi data if present
+            if (jsonVal.wifi) {
+                parseWifiStatus(jsonVal.wifi)
+            }
+            
+            // Reset scripts map and rebuild from fresh data (handles deleted scripts)
+            state.scripts = [:]
+            
+            // Parse all script:N entries
+            jsonVal.each { key, value ->
+                if (key.startsWith("script:")) {
+                    def scriptId = key.split(":")[1].toInteger()
+                    parseScriptStatus(scriptId, value)
+                }
+            }
+            
+            // Update summary after processing all scripts
+            updateScriptsSummary()
+            
         } catch(e) {
             debuglog "Status message not JSON or error: ${e.message}"
+        }
+        return
+    }
+    
+    // Handle status/sys topic (system status)
+    if (topicType == "sys") {
+        try {
+            def jsonVal = parseJson(message)
+            debuglog "Parsed sys status: " + jsonVal
+            parseSysStatus(jsonVal)
+            setOnlineStatus("true")
+        } catch(e) {
+            log.warn "Error parsing sys status: ${e.message}"
+        }
+    }
+    
+    // Handle status/wifi topic (wifi status)
+    if (topicType == "wifi") {
+        try {
+            def jsonVal = parseJson(message)
+            debuglog "Parsed wifi status: " + jsonVal
+            parseWifiStatus(jsonVal)
+            setOnlineStatus("true")
+        } catch(e) {
+            log.warn "Error parsing wifi status: ${e.message}"
+        }
+    }
+    
+    // Handle status/script:N topic (script status)
+    if (topicType.startsWith("script:")) {
+        try {
+            def scriptId = topicType.split(":")[1].toInteger()
+            def jsonVal = parseJson(message)
+            debuglog "Parsed script:${scriptId} status: " + jsonVal
+            parseScriptStatus(scriptId, jsonVal)
+            setOnlineStatus("true")
+        } catch(e) {
+            log.warn "Error parsing script status: ${e.message}"
         }
     }
 }
@@ -120,6 +201,158 @@ void setOnlineStatus(status) {
         sendEvent(name: "presence", value: presenceValue)
     } else {
         debuglog "Gateway reported ${onlineValue} (no change)"
+    }
+}
+
+void parseSysStatus(sysData) {
+    // Parse uptime
+    if (sysData.uptime != null) {
+        def uptimeSecs = sysData.uptime.toLong()
+        def days = Math.floor(uptimeSecs / 86400).toInteger()
+        def hours = Math.floor((uptimeSecs % 86400) / 3600).toInteger()
+        def mins = Math.floor((uptimeSecs % 3600) / 60).toInteger()
+        def uptimeStr = "${days}d ${hours}h ${mins}m"
+        
+        if (device.currentValue("uptime") != uptimeStr) {
+            sendEvent(name: "uptime", value: uptimeStr)
+            sendEvent(name: "uptimeSeconds", value: uptimeSecs)
+            debuglog "Uptime: ${uptimeStr}"
+        }
+    }
+    
+    // Parse RAM usage
+    if (sysData.ram_size != null && sysData.ram_free != null) {
+        def ramFreePercent = Math.round((sysData.ram_free / sysData.ram_size) * 100).toInteger()
+        if (device.currentValue("ramFreePercent") != ramFreePercent) {
+            sendEvent(name: "ramFreePercent", value: ramFreePercent, unit: "%")
+            debuglog "RAM Free: ${ramFreePercent}% (${sysData.ram_free} / ${sysData.ram_size} bytes)"
+        }
+    }
+    
+    // Parse filesystem usage
+    if (sysData.fs_size != null && sysData.fs_free != null) {
+        def fsFreePercent = Math.round((sysData.fs_free / sysData.fs_size) * 100).toInteger()
+        if (device.currentValue("fsFreePercent") != fsFreePercent) {
+            sendEvent(name: "fsFreePercent", value: fsFreePercent, unit: "%")
+            debuglog "Filesystem Free: ${fsFreePercent}% (${sysData.fs_free} / ${sysData.fs_size} bytes)"
+        }
+    }
+    
+    // Parse restart required
+    if (sysData.restart_required != null) {
+        def restartVal = sysData.restart_required ? "true" : "false"
+        if (device.currentValue("restartRequired") != restartVal) {
+            sendEvent(name: "restartRequired", value: restartVal)
+            if (sysData.restart_required) {
+                log.warn "${device.displayName}: Gateway restart required!"
+            }
+        }
+    }
+    
+    // Parse available updates
+    if (sysData.available_updates != null) {
+        def updateStr = "none"
+        if (sysData.available_updates.stable?.version) {
+            updateStr = "stable: ${sysData.available_updates.stable.version}"
+        } else if (sysData.available_updates.beta?.version) {
+            updateStr = "beta: ${sysData.available_updates.beta.version}"
+        }
+        if (device.currentValue("updateAvailable") != updateStr) {
+            sendEvent(name: "updateAvailable", value: updateStr)
+            if (updateStr != "none") {
+                infolog "Firmware update available: ${updateStr}"
+            }
+        }
+    }
+}
+
+void parseWifiStatus(wifiData) {
+    // Parse WiFi RSSI
+    if (wifiData.rssi != null) {
+        def rssi = wifiData.rssi.toInteger()
+        if (device.currentValue("wifiRssi") != rssi) {
+            sendEvent(name: "wifiRssi", value: rssi, unit: "dBm")
+            debuglog "WiFi RSSI: ${rssi} dBm"
+        }
+    }
+    
+    // Parse WiFi IP
+    if (wifiData.sta_ip != null) {
+        if (device.currentValue("wifiIp") != wifiData.sta_ip) {
+            sendEvent(name: "wifiIp", value: wifiData.sta_ip)
+            debuglog "WiFi IP: ${wifiData.sta_ip}"
+        }
+    }
+    
+    // Parse WiFi SSID
+    if (wifiData.ssid != null) {
+        if (device.currentValue("wifiSsid") != wifiData.ssid) {
+            sendEvent(name: "wifiSsid", value: wifiData.ssid)
+            debuglog "WiFi SSID: ${wifiData.ssid}"
+        }
+    }
+}
+
+void parseScriptStatus(scriptId, scriptData) {
+    // Initialize scripts map if needed
+    if (state.scripts == null) state.scripts = [:]
+    
+    // Get previous state for this script
+    def prevState = state.scripts[scriptId.toString()]
+    def wasRunning = prevState?.running
+    
+    // Update script state
+    state.scripts[scriptId.toString()] = [
+        running: scriptData.running ?: false,
+        mem_used: scriptData.mem_used ?: 0
+    ]
+    
+    // Log state changes
+    if (wasRunning != null && wasRunning != scriptData.running) {
+        if (scriptData.running) {
+            infolog "Script:${scriptId} started running"
+        } else {
+            log.warn "${device.displayName}: Script:${scriptId} stopped running!"
+        }
+    } else if (wasRunning == null) {
+        debuglog "Script:${scriptId} discovered (running: ${scriptData.running}, mem: ${scriptData.mem_used} bytes)"
+    }
+    
+    // Update summary attributes
+    updateScriptsSummary()
+}
+
+void updateScriptsSummary() {
+    if (state.scripts == null || state.scripts.size() == 0) return
+    
+    def total = state.scripts.size()
+    def running = state.scripts.count { k, v -> v.running == true }
+    def allRunning = (running == total)
+    
+    // Build summary string
+    def summary = "${running}/${total} running"
+    if (!allRunning) {
+        def stopped = state.scripts.findAll { k, v -> v.running != true }.collect { k, v -> "script:${k}" }
+        summary += " (stopped: ${stopped.join(', ')})"
+    }
+    
+    // Update attributes if changed
+    if (device.currentValue("scriptsTotal") != total) {
+        sendEvent(name: "scriptsTotal", value: total)
+    }
+    if (device.currentValue("scriptsRunning") != running) {
+        sendEvent(name: "scriptsRunning", value: running)
+    }
+    def allRunningVal = allRunning ? "true" : "false"
+    if (device.currentValue("allScriptsRunning") != allRunningVal) {
+        sendEvent(name: "allScriptsRunning", value: allRunningVal)
+        if (!allRunning) {
+            log.warn "${device.displayName}: Not all scripts running! ${summary}"
+        }
+    }
+    if (device.currentValue("scriptsSummary") != summary) {
+        sendEvent(name: "scriptsSummary", value: summary)
+        debuglog "Scripts summary: ${summary}"
     }
 }
 
@@ -165,7 +398,33 @@ void checkOffline() {
 void refresh(){
     watchDog()
     setVersion()
-    infolog "Refresh called - waiting for next MQTT update..."
+    requestStatusUpdate()
+}
+
+/**
+ * Request immediate status update from Shelly gateway
+ * Publishes 'status_update' to the gateway's command topic
+ */
+void requestStatusUpdate() {
+    if (!gatewayName) {
+        log.warn "Gateway name not configured - cannot request status update"
+        return
+    }
+    
+    if (!interfaces.mqtt.isConnected()) {
+        log.warn "MQTT not connected - cannot request status update"
+        return
+    }
+    
+    def commandTopic = "${gatewayName}/command"
+    infolog "Requesting status update from gateway (publishing to ${commandTopic})"
+    
+    try {
+        interfaces.mqtt.publish(commandTopic, "status_update")
+        debuglog "Published 'status_update' to ${commandTopic}"
+    } catch (e) {
+        log.warn "Failed to publish status update request: ${e.message}"
+    }
 }
 
 void updated() {
@@ -203,9 +462,13 @@ void initialize() {
         // Subscribe to gateway status topics
         mqttInt.subscribe("${gatewayName}/online")
         mqttInt.subscribe("${gatewayName}/events/rpc")
-        mqttInt.subscribe("${gatewayName}/status")
+        mqttInt.subscribe("${gatewayName}/status/#")  // Wildcard to catch status/sys, status/script:N, etc.
         
-        infolog "Subscribed to topics: ${gatewayName}/online, ${gatewayName}/events/rpc, ${gatewayName}/status"
+        infolog "Subscribed to topics: ${gatewayName}/online, ${gatewayName}/events/rpc, ${gatewayName}/status/#"
+        
+        // Request immediate status update from gateway
+        pauseExecution(500)
+        requestStatusUpdate()
         
     } catch(e) {
         log.warn "${device.label?device.label:device.name}: MQTT initialize error: ${e.message}"
