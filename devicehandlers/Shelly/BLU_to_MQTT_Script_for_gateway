@@ -1,29 +1,7 @@
 /**
- * THIS IS NO LONGER A UNIVERSAL SCRIPT
-   THIS ONLY HANDLES THE BLU DISTANCE SENSOR
-
-Short description
-
-  - This script is about shares any BLU product's complete payload to MQTT.
-
-  - The script should not require an individual BLU device's MAC address, rather it will "listen" for any BLU device.
-
-  - It would use the MAC address to create the topic, with a key-value for each data point in the payload.
-
-Running Process
-
-Here is the summary of how it works:
-
-  - Scanning: The script will open a BLU passive scan to receive any BLU device data. Using the BLE.Scanner.Start and BLE.Scanner.Subscribe modules.
-
-  - Data Extraction: For each device found, it checks for service data associated with the BTHome standard (Service ID: fcd2).
-
-  - Decoding: The BTHomeDecoder decodes the service data into human-readable format, including details such as temperature, battery, etc.
-
-  - MQTT Push: The MQTT uses each device MAC address as a topic, then publishes device service_data or any other data you want to the MQTT.
-
+ * Universal BLU to MQTT Script
+ * Modified: Added timestamp to MQTT payload for staleness detection
  */
-
 
 // *********************** Decoding Method ***********************
 const uint8 = 0;
@@ -33,7 +11,6 @@ const int16 = 3;
 const uint24 = 4;
 const int24 = 5;
 
-// The BTH object defines the structure of the BTHome data
 const BTH = {
   0x00: { n: "pid", t: uint8 },
   0x01: { n: "battery", t: uint8, u: "%" },
@@ -46,11 +23,9 @@ function getByteSize(type) {
   if (type === uint8 || type === int8) return 1;
   if (type === uint16 || type === int16) return 2;
   if (type === uint24 || type === int24) return 3;
-  //impossible as advertisements are much smaller;
   return 255;
 }
 
-// functions for decoding and unpacking the service data from Shelly BLU devices
 const BTHomeDecoder = {
   utoi: function (num, bitsz) {
     let mask = 1 << (bitsz - 1);
@@ -87,17 +62,13 @@ const BTHomeDecoder = {
     if (type === int24) res = this.getInt24LE(buffer);
     return res;
   },
-
-  // Unpacks the service data buffer from a Shelly BLU device
   unpack: function (buffer) {
-    //beacons might not provide BTH service data
     if (typeof buffer !== "string" || buffer.length === 0) return null;
     let result = {};
     let _dib = buffer.at(0);
     result["encryption"] = _dib & 0x1 ? true : false;
     result["BTHome_version"] = _dib >> 5;
     if (result["BTHome_version"] !== 2) return null;
-    //can not handle encrypted data
     if (result["encryption"]) return result;
     buffer = buffer.slice(1);
 
@@ -106,7 +77,6 @@ const BTHomeDecoder = {
     while (buffer.length > 0) {
       _bth = BTH[buffer.at(0)];
       if (typeof _bth === "undefined") {
-        // logger("unknown type", "BTH");
         break;
       }
       buffer = buffer.slice(1);
@@ -124,56 +94,46 @@ const BTHomeDecoder = {
 
 const BTHOME_SVC_ID_STR = "fcd2";
 
-// Bluetooth scan options
 const SCAN_OPTION = {
-  duration_ms: BLE.Scanner.INFINITE_SCAN, // Scan duration
+  duration_ms: BLE.Scanner.INFINITE_SCAN,
   active: false,
 }
 
-// Push BLE devices to MQTT
 function pushToMQ(addr, message) {
-  if (!MQTT.isConnected()) return false; // Check the MQTT status
-  
+  if (!MQTT.isConnected()) return false;
   MQTT.publish(addr, message);
-  
   return true
 }
 
-// BLE scan callback
 function scanCB(ev, res) {
   if (ev !== BLE.Scanner.SCAN_RESULT) return;
-  const addr = 'BLE/'+res.addr; // Get devive's MAC address
+  const addr = 'BLE/'+res.addr;
   if (typeof res.service_data === 'undefined' || typeof res.service_data[BTHOME_SVC_ID_STR] === 'undefined') return;
-  if (typeof addr === 'undefined') return; // If the device addredd is empty, return
+  if (typeof addr === 'undefined') return;
  
   try {
-    const decodeData = BTHomeDecoder.unpack(res.service_data[BTHOME_SVC_ID_STR]); // Decode service data
+    const decodeData = BTHomeDecoder.unpack(res.service_data[BTHOME_SVC_ID_STR]);
     
-    // Combine data
+    // Combine data with timestamp
     const postMessage = {
       addr: addr,
       rssi: res.rssi,
       local_name: res.local_name || "",
       service_data: decodeData,
+      timestamp: Date.now(),  // Epoch milliseconds from Shelly's clock
     };
     
-    // console.log(res.local_name, JSON.stringify(postMessage));
-    
-    // post data to MQTT
     pushToMQ(addr, JSON.stringify(postMessage));
     
   } catch(err) {
     console.log(err)
   }
-  
 }
 
-// Start Scan BLE Devices
 function startBLEScan() {
   if (!BLE.Scanner.isRunning()) {
     BLE.Scanner.Start(SCAN_OPTION, scanCB);
   } else {
-    // If scanner is running, create a subscribe method
     BLE.Scanner.Subscribe(scanCB);
   }
 }
