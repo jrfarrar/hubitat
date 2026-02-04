@@ -21,6 +21,7 @@
  *  - Emergency brake prevents reconnection loops
  *  - Manual reset available via "Reset Connection" command
  *  - Optional scheduled watchdog for connection health monitoring
+ *  - Staleness detection: force reconnect if no data received within configured time
  *
  *  Version History:
  *  1.1.0 - 08/20/22 - Initial Release
@@ -33,6 +34,8 @@
  *                     - Added last motion timestamp
  *                     - Better connection state management
  *                     - Improved logging and diagnostics
+ *  1.3.1 - 02/04/26 - Fixed connection recovery: watchdog survives reboots, detects stale connections,
+ *                      fixed cron for >59 min, added lastMessageReceived tracking
  */
 
 metadata {
@@ -68,7 +71,8 @@ metadata {
         section("<b>Connection Management</b>") {
             input name: "retryTime", type: "number", title: "Seconds between reconnection attempts", defaultValue: 300, range: "60..3600", required: true
             input name: "watchDogSched", type: "bool", title: "Enable scheduled connection health checks?", defaultValue: false, required: true
-            input name: "watchDogTime", type: "number", title: "Minutes between health checks", defaultValue: 15, range: "1..59", required: true
+            input name: "watchDogTime", type: "number", title: "Minutes between health checks", defaultValue: 15, range: "1..240", required: true, description: "1-59 = every X minutes, 60-240 = converted to hourly (e.g., 120 = every 2 hours)"
+            input name: "staleMinutes", type: "number", title: "Minutes without data before forcing reconnect", defaultValue: 60, range: "5..1440", required: true, description: "If no MQTT messages received within this time, force reconnect. Set higher for low-traffic cameras."
         }
         section("<b>Logging</b>") {
             input name: "logLevel", title: "IDE logging level", multiple: false, required: true, type: "enum", options: getLogLevels(), submitOnChange: false, defaultValue: "1"
@@ -79,13 +83,14 @@ metadata {
 
 def setVersion(){
     state.name = "BI MQTT Motion"
-    state.version = "1.3.0"   
+    state.version = "1.3.1"   
 }
 
 void installed() {
     log.warn "installed..."
     setVersion()
     state.totalReconnects = 0
+    state.lastMessageReceived = 0
     sendEvent(name: "reconnectCount", value: 0)
     sendEvent(name: "connectionStatus", value: "Not Connected")
 }
@@ -96,6 +101,9 @@ void parse(String description) {
     def topic = topicFull.split('/')
     def topicType = topic[1]  // Gets the second part of topic (motion or type)
     def message = interfaces.mqtt.parseMessage(description).payload
+    
+    // Track message receipt for staleness detection
+    state.lastMessageReceived = now()
     
     debuglog "Topic: ${topicType}, Message: ${message}"
 
@@ -163,10 +171,27 @@ void updated() {
     unschedule()
     pauseExecution(1000)
     
+    // Set up all schedules (watchdog, uptime tracker)
+    setupSchedules()
+}
+
+/**
+ * Central schedule setup - called from both updated() and initialize()
+ * Ensures watchdog and uptime tracker survive hub reboots
+ */
+void setupSchedules() {
     // Schedule the watchdog to run in case the broker restarts
     if (watchDogSched) {
-        debuglog "Setting schedule to check for MQTT broker connection every ${watchDogTime} minutes"
-        schedule("44 7/${watchDogTime} * ? * *", watchDog)
+        if (watchDogTime <= 59) {
+            debuglog "Setting schedule to check MQTT broker connection every ${watchDogTime} minute(s)"
+            schedule("44 0/${watchDogTime} * ? * *", watchDog)
+        } else {
+            def hours = Math.round(watchDogTime / 60.0).toInteger()
+            if (hours < 1) hours = 1
+            if (hours > 23) hours = 23
+            debuglog "Setting schedule to check MQTT broker connection every ${hours} hour(s)"
+            schedule("44 7 0/${hours} ? * *", watchDog)
+        }
     }
     
     // Schedule uptime updates every 5 minutes
@@ -188,13 +213,36 @@ void initialize() {
     state.loopDetected = false
     state.reconnectHistory = []
     
+    // Initialize state variables
+    if (state.lastMessageReceived == null) state.lastMessageReceived = 0
+    
     if (!doorName) {
         log.error "Topic Name not configured! Please configure the device settings."
         return
     }
     
+    // Connect to MQTT broker
+    connectMqtt()
+    
+    // Set up schedules - critical for surviving hub reboots
+    // unschedule first to avoid duplicates since initialize() can be called multiple times
+    unschedule()
+    pauseExecution(500)
+    setupSchedules()
+    
+    // If logs are in "Need Help" turn down to "Running" after an hour
+    logL = logLevel.toInteger()
+    if (logL == 2) runIn(3600, logsOff)
+}
+
+/**
+ * Connect to MQTT broker and subscribe to topics
+ * Separated from initialize() so it can be called independently for reconnection
+ * Includes disconnect-first logic to clear stale connections
+ */
+void connectMqtt() {
     try {
-        // Disconnect first if already connected (cleanup)
+        // Disconnect first if already connected (cleanup stale connections)
         if (interfaces.mqtt.isConnected()) {
             debuglog "Disconnecting existing connection before reconnect..."
             interfaces.mqtt.disconnect()
@@ -204,7 +252,7 @@ void initialize() {
         // Open connection
         def mqttInt = interfaces.mqtt
         mqttbroker = "tcp://" + ipAddr + ":" + ipPort
-        mqttclientname = "Hubitat_BI_Motion_" + doorName
+        mqttclientname = "Hubitat_BI_Motion_" + doorName + "_" + device.deviceNetworkId
         mqttInt.connect(mqttbroker, mqttclientname, username, password)
         
         // Give it a chance to start
@@ -223,12 +271,30 @@ void initialize() {
         infolog "Subscribed to topics: ${doorName}/motion and ${doorName}/type"
         
     } catch(e) {
-        log.warn "${device.label?device.label:device.name}: MQTT initialize error: ${e.message}"
+        log.warn "${device.label?device.label:device.name}: MQTT connect error: ${e.message}"
+        sendEvent(name: "connectionStatus", value: "Error: ${e.message}")
+    }
+}
+
+/**
+ * Force disconnect and reconnect to MQTT broker
+ * Used when connection is suspected stale (isConnected() lies about half-open TCP connections)
+ * Preserves emergency brake and loop detection logic
+ */
+void reconnectMqtt() {
+    infolog "Forcing MQTT reconnect - disconnecting first..."
+    sendEvent(name: "connectionStatus", value: "Reconnecting")
+    
+    try {
+        interfaces.mqtt.disconnect()
+    } catch(e) {
+        debuglog "Disconnect error (expected if already disconnected): ${e.message}"
     }
     
-    // If logs are in "Need Help" turn down to "Running" after an hour
-    logL = logLevel.toInteger()
-    if (logL == 2) runIn(3600, logsOff)
+    pauseExecution(2000)
+    
+    infolog "Reconnecting to MQTT broker..."
+    connectMqtt()
 }
 
 void configure(){
@@ -255,31 +321,48 @@ void resetConnection(){
     state.totalReconnects = 0
     sendEvent(name: "reconnectCount", value: 0)
     
-    // Disconnect and reinitialize
-    try {
-        interfaces.mqtt.disconnect()
-        pauseExecution(2000)
-    } catch(e) {
-        debuglog "Disconnect error (may not have been connected): ${e.message}"
-    }
+    // Use reconnectMqtt for clean disconnect-then-connect
+    reconnectMqtt()
     
-    initialize()
     infolog "Connection reset complete"
 }
 
+/**
+ * Watchdog - checks MQTT connection health
+ * Now checks both isConnected() AND whether we've received data recently
+ */
 def watchDog() {
-    debuglog "Checking MQTT connection status"    
+    debuglog "Watchdog: Checking MQTT status"
     
-    // If not connected, re-initialize (but only if not already reconnecting)
-    if (!interfaces.mqtt.isConnected()) {
-        if (state.reconnecting) {
-            debuglog "Reconnection already in progress, skipping watchdog reconnect"
-            return
-        }
-        log.warn "MQTT not connected - watchdog triggering reconnection..."
+    // If loop was previously detected, don't auto-reconnect
+    if (state.loopDetected) {
+        log.warn "Watchdog: Reconnection loop was previously detected. Click 'Reset Connection' to try again."
+        return
+    }
+    
+    // If already reconnecting, don't pile on
+    if (state.reconnecting) {
+        debuglog "Watchdog: Reconnection already in progress, skipping"
+        return
+    }
+    
+    def connected = interfaces.mqtt.isConnected()
+    def lastMsg = state.lastMessageReceived ?: 0
+    def elapsed = lastMsg > 0 ? now() - lastMsg : -1
+    def staleThreshold = (staleMinutes ?: 60) * 60 * 1000
+    
+    if (!connected) {
+        // Definitely disconnected - use connectionLost for proper tracking
+        log.warn "Watchdog: MQTT disconnected - triggering reconnection"
         connectionLost()
+    } else if (lastMsg > 0 && elapsed > staleThreshold) {
+        // Connected but no data - likely a ghost/stale connection
+        def minsSince = Math.round(elapsed / 60000)
+        log.warn "Watchdog: MQTT reports connected but no data in ${minsSince} minutes - forcing reconnect"
+        sendEvent(name: "connectionStatus", value: "Stale - reconnecting")
+        reconnectMqtt()
     } else {
-        debuglog "MQTT connection is healthy"
+        debuglog "Watchdog: MQTT OK (connected: ${connected}, last data: ${elapsed > 0 ? Math.round(elapsed / 60000) + ' min ago' : 'never'})"
     }
 }
 
@@ -292,7 +375,7 @@ void mqttClientStatus(String message) {
     state.lastStatusMessage = message
     state.lastStatusTime = timestamp
     
-    if (message.contains("Connection lost")) {
+    if (message.contains("Connection lost") || message.contains("Client is not connected")) {
         connectionLost()
     } else if (message.contains("succeeded")) {
         debuglog "Connection succeeded notification received"
@@ -319,9 +402,10 @@ void connectionLost(){
     
     // Check if we're in a reconnection loop
     if (state.reconnectHistory.size() >= 3) {
-        log.error "RECONNECTION LOOP DETECTED! Stopping automatic reconnection. Please manually click 'Initialize' to reconnect."
+        log.error "RECONNECTION LOOP DETECTED! Stopping automatic reconnection. Please click 'Reset Connection' to reconnect."
         state.reconnecting = false
         state.loopDetected = true
+        sendEvent(name: "connectionStatus", value: "Loop detected - manual reset required")
         return
     }
     
@@ -348,18 +432,20 @@ void attemptReconnect() {
     // Check if loop was detected and we're locked out
     if (state.loopDetected) {
         log.error "Reconnection loop detected previously. Click 'Reset Connection' command to try again."
+        sendEvent(name: "connectionStatus", value: "Loop detected - manual reset required")
         return
     }
     
     if (interfaces.mqtt.isConnected()) {
         infolog "Already reconnected!"
         state.reconnecting = false
+        sendEvent(name: "connectionStatus", value: "Connected")
         return
     }
     
     infolog "Attempting to reconnect..."
     try {
-        initialize()
+        reconnectMqtt()
         pauseExecution(2000)
         
         if (interfaces.mqtt.isConnected()) {
@@ -368,7 +454,7 @@ void attemptReconnect() {
         } else {
             log.warn "Reconnection failed, will retry..."
             state.reconnecting = false
-            // Schedule another attempt
+            // Schedule another attempt (goes through connectionLost for loop detection)
             connectionLost()
         }
     } catch(e) {
