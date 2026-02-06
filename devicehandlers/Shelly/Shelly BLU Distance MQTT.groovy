@@ -22,6 +22,7 @@
  *                      non-blocking reconnect, explicit disconnect before reconnect
  * 1.6.2 - 02/05/26 - Fixed retained message false-positive: stale MQTT retained messages no longer
  *                      reset health status to online. Added lastMessageReceived attribute.
+ *                      Added PresenceSensor capability (present/not present mirrors online/offline).
  */
 
 metadata {
@@ -34,6 +35,7 @@ metadata {
         capability "Configuration"
         capability "Sensor"
         capability "Switch"
+        capability "PresenceSensor"
         
         attribute "distance", "number"
         attribute "distanceCm", "number"
@@ -45,6 +47,7 @@ metadata {
         attribute "rawDistance", "number"
         attribute "smoothingStatus", "string"
         attribute "healthStatus", "string"  // online, offline, unknown
+        attribute "presence", "enum", ["present", "not present"]  // mirrors healthStatus for notifications
         attribute "lastMessageReceived", "string"  // timestamp of last fresh MQTT message
         
         command "on"
@@ -224,6 +227,7 @@ void parseBTHomeData(bleData) {
         if (device.currentValue("healthStatus") != "online") {
             infolog "Sensor is now reporting - marking online"
             sendEvent(name: "healthStatus", value: "online")
+            sendEvent(name: "presence", value: "present")
         }
     }
     
@@ -526,6 +530,7 @@ void checkSensorHealth() {
         if (device.currentValue("healthStatus") != "offline") {
             log.warn "${device.displayName} has not reported in ${minsSince} minutes - marking offline"
             sendEvent(name: "healthStatus", value: "offline")
+            sendEvent(name: "presence", value: "not present")
         } else {
             debuglog "Sensor still offline - last message ${minsSince} minutes ago"
         }
@@ -538,6 +543,7 @@ void checkSensorHealth() {
         if (device.currentValue("healthStatus") != "online") {
             infolog "Sensor is reporting normally - marking online"
             sendEvent(name: "healthStatus", value: "online")
+            sendEvent(name: "presence", value: "present")
         }
         debuglog "Sensor health: online (last message ${Math.round(elapsed / 60000)} minutes ago)"
     }
@@ -797,9 +803,12 @@ void initialize() {
         sendEvent(name: "smoothingStatus", value: "idle")
     }
     
-    // Initialize health status
+    // Initialize health status and presence
     if (device.currentValue("healthStatus") == null) {
         sendEvent(name: "healthStatus", value: "unknown")
+    }
+    if (device.currentValue("presence") == null) {
+        sendEvent(name: "presence", value: "not present")
     }
     
     // Initialize last message received attribute
