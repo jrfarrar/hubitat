@@ -53,7 +53,6 @@ dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval
     }
   }  
 } 
-
 def installed() {
   infolog "installed"
   initialize()
@@ -114,6 +113,7 @@ def lockHandler(evt) {
 def lastCodeHandler(evt) {
     debuglog "Unlock event: ${evt.name} : ${evt.descriptionText}"
     lastName = lock.currentValue("lastCodeName")
+    debuglog "lastCodeName: ${lastName}" 
     infolog "$lock.displayName was unlocked by: $lastName"
     sendPushMessage.deviceNotification("$lock.displayName was unlocked by: $lastName")
     app.updateLabel("$thisName <span style=\"color:black;\">(${lastName})</span>")        
