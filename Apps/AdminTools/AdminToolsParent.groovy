@@ -46,6 +46,8 @@ def mainPage() {
                 app(name: "childApps", appName: "Lock Code Notify Child", namespace: "jrfarrar", title: "New Lock Code Notify Instance", multiple: true)
                 //All Off
                 app(name: "childApps", appName: "All Off Child", namespace: "jrfarrar", title: "New All Off Instance", multiple: true)
+                //Outdoor Temperature Averager
+                app(name: "childApps", appName: "Outdoor Temperature Averager", namespace: "jrfarrar", title: "Add an Outdoor Temperature Averager", multiple: true)
         	}
     	}
     }
