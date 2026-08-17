@@ -12,7 +12,8 @@ definition(
     parent: "jrfarrar:Admin tools",
 	category: "Convenience",
 	iconUrl: "",
-	iconX2Url: ""
+	iconX2Url: "",
+    importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/AdminTools/AllOff.groovy",
 )
 
 
