@@ -53,6 +53,7 @@ dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval
     }
   }  
 } 
+
 def installed() {
   infolog "installed"
   initialize()
