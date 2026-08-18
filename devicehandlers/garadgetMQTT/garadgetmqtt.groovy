@@ -1,9 +1,10 @@
-
 /**
  *  Garadget MQTT Device Handler
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.4.4 - 02/04/26 - Fixed connection recovery: watchdog survives reboots, detects stale connections,
+ *                      explicit disconnect before reconnect, fixed cron for >59 min, added lastMessageReceived tracking
  * 1.4.3 - 11/12/25 - Code cleanup: fixed syntax error, blocking loop, null safety, variable declarations
  * 1.4.2 - 11/15/21 - settings update(show/hide) fixed retryTime (should have been seconds not minutes)
  * 1.4.1 - 06/18/20 - log tweaking and code efficiency for scheduled refreshes
@@ -48,9 +49,10 @@ metadata {
             input name: "password", type: "password", title: "MQTT Password:", description: "(blank if none)", required: false
             input name: "retryTime", type: "number", title: "Number of seconds between retries to connect if broker goes down", defaultValue: 300, required: true
             input name: "refreshStats", type: "bool", title: "Refresh Garadget stats on a schedule?", defaultValue: false, required: true
-            input name: "refreshTime", type: "number", title: "If using refresh, refresh this number of minutes", defaultValue: 5, range: "1..59", required: true
+            input name: "refreshTime", type: "number", title: "If using refresh, refresh this number of minutes", defaultValue: 5, range: "1..240", required: true, description: "1-59 = every X minutes, 60-240 = converted to hourly"
             input name: "watchDogSched", type: "bool", title: "Check for connection to MQTT broker on a schedule?", defaultValue: false, required: true
-            input name: "watchDogTime", type: "number", title: "This number of minutes to check for connection to MQTT broker", defaultValue: 15, range: "1..59", required: true
+            input name: "watchDogTime", type: "number", title: "Check MQTT broker connection interval", defaultValue: 15, range: "1..240", required: true, description: "1-59 = every X minutes, 60-240 = converted to hourly (e.g., 120 = every 2 hours)"
+            input name: "staleMinutes", type: "number", title: "Minutes without data before forcing reconnect", defaultValue: 30, range: "5..120", required: true, description: "If no MQTT messages received within this time, force reconnect even if isConnected() says true"
             input name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum", options: getLogLevels(), submitOnChange : false, defaultValue : "1"
             input name: "ShowAllPreferences", type: "bool", title: "<b>Show Garadget device settings?</b>These change settings on the device itself through MQTT", defaultValue: false
         }
@@ -84,30 +86,26 @@ metadata {
 
 void setVersion(){
     //state.name = "Garadget MQTT"
-    state.version = "1.4.3 - Garadget MQTT Device Handler version"
+    state.version = "1.4.4 - Garadget MQTT Device Handler version"
 }
 
 void installed() {
     log.warn "installed..."
+    state.lastMessageReceived = 0
+    state.reconnectAttempts = 0
 }
 
 // Parse incoming device messages to generate events
 void parse(String description) {
     def topicFull = interfaces.mqtt.parseMessage(description).topic
     def topic = topicFull.split('/')
-    /*
-    //def topicCount=topic.size()
-    //def payload=interfaces.mqtt.parseMessage(description).payload.split(',')
-    //log.debug "Desc.payload: " + interfaces.mqtt.parseMessage(description).payload
-    //if (payload[0].startsWith ('{')) json="true" else json="false"
-    //log.debug "json= " + json
-    //log.debug "topic0: " + topic[0]
-    //log.debug "topic1: " + topic[1]
-    //debuglog "topic2: " + topic[2]
-    //top=interfaces.mqtt.parseMessage(description).topic
-    */
 
     def message = interfaces.mqtt.parseMessage(description).payload
+    
+    // Track message receipt for staleness detection
+    state.lastMessageReceived = now()
+    state.reconnectAttempts = 0
+    
     if (message) {
         def jsonVal = parseJson(message)
         if (topic[2] == "status") {
@@ -253,20 +251,52 @@ void updated() {
     infolog "updated..."
     //write the configuration
     configure()
+    
+    // Reset reconnect counter
+    state.reconnectAttempts = 0
+    
     //set schedules
     unschedule()
     pauseExecution(1000)
-    //schedule the watchdog to run in case the broker restarts
+    
+    // Set up all schedules (watchdog, refresh)
+    setupSchedules()
+}
+
+/**
+ * Central schedule setup - called from both updated() and initialize()
+ * Ensures watchdog and refresh survive hub reboots
+ */
+void setupSchedules() {
+    // Schedule the watchdog to run in case the broker restarts
     if (watchDogSched) {
-        debuglog "setting schedule to check for MQTT broker connection every ${watchDogTime} minutes"
-        schedule("44 7/${watchDogTime} * ? * *", watchDog)
+        if (watchDogTime <= 59) {
+            debuglog "Setting schedule to check MQTT broker connection every ${watchDogTime} minute(s)"
+            schedule("44 0/${watchDogTime} * ? * *", watchDog)
+        } else {
+            def hours = Math.round(watchDogTime / 60.0).toInteger()
+            if (hours < 1) hours = 1
+            if (hours > 23) hours = 23
+            debuglog "Setting schedule to check MQTT broker connection every ${hours} hour(s)"
+            schedule("44 7 0/${hours} ? * *", watchDog)
+        }
     }
-    //If refresh set to true then set the schedule
+    
+    // If refresh set to true then set the schedule
     if (refreshStats) {
-        debuglog "setting schedule to refresh every ${refreshTime} minutes"
-        schedule("22 3/${refreshTime} * ? * *", requestStatus)
+        if (refreshTime <= 59) {
+            debuglog "Setting schedule to refresh every ${refreshTime} minute(s)"
+            schedule("22 0/${refreshTime} * ? * *", requestStatus)
+        } else {
+            def hours = Math.round(refreshTime / 60.0).toInteger()
+            if (hours < 1) hours = 1
+            if (hours > 23) hours = 23
+            debuglog "Setting schedule to refresh every ${hours} hour(s)"
+            schedule("22 3 0/${hours} ? * *", requestStatus)
+        }
     }
 }
+
 void uninstalled() {
     infolog "disconnecting from mqtt..."
     interfaces.mqtt.disconnect()
@@ -275,11 +305,35 @@ void uninstalled() {
 
 void initialize() {
     infolog "initialize..."
+    
+    // Initialize state variables
+    if (state.lastMessageReceived == null) state.lastMessageReceived = 0
+    if (state.reconnectAttempts == null) state.reconnectAttempts = 0
+    
+    // Connect to MQTT broker
+    connectMqtt()
+    
+    // Set up schedules - critical for surviving hub reboots
+    // unschedule first to avoid duplicates since initialize() can be called multiple times
+    unschedule()
+    pauseExecution(500)
+    setupSchedules()
+    
+    //if logs are in "Need Help" turn down to "Running" after an hour
+    def logL = logLevel ? logLevel.toInteger() : 1
+    if (logL == 2) runIn(3600, logsOff)
+}
+
+/**
+ * Connect to MQTT broker and subscribe to topics
+ * Separated from initialize() so it can be called independently for reconnection
+ */
+void connectMqtt() {
     try {
         //open connection
         def mqttInt = interfaces.mqtt
         def mqttbroker = "tcp://" + ipAddr + ":" + ipPort
-        def mqttclientname = "Hubitat MQTT " + doorName
+        def mqttclientname = "Hubitat MQTT " + doorName + " " + device.deviceNetworkId
         mqttInt.connect(mqttbroker, mqttclientname, username, password)
         //give it a chance to start
         pauseExecution(1000)
@@ -288,11 +342,28 @@ void initialize() {
         mqttInt.subscribe("garadget/${doorName}/status")
         mqttInt.subscribe("garadget/${doorName}/config")
     } catch(e) {
-        log.warn "${device.label?device.label:device.name}: MQTT initialize error: ${e.message}"
+        log.warn "${device.label?device.label:device.name}: MQTT connect error: ${e.message}"
     }
-    //if logs are in "Need Help" turn down to "Running" after an hour
-    def logL = logLevel ? logLevel.toInteger() : 1
-    if (logL == 2) runIn(3600, logsOff)
+}
+
+/**
+ * Force disconnect and reconnect to MQTT broker
+ * Used when connection is suspected stale (isConnected() lies about half-open TCP connections)
+ */
+void reconnectMqtt() {
+    state.reconnectAttempts = (state.reconnectAttempts ?: 0) + 1
+    infolog "Reconnect attempt #${state.reconnectAttempts} - disconnecting first..."
+    
+    try {
+        interfaces.mqtt.disconnect()
+    } catch(e) {
+        debuglog "Disconnect error (expected if already disconnected): ${e.message}"
+    }
+    
+    pauseExecution(2000)
+    
+    infolog "Reconnecting to MQTT broker..."
+    connectMqtt()
 }
 
 void configure(){
@@ -333,48 +404,39 @@ void stop(){
     watchDog()
     interfaces.mqtt.publish("garadget/${doorName}/command", "stop")
 }
-/*
-void on() {
-    debuglog "On sent, open door..."
-    open()
-}
-void off() {
-    debuglog "Off sent, close door..."
-    close()
-}
-*/
 
+/**
+ * Watchdog - checks MQTT connection health
+ * Now checks both isConnected() AND whether we've received data recently
+ */
 void watchDog() {
-    debuglog "Checking MQTT status"
-    //if not connnected, re-initialize
-    if(!interfaces.mqtt.isConnected()) {
-        debuglog "MQTT Connected: (${interfaces.mqtt.isConnected()})"
-        initialize()
+    debuglog "Watchdog: Checking MQTT status"
+    
+    def connected = interfaces.mqtt.isConnected()
+    def lastMsg = state.lastMessageReceived ?: 0
+    def elapsed = lastMsg > 0 ? now() - lastMsg : -1
+    def staleThreshold = (staleMinutes ?: 30) * 60 * 1000
+    
+    if (!connected) {
+        // Definitely disconnected - reconnect
+        log.warn "Watchdog: MQTT disconnected - reconnecting"
+        reconnectMqtt()
+    } else if (lastMsg > 0 && elapsed > staleThreshold) {
+        // Connected but no data - likely a ghost/stale connection
+        def minsSince = Math.round(elapsed / 60000)
+        log.warn "Watchdog: MQTT reports connected but no data in ${minsSince} minutes - forcing reconnect"
+        reconnectMqtt()
+    } else {
+        debuglog "Watchdog: MQTT OK (connected: ${connected}, last data: ${elapsed > 0 ? Math.round(elapsed / 60000) + ' min ago' : 'never'})"
     }
-}
-void mqttClientStatus(String message) {
-    log.warn "${device.label?device.label:device.name}: **** Received status message: ${message} ****"
-    if (message.contains ("Connection lost")) {
-        connectionLost()
-    }
-}
-//if connection is dropped, schedule reconnection attempts every (retryTime) seconds
-void connectionLost(){
-    infolog "connection lost, scheduling reconnection attempt..."
-    // Use runIn instead of blocking while loop to prevent driver hang
-    runIn(retryTime ?: 300, reconnectAttempt)
 }
 
-void reconnectAttempt(){
-    if(!interfaces.mqtt.isConnected()) {
-        infolog "attempting to reconnect to MQTT broker..."
-        initialize()
-        // If still not connected, schedule another retry
-        if(!interfaces.mqtt.isConnected()) {
-            runIn(retryTime ?: 300, reconnectAttempt)
-        } else {
-            infolog "reconnection successful"
-        }
+void mqttClientStatus(String message) {
+    log.warn "${device.label?device.label:device.name}: **** MQTT status: ${message} ****"
+    if (message.contains("Connection lost") || message.contains("Client is not connected")) {
+        // Schedule a reconnect attempt instead of blocking
+        infolog "Connection lost detected - scheduling reconnect in ${retryTime} seconds"
+        runIn(retryTime ?: 300, reconnectMqtt)
     }
 }
 

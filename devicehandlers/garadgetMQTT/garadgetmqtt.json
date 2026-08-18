@@ -1,11 +1,11 @@
 {
   "packageName": "Garadget MQTT Driver",
   "author": "J.R. Farrar",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "minimumHEVersion": "2.1.9",
   "communityLink":"https://community.hubitat.com/t/release-garadget-mqtt-device-handler/43377",
-  "dateReleased": "2025-11-12",
-  "releaseNotes": "Code cleanup: fixed syntax error, blocking loop, null safety, variable declarations",
+  "dateReleased": "2026-02-04",
+  "releaseNotes": "Fixed connection recovery: watchdog survives reboots, detects stale connections, explicit disconnect before reconnect, fixed cron for >59 min, added lastMessageReceived tracking",
   "drivers": [
     {
       "id": "58801d01-51bd-4116-a271-2e7a7c9e24a0",
