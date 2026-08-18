@@ -29,7 +29,7 @@ def pageConfig() {
 dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval:0) { 
     
   section(getFormat("header-green", "Devices")) {
-		  paragraph "- Default is turn on when power rises above. Use toggle below to reverse and turn off when power rises above."
+		  paragraph "- Turn on when power rises above."
 	      input (name: "pwrClamp", type: "capability.powerMeter", title: "Power Meter", submitOnChange: true, required: true)
           input (name: "tempSwitch", type: "capability.switch", title: "Switch to turn on/off", submitOnChange: true, multiple: false, required: true)
           input (name: "watts", type: "number", title: "Watt trigger?", defaultValue: 10, required: true)
@@ -163,14 +163,14 @@ def canWeRun(pwr){
         powerOk = false
         infolog "Power received was out of bounds" + pwr
     }   
-    if (onSwitch && mySwitch.currentValue('switch').contains('off')) {
+    if (onSwitch && mySwitch && mySwitch.currentValue('switch')?.contains('off')) {
         isItOn = false
         debuglog "Only Run when switch is ON and it's OFF"
     } else { 
         isItOn = true 
     }
 
-    if (offSwitch && mySwitch.currentValue('switch').contains('on')) {
+    if (offSwitch && mySwitch && mySwitch.currentValue('switch')?.contains('on')) {
         isItOff = false
         debuglog "Only Run when switch is off and it's ON"
     } else { 
