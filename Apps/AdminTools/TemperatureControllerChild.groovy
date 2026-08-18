@@ -33,6 +33,7 @@ dynamicPage(name: "", title: "", install: true, uninstall: true, refreshInterval
           input (name: "tempSwitch", type: "capability.switch", title: "Switch to turn on/off", submitOnChange: true, multiple: false)
           input (name: "desiredTemp", type: "number", title: "Desired Temperature?")
           input (name: "useAsCool", type: "bool", defaultValue: "false", title: "Use in reverse? (turn switch on when temp goes above)", submitOnChange: true)
+          input (name: "hysteresis", type: "decimal", title: "Hysteresis (degrees)?", defaultValue: 0, submitOnChange: false)
     }
     section(getFormat("header-green", "RESTRICTIONS")) {
 		  paragraph "- These restrict the above triggers based on what's set here."
@@ -95,42 +96,44 @@ def temperatureHandler(evt) {
     //Double.parseDouble(evt.value.replace("%", ""))
     debuglog "currentTemp: $currentTemp"
 if (canWeRun()) {    
+    def hyst = hysteresis ?: 0
+    
     if (useAsCool) {    
-        if (currentTemp <= desiredTemp) {
+        if (currentTemp <= (desiredTemp - hyst)) {
             if ( tempSwitch.latestValue( "switch" ) != "off" ) {
-                infolog "Turning Cooler off"
+                infolog "Turning Cooler off - current temp: ${currentTemp}°, setpoint: ${desiredTemp}°, hysteresis: ${hyst}°"
                 tempSwitch.off()
                 app.updateLabel("$thisName <span style=\"color:red;\">(OFF)($currentTemp°)</span>")
             }
         }
         else if (currentTemp > desiredTemp ) {
             if ( tempSwitch.latestValue( "switch" ) != "on" ) {
-                infolog "Turning Cooler on"
+                infolog "Turning Cooler on - current temp: ${currentTemp}°, setpoint: ${desiredTemp}°, hysteresis: ${hyst}°"
                 tempSwitch.on()
                 app.updateLabel("$thisName <span style=\"color:green;\">(ON)($currentTemp°)</span>")
             }  
         }
         else {
-            debuglog "Current temp is ${evt.value}"
+            debuglog "Current temp is ${evt.value} - in hysteresis band"
         }
     } else {
         //use as a heater
         if (currentTemp <= desiredTemp) {
             if ( tempSwitch.latestValue( "switch" ) != "on" ) {
-                infolog "Turning heater on"
+                infolog "Turning heater on - current temp: ${currentTemp}°, setpoint: ${desiredTemp}°, hysteresis: ${hyst}°"
                 tempSwitch.on()
                 app.updateLabel("$thisName <span style=\"color:green;\">(ON)($currentTemp°)</span>")
             } else {app.updateLabel("$thisName <span style=\"color:green;\">(ON)($currentTemp°)</span>")}
         }
-        else if (currentTemp > desiredTemp ) {
+        else if (currentTemp > (desiredTemp + hyst) ) {
             if ( tempSwitch.latestValue( "switch" ) != "off" ) {
-                infolog "Turning heater off"
+                infolog "Turning heater off - current temp: ${currentTemp}°, setpoint: ${desiredTemp}°, hysteresis: ${hyst}°"
                 tempSwitch.off()
                 app.updateLabel("$thisName <span style=\"color:red;\">(OFF)($currentTemp°)</span>")
             }  else {app.updateLabel("$thisName <span style=\"color:red;\">(OFF)($currentTemp°)</span>")}
         }
         else {
-            debuglog "Current temp is ${evt.value}"
+            debuglog "Current temp is ${evt.value} - in hysteresis band"
         }        
     }
  }
