@@ -73,7 +73,7 @@ def uninstalled() {
 
 def subscribeToEvents() {
     if (who) {
-    subscribe(who, "address1", whoLocation)
+    subscribe(who, "location", whoLocation)
     } else {
         log.warn "No sensor"
     }
