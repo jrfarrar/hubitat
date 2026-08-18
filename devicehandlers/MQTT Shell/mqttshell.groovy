@@ -6,9 +6,10 @@
  */
 
 metadata {
-    definition (name: "BI MQTT Motion", 
+    definition (name: "MQTT Shell Template", 
                 namespace: "jrfarrar", 
-                author: "J.R. Farrar"){
+                author: "J.R. Farrar",
+                importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/MQTT%20Shell/mqttshell.groovy"){
                 
         capability "Initialize"
         capability "Refresh"

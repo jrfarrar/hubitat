@@ -42,7 +42,7 @@ metadata {
     definition (name: "BI MQTT Motion", 
                 namespace: "jrfarrar", 
                 author: "J.R. Farrar",
-                importUrl: "https://github.com/jrfarrar/hubitat/blob/master/devicehandlers/BI%20MQTT%20Motion/BIMQTTMotion.groovy") {
+                importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/BI%20MQTT%20Motion/BIMQTTMotion.groovy") {
         capability "Initialize"
         capability "Refresh"
         capability "Configuration"
