@@ -3,7 +3,7 @@
  *
  *  Light/Dark Switch
  *
- *  2025/11/11 - update debounce logic
+ *
  */
 definition(
     name: "Is It Dark Child",
