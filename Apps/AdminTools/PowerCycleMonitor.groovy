@@ -42,7 +42,8 @@ definition(
         category: "Convenience",
         iconUrl: "",
         iconX2Url: "",
-        iconX3Url: ""
+        iconX3Url: "",
+        importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/AdminTools/PowerCycleMonitor.groovy"
 )
 
 preferences {
