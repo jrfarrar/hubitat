@@ -1,8 +1,13 @@
 /**
- * Power Cycle Monitor v2.39 (Smart Dashboard)
+ * Power Cycle Monitor v2.40 (Smart Dashboard)
  *
  * Monitor power meters to detect cycling patterns and stuck-on failures
  * with historical tracking and trend analysis.
+ *
+ * v2.40 Changes:
+ * - FIX: Stuck-ON switch now clears when the pump actually stops (in handleDeviceOff),
+ *   instead of staying latched until the next ON cycle. Prevents the stuck-on
+ *   notification from firing/persisting for hours after the pump has already shut off.
  *
  * v2.39 Changes:
  * - FIX: Runtime calculation now correctly uses (cycles - 1) for OFF periods
@@ -46,16 +51,16 @@ preferences {
 }
 
 def mainPage() {
-    dynamicPage(name: "mainPage", title: "Power Cycle Monitor v2.39", install: true, uninstall: true) {
+    dynamicPage(name: "mainPage", title: "Power Cycle Monitor v2.40", install: true, uninstall: true) {
 
         // 1. Device to Monitor
-        section("Device to Monitor") {
+        section(getFormat("header-green", "Device to Monitor")) {
             input "powerMeter", "capability.powerMeter", title: "Select Power Meter", required: true, multiple: false
             input "wattThreshold", "number", title: "Watt Threshold (ON > this)", required: true, defaultValue: 100, description: "Watts"
         }
 
         // 2. Cycling Detection (Usage Monitor)
-        section("Cycling Detection (Usage Monitor)") {
+        section(getFormat("header-green", "Cycling Detection (Usage Monitor)")) {
             input "cycleCount", "number", title: "Cycles to Log/Alert", required: true, defaultValue: 3, description: "Sessions with fewer cycles will be ignored"
             input "timeWindow", "number", title: "Time Window (minutes)", required: true, defaultValue: 30
             input "offTimeout", "number", title: "Reset triggers if OFF for (min)", required: true, defaultValue: 60
@@ -63,18 +68,18 @@ def mainPage() {
         }
 
         // 3. Stuck-ON Detection (Failure Monitor)
-        section("Stuck-ON Detection (Failure Monitor)") {
+        section(getFormat("header-green", "Stuck-ON Detection (Failure Monitor)")) {
             input "stuckOnTimeout", "number", title: "Alert if ON longer than (min)", required: true, defaultValue: 15
             input "stuckOnAlertSwitch", "capability.switch", title: "Stuck-ON Switch (Optional)", required: false, description: "Turns ON when stuck detected"
         }
 
         // 4. Current Session (always visible)
-        section("Current Session") {
+        section(getFormat("header-green", "Current Session")) {
             paragraph getSmartDashboardHtml()
         }
 
         // 5. Recent Sessions (always visible)
-        section("Recent Sessions") {
+        section(getFormat("header-green", "Recent Sessions")) {
             if (!state.recentSessions) state.recentSessions = []
 
             if (state.recentSessions.size() == 0) {
@@ -90,7 +95,7 @@ def mainPage() {
         }
 
         // 6. Historical Analysis and Anomaly Detection (master section for optional features)
-        section("Historical Analysis and Anomaly Detection") {
+        section(getFormat("header-green", "Historical Analysis and Anomaly Detection")) {
             input "enableHistoryTracking", "bool", title: "Enable Historical Analysis", defaultValue: true, submitOnChange: true
             
             if (settings.enableHistoryTracking) {
@@ -108,7 +113,7 @@ def mainPage() {
 
         // 7. Monthly History (only if Historical Analysis enabled)
         if (settings.enableHistoryTracking) {
-            section("Monthly History") {
+            section(getFormat("header-green", "Monthly History")) {
                 if (!state.monthlySnapshots) state.monthlySnapshots = []
 
                 def monthsToShow = state.showFullHistory ? 12 : 6
@@ -127,7 +132,7 @@ def mainPage() {
             }
             
             // 8. CSV Logging (only if Historical Analysis enabled)
-            section("CSV Logging") {
+            section(getFormat("header-green", "CSV Logging")) {
                 input "enableCsvLogging", "bool", title: "Enable CSV File Logging", defaultValue: true, submitOnChange: true
                 
                 // CSV download link - RIGHT UNDER the CSV logging switch
@@ -140,14 +145,14 @@ def mainPage() {
         }
 
         // 9. Reset Historical Data
-        section("⚠️ Reset Historical Data") {
+        section(getFormat("header-green", "⚠️ Reset Historical Data")) {
             paragraph "<div style='background-color:#fff3cd; padding:10px; border-radius:5px; border-left:4px solid #ff9800;'><b>Warning:</b> This action will permanently delete all historical tracking data including Monthly History, Baseline calculations, and monthly snapshots. CSV log files will remain on disk but can be manually deleted.</div>"
             input "btnResetHistory", "button", title: "⚠️ Reset All Historical Data"
             paragraph "<small style='color:#666;'>This will clear: Monthly History table, Baseline data, all monthly snapshots, and monthly counters. This action cannot be undone. Recent Sessions and CSV files are not affected.</small>"
         }
 
         // 10. App Settings
-        section("App Settings") {
+        section(getFormat("header-green", "App Settings")) {
             input "labelPrefix", "text", title: "App Label Prefix", required: false
             input "logEnable", "bool", title: "Enable Debug Logging", defaultValue: false
             input "btnRefresh", "button", title: "🔄 Refresh Subscriptions"
@@ -353,6 +358,13 @@ def handleDeviceOff(currentTime) {
 
         log.info "${powerMeter} turned OFF. Last run: ${formatDuration(onSeconds)}, Avg Power: ${avgWatts.toInteger()}W, Peak: ${peakWatts.toInteger()}W"
         state.deviceOn = false
+
+        // Clear Stuck-ON as soon as the pump actually stops (don't wait for the next ON cycle)
+        if (state.stuckOnDetected) {
+            log.warn "Stuck-ON Cleared: pump stopped."
+            state.stuckOnDetected = false
+            if (stuckOnAlertSwitch) stuckOnAlertSwitch.off()
+        }
 
         if (state.continuousOnStart) {
             state.onDurations.add(onSeconds)
@@ -736,4 +748,8 @@ def formatDuration(seconds) {
 
 def logDebug(msg) {
     if (logEnable) log.debug msg
+}
+
+def getFormat(type, text="") {
+    if (type == "header-green") return "<div style='color:#fff;font-weight:bold;background:#81BC00;border:1px solid;box-shadow:2px 3px #A9A9A9;padding:5px'>${text}</div>"
 }
