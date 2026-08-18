@@ -39,7 +39,7 @@ definition(
     iconUrl: "",
     iconX2Url: "",
     iconX3Url: "",
-    importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/refs/heads/master/Apps/BathroomHumidityFan/Bathroomhumidityparent.groovy")
+    importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/BathroomHumidityFan/Bathroomhumidityparent.groovy")
 
 preferences {
 	page(name: "mainPage")

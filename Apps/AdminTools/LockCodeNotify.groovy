@@ -16,7 +16,7 @@ definition(
   iconUrl: "",
   iconX2Url: "",
   iconX3Url: "",
-  importUrl: ""
+  importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/AdminTools/LockCodeNotify.groovy"
 )
 
 preferences {

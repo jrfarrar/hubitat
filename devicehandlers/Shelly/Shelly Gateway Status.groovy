@@ -16,7 +16,7 @@ metadata {
     definition (name: "Shelly Gateway Status", 
                 namespace: "jrfarrar", 
                 author: "J.R. Farrar",
-                importUrl: "") {
+                importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/Shelly/Shelly%20Gateway%20Status.groovy") {
         capability "Initialize"
         capability "Refresh"
         capability "Configuration"

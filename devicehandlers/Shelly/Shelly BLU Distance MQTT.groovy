@@ -29,7 +29,7 @@ metadata {
     definition (name: "Shelly BLU Distance MQTT", 
                 namespace: "jrfarrar", 
                 author: "J.R. Farrar",
-                importUrl: "") {
+                importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/Shelly/Shelly%20BLU%20Distance%20MQTT.groovy") {
         capability "Initialize"
         capability "Refresh"
         capability "Configuration"

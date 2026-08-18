@@ -26,7 +26,7 @@
  *
  */
 metadata {
-	definition (name: "GE Motion Dimmer Switch 26933", namespace: "jrfarrar", author: "jrfarrar") {
+	definition (name: "GE Motion Dimmer Switch 26933", namespace: "jrfarrar", author: "jrfarrar", importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/GE%2026933%20Dimmer%20Switch/GE%2026933%20Dimmer%20switch.groovy") {
 	capability "Motion Sensor"
     capability "Actuator"
  	capability "Switch"
