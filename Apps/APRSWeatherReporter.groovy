@@ -3,7 +3,15 @@
  * Sends Ecowitt weather data from Hubitat to APRS-IS
  *
  * Author: K0JRF
- * Version: 2.5
+ * Version: 2.6
+ *   - Honour the Ecowitt driver's own orphan flags (orphanedWind,
+ *     orphanedTemp, orphanedRain, and a generic 'orphaned'). A sub-sensor can
+ *     die while the device it belongs to keeps publishing: on 2026-08-22 the
+ *     WH69's wind unit went silent at 17:39 and the array kept reporting
+ *     temperature every few minutes, so device-level activity said 'healthy'
+ *     while the station beacon carried a frozen wind reading for 45 minutes.
+ *     The driver had set orphanedWind at 17:52. Nothing else knew.
+ *   - These flags beat any timestamp heuristic and are checked first.
  *   - Staleness handling. A weather station that keeps beaconing a frozen
  *     reading is worse than one that goes quiet: the stale number looks
  *     current to everyone downstream. If the temperature source stops
@@ -169,6 +177,9 @@ def mainPage() {
             input "staleCheckEnabled", "bool",
                 title: "Stop reporting when a source device goes quiet",
                 defaultValue: true, submitOnChange: true
+            input "orphanGuard", "bool",
+                title: "Trust the driver's own orphan flags (Ecowitt: orphanedWind, orphanedTemp, orphanedRain)",
+                defaultValue: true
             if (staleCheckEnabled) {
                 input "staleMinutes", "number",
                     title: "Consider a source stale after this many minutes with no activity",
@@ -257,6 +268,11 @@ def diagnose() {
         }
         def empty = attrs.findAll { a -> try { dev.currentValue(a) == null } catch (ignored) { true } }
         log.info "APRS diagnose:   (${empty.size()} attribute(s) null on this device: ${empty.join(', ')})"
+        def flags = []
+        ["orphaned", "orphanedTemp", "orphanedWind", "orphanedRain"].each { f ->
+            try { def v = dev.currentValue(f); if (v != null) flags << "${f}=${v}" } catch (ignored) { }
+        }
+        if (flags) log.info "APRS diagnose:   driver orphan flags: ${flags.join(', ')}"
         def age = deviceAgeMinutes(dev)
         log.info "APRS diagnose:   last activity: " +
                  (age == null ? "UNKNOWN — the staleness check will treat this device as fresh"
@@ -276,7 +292,7 @@ def sendWeatherReport() {
         def packet = buildPacket()
         if (packet == null) return
 
-        def login = "user ${callsign} pass ${passcode} vers HubitatAPRS 2.5"
+        def login = "user ${callsign} pass ${passcode} vers HubitatAPRS 2.6"
         def body  = "${login}\r\n${packet}\r\n"
 
         state.lastPacket  = packet
@@ -375,6 +391,14 @@ private String explainStatus(status, detail) {
 
 private String buildPacket() {
     def tempSrc = tempDevice ?: wxDevice
+    if (isOrphaned(tempSrc, "Temp")) {
+        state.lastOk = false
+        state.lastError = "temperature source '${tempSrc?.displayName}' is flagged ORPHANED by its driver. " +
+                          "Nothing sent — the last value it published is frozen, and a frozen reading on the " +
+                          "air reads as current to everyone downstream."
+        log.warn "APRS: ${state.lastError}"
+        return null
+    }
     if (isStale(tempSrc)) {
         def age = deviceAgeMinutes(tempSrc)
         state.lastOk = false
@@ -406,26 +430,28 @@ private String buildPacket() {
 
     def pSrc = pressureDevice ?: wxDevice
     def rSrc = rainDevice ?: wxDevice
-    if (isStale(wxDevice)) log.warn "APRS: '${wxDevice.displayName}' has gone quiet — humidity and wind dropped from this packet"
-    if (isStale(pSrc))     log.warn "APRS: '${pSrc.displayName}' has gone quiet — pressure dropped from this packet"
+    if (isStale(wxDevice))              log.warn "APRS: '${wxDevice.displayName}' has gone quiet — humidity and wind dropped from this packet"
+    if (isOrphaned(wxDevice, "Wind"))   log.warn "APRS: '${wxDevice.displayName}' wind sensor is ORPHANED — wind dropped from this packet"
+    if (isOrphaned(wxDevice, "Temp"))   log.warn "APRS: '${wxDevice.displayName}' temp/humidity sensor is ORPHANED — humidity dropped from this packet"
+    if (isStale(pSrc) || isOrphaned(pSrc, null)) log.warn "APRS: '${pSrc.displayName}' is unavailable — pressure dropped from this packet"
 
     def wx = new StringBuilder()
-    wx << three(freshVal(wxDevice, attrWindDir), "...")          // wind direction
+    wx << three(freshVal(wxDevice, attrWindDir, "Wind"), "...")          // wind direction
     wx << "/"
-    wx << three(freshVal(wxDevice, attrWindSpd), "...")          // sustained wind speed, mph
-    wx << "g" << three(freshVal(wxDevice, attrWindGust), "...")  // gust, mph
+    wx << three(freshVal(wxDevice, attrWindSpd, "Wind"), "...")          // sustained wind speed, mph
+    wx << "g" << three(freshVal(wxDevice, attrWindGust, "Wind"), "...")  // gust, mph
     wx << "t" << tempField(tempF)                     // temperature, whole degF, signed
     // With no rain gauge the r/p/P fields are omitted entirely. Sending
     // "r...p..." would claim a sensor that reports nothing; leaving them out
     // says the station does not measure rainfall. Both are valid APRS, but
     // only one is true here.
     if (hasRainGauge) {
-        wx << "r" << three(rainHundredths(freshVal(rSrc, attrRain1h)),  "...")
-        wx << "p" << three(rainHundredths(freshVal(rSrc, attrRain24h)), "...")
-        def rainMid = rainHundredths(freshVal(rSrc, attrRainMid))
+        wx << "r" << three(rainHundredths(freshVal(rSrc, attrRain1h, "Rain")),  "...")
+        wx << "p" << three(rainHundredths(freshVal(rSrc, attrRain24h, "Rain")), "...")
+        def rainMid = rainHundredths(freshVal(rSrc, attrRainMid, "Rain"))
         if (rainMid != null) wx << "P" << three(rainMid, "...")
     }
-    wx << "h" << humidityField(freshVal(wxDevice, attrHum))
+    wx << "h" << humidityField(freshVal(wxDevice, attrHum, "Temp"))
     wx << "b" << pressureField(freshVal(pSrc, attrPressure))
 
     return "${callsign}>APRS,TCPIP*:@${timestamp}${latStr}/${lonStr}_${wx} ${stationDesc}"
@@ -457,6 +483,26 @@ private Long deviceAgeMinutes(dev) {
     catch (ignored) { return null }
 }
 
+/**
+ * Ecowitt drivers publish their own staleness flags — orphanedWind,
+ * orphanedTemp, orphanedRain, plus a generic 'orphaned' — raised when a
+ * sub-sensor stops reporting. This beats every timestamp heuristic, because a
+ * sub-sensor dies while its parent device stays alive: the WH69's wind unit
+ * can go silent while the same device publishes temperature every minute.
+ * Prefer the specific flag, fall back to the generic, ignore both if absent.
+ */
+private boolean isOrphaned(dev, String kind) {
+    if (!orphanGuard || !dev) return false
+    def names = kind ? ["orphaned${kind}", "orphaned"] : ["orphaned"]
+    for (String a : names) {
+        try {
+            def v = dev.currentValue(a)
+            if (v != null) return v.toString().toLowerCase().contains("true")
+        } catch (ignored) { }
+    }
+    return false
+}
+
 private boolean isStale(dev) {
     if (!staleCheckEnabled || !dev) return false
     def age = deviceAgeMinutes(dev)
@@ -464,9 +510,15 @@ private boolean isStale(dev) {
     return age > ((staleMinutes ?: 60) as Long)
 }
 
-/** Attribute value, or null when its source device has gone stale. */
-private def freshVal(dev, String attr) {
-    return isStale(dev) ? null : attrVal(dev, attr)
+/**
+ * Attribute value, or null when its source has gone stale or the driver has
+ * flagged that sub-sensor as orphaned. `kind` picks the orphan flag: "Wind",
+ * "Temp", "Rain", or null for the device-wide one.
+ */
+private def freshVal(dev, String attr, String kind = null) {
+    if (isStale(dev)) return null
+    if (isOrphaned(dev, kind)) return null
+    return attrVal(dev, attr)
 }
 
 private def attrVal(dev, String attr) {
