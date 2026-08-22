@@ -3,7 +3,19 @@
  * Sends Ecowitt weather data from Hubitat to APRS-IS
  *
  * Author: K0JRF
- * Version: 2.1
+ * Version: 2.2
+ *   - Fixed a false-failure bug: v2.1 required HTTP 204 AND a non-zero
+ *     X-Packetsrcvd header. Real Tier-2 servers answer a successful submit
+ *     with a bare HTTP 200 and no such header, so genuinely delivered packets
+ *     were logged as failures. Any 2xx now counts as delivered unless the body
+ *     is an HTML page (which means the port is a web status page, not the
+ *     submit endpoint) or the server explicitly reports zero packets received.
+ *   - Each failure status now carries the meaning observed in the field
+ *     instead of one guess: 403 login rejected, 404 no submit endpoint here,
+ *     408 nothing speaking HTTP on this port.
+ *   - Warn on save when the port is set to 14580, the raw TCP port.
+ *   - Default server back to rotate.aprs2.net, which does serve HTTP submit
+ *     on 8080; noam.aprs2.net:8080 answers 404.
  *   - Pressure and rain can now come from a DIFFERENT device than temperature.
  *     On an Ecowitt the barometer lives on the gateway/console, not on the
  *     outdoor sensor array, so a single-device app can never report it. The
@@ -59,8 +71,8 @@ def mainPage() {
         section("APRS-IS Settings") {
             input "callsign",   "text",   title: "Callsign (e.g. K0JRF-13)", required: true
             input "passcode",   "number", title: "APRS-IS Passcode (computed from the BASE callsign, no SSID)", required: true
-            input "aprsServer", "text",   title: "APRS-IS Server", required: true, defaultValue: "noam.aprs2.net"
-            input "aprsPort",   "number", title: "APRS-IS HTTP submit port", required: true, defaultValue: 8080
+            input "aprsServer", "text",   title: "APRS-IS Server", required: true, defaultValue: "rotate.aprs2.net"
+            input "aprsPort",   "number", title: "APRS-IS HTTP submit port (8080 — NOT 14580, that is the raw TCP port)", required: true, defaultValue: 8080
         }
 
         section("Station Location") {
@@ -130,8 +142,9 @@ def mainPage() {
 private String statusText() {
     if (!state.lastAttempt) return "No send attempted yet. Save the app, then press Send Now."
     def line = "Last attempt: ${state.lastAttempt}\n"
-    line += state.lastOk ? "Result: DELIVERED — server acknowledged ${state.lastAccepted} packet(s)\n"
+    line += state.lastOk ? "Result: DELIVERED (packets acknowledged: ${state.lastAccepted})\n"
                          : "Result: FAILED — ${state.lastError}\n"
+    if (state.lastDelivered) line += "Last confirmed delivery: ${state.lastDelivered}\n"
     if (state.lastPacket) line += "Packet: ${state.lastPacket}"
     return line
 }
@@ -164,6 +177,10 @@ def initialize() {
     else if (interval == 15) runEvery15Minutes("sendWeatherReport")
     else if (interval == 30) runEvery30Minutes("sendWeatherReport")
     log.info "APRS Weather Reporter scheduled every ${interval} minutes"
+    if ((aprsPort as Integer) == 14580) {
+        log.warn "APRS: port 14580 is the raw TCP APRS-IS port and does not speak HTTP. " +
+                 "Submissions will time out with HTTP 408. Set the port to 8080."
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +216,7 @@ def sendWeatherReport() {
         def packet = buildPacket()
         if (packet == null) return
 
-        def login = "user ${callsign} pass ${passcode} vers HubitatAPRS 2.1"
+        def login = "user ${callsign} pass ${passcode} vers HubitatAPRS 2.2"
         def body  = "${login}\r\n${packet}\r\n"
 
         state.lastPacket  = packet
@@ -232,26 +249,64 @@ def aprsResponse(resp, data) {
 
     if (resp.hasError()) {
         state.lastOk = false
-        state.lastError = "HTTP ${status} ${resp.getErrorMessage()}"
+        state.lastError = explainStatus(status, resp.getErrorMessage())
         log.error "APRS send FAILED: ${state.lastError}"
         return
     }
 
-    // Per the APRS-IS spec a successful submission is 204 with X-Packetsrcvd.
+    // X-Packetsrcvd is optional in practice. aprsc sends it; several Tier-2
+    // servers answer a good submit with a bare 200 and no header at all.
     def rcvd = null
     try { resp.headers?.each { k, v -> if (k?.toLowerCase() == "x-packetsrcvd") rcvd = v } } catch (ignored) { }
+    def count = (rcvd?.toString()?.isInteger()) ? rcvd.toString().toInteger() : null
 
-    if (status == 204 && rcvd?.toString()?.isInteger() && rcvd.toString().toInteger() > 0) {
-        state.lastOk = true
-        state.lastAccepted = rcvd
-        state.lastError = null
-        log.info "APRS packet DELIVERED (server accepted ${rcvd}): ${data.packet}"
-    } else {
+    // An HTML body means we reached a web status page, not the submit endpoint.
+    def body = ""
+    try { body = resp.data?.toString() ?: "" } catch (ignored) { }
+    def isWebPage = body.toLowerCase().contains("<html") || body.toLowerCase().contains("<!doctype")
+
+    if (count != null && count < 1) {
         state.lastOk = false
-        state.lastError = "HTTP ${status}, X-Packetsrcvd=${rcvd}. Server did not confirm the packet. " +
-                          "A 204 with X-Packetsrcvd=0 usually means the passcode is wrong (unverified clients are silently dropped)."
-        log.warn "APRS send NOT CONFIRMED: ${state.lastError}"
+        state.lastError = "HTTP ${status}, X-Packetsrcvd=0 — the server parsed the submission but accepted no packets. " +
+                          "That is what an unverified client sees, so check the passcode."
+        log.warn "APRS send REJECTED: ${state.lastError}"
+        return
     }
+
+    if (status != null && status >= 200 && status < 300 && !isWebPage) {
+        state.lastOk = true
+        state.lastAccepted = (count != null) ? count : "not reported by this server"
+        state.lastError = null
+        state.lastDelivered = new Date().format("yyyy-MM-dd HH:mm:ss z", location.timeZone)
+        if (enableLogging) log.debug "APRS response body: ${body}"
+        log.info "APRS packet DELIVERED (HTTP ${status}, packets acknowledged: ${state.lastAccepted}): ${data.packet}"
+        return
+    }
+
+    state.lastOk = false
+    state.lastError = isWebPage
+        ? "HTTP ${status} returned an HTML page — this port is a web status page, not the APRS-IS submit endpoint. Check the server and port."
+        : explainStatus(status, "unexpected response")
+    log.warn "APRS send NOT CONFIRMED: ${state.lastError}"
+}
+
+/** Meanings observed against live Tier-2 servers, not guesses. */
+private String explainStatus(status, detail) {
+    def hint
+    switch (status) {
+        case 403:
+            hint = "the submit endpoint rejected the login. The passcode is computed from the BASE callsign with the SSID stripped."
+            break
+        case 404:
+            hint = "this server has no HTTP submit endpoint on this port. rotate.aprs2.net:8080 does; noam.aprs2.net:8080 does not."
+            break
+        case 408:
+            hint = "nothing answered HTTP on this port. APRS-IS HTTP submit is port 8080 — 14580 is the raw TCP port and will always time out here."
+            break
+        default:
+            hint = detail
+    }
+    return "HTTP ${status}: ${hint}"
 }
 
 // ---------------------------------------------------------------------------
