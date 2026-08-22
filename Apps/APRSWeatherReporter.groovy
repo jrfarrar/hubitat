@@ -3,7 +3,19 @@
  * Sends Ecowitt weather data from Hubitat to APRS-IS
  *
  * Author: K0JRF
- * Version: 2.4
+ * Version: 2.5
+ *   - Staleness handling. A weather station that keeps beaconing a frozen
+ *     reading is worse than one that goes quiet: the stale number looks
+ *     current to everyone downstream. If the temperature source stops
+ *     reporting, no packet is sent at all; if a secondary source stops, only
+ *     its field is dropped.
+ *   - Judged on DEVICE last activity, never on a single attribute's
+ *     timestamp. Hubitat only records an event when a value changes, so a
+ *     steady wind direction reads as half an hour old on a perfectly healthy
+ *     sensor. Attribute timestamps are not a liveness signal.
+ *   - When the age cannot be read the device is treated as FRESH. A
+ *     staleness check that cannot get a timestamp must never be the reason a
+ *     station stops transmitting.
  *   - Temperature can now come from its own device, like pressure and rain
  *     already could. A sensor array sitting in the sun reads several degrees
  *     high; an averaged virtual sensor is usually the better number to
@@ -153,6 +165,23 @@ def mainPage() {
                 required: true, defaultValue: "10"
         }
 
+        section("Data Freshness") {
+            input "staleCheckEnabled", "bool",
+                title: "Stop reporting when a source device goes quiet",
+                defaultValue: true, submitOnChange: true
+            if (staleCheckEnabled) {
+                input "staleMinutes", "number",
+                    title: "Consider a source stale after this many minutes with no activity",
+                    required: true, defaultValue: 60
+                paragraph "Measured from the device's last activity of any kind, not from one attribute's " +
+                          "timestamp — Hubitat only records an event when a value changes, so a steady wind " +
+                          "direction can read as hours old on a healthy sensor. Stale temperature source: no " +
+                          "packet at all. Stale secondary source: only its field is dropped. If the age cannot " +
+                          "be determined the device counts as fresh, so an unreadable timestamp can never " +
+                          "silence the station."
+            }
+        }
+
         section("Logging") {
             input "enableLogging", "bool", title: "Enable Debug Logging", defaultValue: false
         }
@@ -228,6 +257,10 @@ def diagnose() {
         }
         def empty = attrs.findAll { a -> try { dev.currentValue(a) == null } catch (ignored) { true } }
         log.info "APRS diagnose:   (${empty.size()} attribute(s) null on this device: ${empty.join(', ')})"
+        def age = deviceAgeMinutes(dev)
+        log.info "APRS diagnose:   last activity: " +
+                 (age == null ? "UNKNOWN — the staleness check will treat this device as fresh"
+                              : "${age} minute(s) ago" + (isStale(dev) ? "  *** STALE ***" : ""))
     }
     log.info "APRS diagnose: hub temperature scale = ${location.temperatureScale}"
     log.info "APRS diagnose: rain gauge = ${hasRainGauge ? 'configured' : 'NONE — rain fields omitted from the packet'}"
@@ -243,7 +276,7 @@ def sendWeatherReport() {
         def packet = buildPacket()
         if (packet == null) return
 
-        def login = "user ${callsign} pass ${passcode} vers HubitatAPRS 2.4"
+        def login = "user ${callsign} pass ${passcode} vers HubitatAPRS 2.5"
         def body  = "${login}\r\n${packet}\r\n"
 
         state.lastPacket  = packet
@@ -341,7 +374,18 @@ private String explainStatus(status, detail) {
 // ---------------------------------------------------------------------------
 
 private String buildPacket() {
-    def tempRaw = attrVal(tempDevice ?: wxDevice, attrTemp ?: "temperature")
+    def tempSrc = tempDevice ?: wxDevice
+    if (isStale(tempSrc)) {
+        def age = deviceAgeMinutes(tempSrc)
+        state.lastOk = false
+        state.lastError = "temperature source '${tempSrc?.displayName}' has had no activity for ${age} minutes " +
+                          "(limit ${staleMinutes}). Nothing sent — a frozen reading on the air reads as current " +
+                          "to everyone downstream, so silence is the honest failure."
+        log.warn "APRS: ${state.lastError}"
+        return null
+    }
+
+    def tempRaw = attrVal(tempSrc, attrTemp ?: "temperature")
     if (tempRaw == null) {
         state.lastOk = false
         state.lastError = "temperature attribute returned null on " +
@@ -360,26 +404,69 @@ private String buildPacket() {
     def timestamp = String.format(Locale.US, "%02d%02d%02dz",
         cal.get(Calendar.DAY_OF_MONTH), cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
 
+    def pSrc = pressureDevice ?: wxDevice
+    def rSrc = rainDevice ?: wxDevice
+    if (isStale(wxDevice)) log.warn "APRS: '${wxDevice.displayName}' has gone quiet — humidity and wind dropped from this packet"
+    if (isStale(pSrc))     log.warn "APRS: '${pSrc.displayName}' has gone quiet — pressure dropped from this packet"
+
     def wx = new StringBuilder()
-    wx << three(attrVal(wxDevice, attrWindDir), "...")          // wind direction
+    wx << three(freshVal(wxDevice, attrWindDir), "...")          // wind direction
     wx << "/"
-    wx << three(attrVal(wxDevice, attrWindSpd), "...")          // sustained wind speed, mph
-    wx << "g" << three(attrVal(wxDevice, attrWindGust), "...")  // gust, mph
+    wx << three(freshVal(wxDevice, attrWindSpd), "...")          // sustained wind speed, mph
+    wx << "g" << three(freshVal(wxDevice, attrWindGust), "...")  // gust, mph
     wx << "t" << tempField(tempF)                     // temperature, whole degF, signed
     // With no rain gauge the r/p/P fields are omitted entirely. Sending
     // "r...p..." would claim a sensor that reports nothing; leaving them out
     // says the station does not measure rainfall. Both are valid APRS, but
     // only one is true here.
     if (hasRainGauge) {
-        wx << "r" << three(rainHundredths(attrVal(rainDevice ?: wxDevice, attrRain1h)),  "...")
-        wx << "p" << three(rainHundredths(attrVal(rainDevice ?: wxDevice, attrRain24h)), "...")
-        def rainMid = rainHundredths(attrVal(rainDevice ?: wxDevice, attrRainMid))
+        wx << "r" << three(rainHundredths(freshVal(rSrc, attrRain1h)),  "...")
+        wx << "p" << three(rainHundredths(freshVal(rSrc, attrRain24h)), "...")
+        def rainMid = rainHundredths(freshVal(rSrc, attrRainMid))
         if (rainMid != null) wx << "P" << three(rainMid, "...")
     }
-    wx << "h" << humidityField(attrVal(wxDevice, attrHum))
-    wx << "b" << pressureField(attrVal(pressureDevice ?: wxDevice, attrPressure))
+    wx << "h" << humidityField(freshVal(wxDevice, attrHum))
+    wx << "b" << pressureField(freshVal(pSrc, attrPressure))
 
     return "${callsign}>APRS,TCPIP*:@${timestamp}${latStr}/${lonStr}_${wx} ${stationDesc}"
+}
+
+/**
+ * Minutes since this device last did anything, or null when that cannot be
+ * determined. Null means UNKNOWN, and every caller must treat unknown as
+ * fresh — refusing to transmit because a timestamp was unreadable would be a
+ * worse failure than the one this check exists to prevent.
+ */
+private Long deviceAgeMinutes(dev) {
+    if (!dev) return null
+    def when = null
+    try { when = dev.getLastActivity() } catch (ignored) { }
+    if (when == null) {
+        // Fall back to a fast-moving attribute only. A slow one is useless
+        // here: an unchanged value records no event, so a steady reading is
+        // indistinguishable from a dead sensor.
+        for (String a : ["temperature", "humidity", "pressure", "illuminance"]) {
+            try {
+                def st = dev.currentState(a)
+                if (st?.date != null) { when = st.date; break }
+            } catch (ignored) { }
+        }
+    }
+    if (when == null) return null
+    try { return (long) ((now() - when.getTime()) / 60000L) }
+    catch (ignored) { return null }
+}
+
+private boolean isStale(dev) {
+    if (!staleCheckEnabled || !dev) return false
+    def age = deviceAgeMinutes(dev)
+    if (age == null) return false          // unknown age is never grounds for silence
+    return age > ((staleMinutes ?: 60) as Long)
+}
+
+/** Attribute value, or null when its source device has gone stale. */
+private def freshVal(dev, String attr) {
+    return isStale(dev) ? null : attrVal(dev, attr)
 }
 
 private def attrVal(dev, String attr) {
