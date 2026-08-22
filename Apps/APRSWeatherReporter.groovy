@@ -3,7 +3,14 @@
  * Sends Ecowitt weather data from Hubitat to APRS-IS
  *
  * Author: K0JRF
- * Version: 2.0
+ * Version: 2.1
+ *   - Pressure and rain can now come from a DIFFERENT device than temperature.
+ *     On an Ecowitt the barometer lives on the gateway/console, not on the
+ *     outdoor sensor array, so a single-device app can never report it. The
+ *     driver still exposes a null 'pressure' attribute on the array, which
+ *     makes the mapping look correct while it silently sends dots.
+ *   - The optional "rain since midnight" field is now omitted entirely when
+ *     there is no value, instead of being sent as "P...".
  *   - Delivery switched from raw-LAN HubAction to the APRS-IS HTTP send-only
  *     port. The old HubAction path never actually reached APRS-IS: it logged
  *     "packet sent" unconditionally and had no response handler, so a silent
@@ -62,26 +69,36 @@ def mainPage() {
             input "stationDesc", "text",    title: "Station Description", required: true, defaultValue: "Wx Station Fairview PA"
         }
 
-        section("Ecowitt Device") {
-            input "wxDevice", "capability.temperatureMeasurement", title: "Select Ecowitt Weather Device",
+        section("Weather Devices") {
+            input "wxDevice", "capability.temperatureMeasurement",
+                title: "Main weather device (temperature, humidity, wind)",
                 required: true, submitOnChange: true
+            input "pressureDevice", "capability.*",
+                title: "Barometric pressure device (optional) — on an Ecowitt this is normally the GATEWAY/console, not the outdoor array",
+                required: false, submitOnChange: true
+            input "rainDevice", "capability.*",
+                title: "Rain device (optional) — leave blank if the main device reports rain",
+                required: false, submitOnChange: true
         }
 
         if (wxDevice) {
-            def opts = attributeOptions()
+            def opts  = attributeOptions(wxDevice)
+            def pOpts = attributeOptions(pressureDevice ?: wxDevice)
+            def rOpts = attributeOptions(rainDevice ?: wxDevice)
             section("Attribute Mapping") {
                 paragraph "Pick the attribute on '${wxDevice.displayName}' that supplies each APRS field. " +
                           "Leave one blank to omit that field (it is sent as dots, which is valid APRS). " +
+                          "Pressure and rain are listed from their own device when you selected one above. " +
                           "Use the Diagnose button below to dump every attribute and its current value to the log."
                 input "attrTemp",     "enum", title: "Temperature",              options: opts, required: false, defaultValue: pick(opts, ["temperature"])
                 input "attrHum",      "enum", title: "Humidity",                 options: opts, required: false, defaultValue: pick(opts, ["humidity"])
                 input "attrWindDir",  "enum", title: "Wind direction (degrees)", options: opts, required: false, defaultValue: pick(opts, ["windDirection", "windDir"])
                 input "attrWindSpd",  "enum", title: "Wind speed (mph)",         options: opts, required: false, defaultValue: pick(opts, ["windSpeed", "windAvg"])
                 input "attrWindGust", "enum", title: "Wind gust (mph)",          options: opts, required: false, defaultValue: pick(opts, ["windGust", "gustSpeed"])
-                input "attrPressure", "enum", title: "Barometric pressure",      options: opts, required: false, defaultValue: pick(opts, ["pressure", "barometricPressure", "baromRelIn", "baromRel"])
-                input "attrRain1h",   "enum", title: "Rain, last hour",          options: opts, required: false, defaultValue: pick(opts, ["rainHourly", "hourlyRain", "rainRate"])
-                input "attrRain24h",  "enum", title: "Rain, last 24 hours",      options: opts, required: false, defaultValue: pick(opts, ["rain24", "rainDaily", "dailyRain"])
-                input "attrRainMid",  "enum", title: "Rain since midnight (optional)", options: opts, required: false, defaultValue: pick(opts, ["rainDaily", "dailyRain"])
+                input "attrPressure", "enum", title: "Barometric pressure",      options: pOpts, required: false, defaultValue: pick(pOpts, ["pressure", "barometricPressure", "baromRelIn", "baromRel"])
+                input "attrRain1h",   "enum", title: "Rain, last hour",          options: rOpts, required: false, defaultValue: pick(rOpts, ["rainHourly", "hourlyRain", "rainRate"])
+                input "attrRain24h",  "enum", title: "Rain, last 24 hours",      options: rOpts, required: false, defaultValue: pick(rOpts, ["rain24", "rainDaily", "dailyRain"])
+                input "attrRainMid",  "enum", title: "Rain since midnight (optional)", options: rOpts, required: false, defaultValue: pick(rOpts, ["rainDaily", "dailyRain"])
             }
             section("Units") {
                 input "pressureUnit", "enum", title: "Pressure attribute is reported in",
@@ -119,8 +136,8 @@ private String statusText() {
     return line
 }
 
-private List attributeOptions() {
-    try { return wxDevice.supportedAttributes.collect { it.name }.unique().sort() }
+private List attributeOptions(dev) {
+    try { return dev.supportedAttributes.collect { it.name }.unique().sort() }
     catch (e) { return [] }
 }
 
@@ -155,12 +172,19 @@ def initialize() {
 
 def diagnose() {
     if (!wxDevice) { log.warn "APRS diagnose: no weather device selected"; return }
-    def attrs = attributeOptions()
-    log.info "APRS diagnose: device '${wxDevice.displayName}' exposes ${attrs.size()} attribute(s)"
-    attrs.each { a ->
-        def v = null
-        try { v = wxDevice.currentValue(a) } catch (ignored) { }
-        log.info "APRS diagnose:   ${a} = ${v}"
+    def devs = [wxDevice, pressureDevice, rainDevice].findAll { it != null }.unique { it.id }
+    devs.each { dev ->
+        def attrs = attributeOptions(dev)
+        log.info "APRS diagnose: device '${dev.displayName}' exposes ${attrs.size()} attribute(s)"
+        attrs.each { a ->
+            def v = null
+            try { v = dev.currentValue(a) } catch (ignored) { }
+            // Only the attributes carrying a value are worth reading; the rest
+            // are driver placeholders and just bury the log.
+            if (v != null) log.info "APRS diagnose:   ${dev.displayName}.${a} = ${v}"
+        }
+        def empty = attrs.findAll { a -> try { dev.currentValue(a) == null } catch (ignored) { true } }
+        log.info "APRS diagnose:   (${empty.size()} attribute(s) null on this device: ${empty.join(', ')})"
     }
     log.info "APRS diagnose: hub temperature scale = ${location.temperatureScale}"
     log.info "APRS diagnose: packet that would be sent right now -> ${buildPacket()}"
@@ -175,7 +199,7 @@ def sendWeatherReport() {
         def packet = buildPacket()
         if (packet == null) return
 
-        def login = "user ${callsign} pass ${passcode} vers HubitatAPRS 2.0"
+        def login = "user ${callsign} pass ${passcode} vers HubitatAPRS 2.1"
         def body  = "${login}\r\n${packet}\r\n"
 
         state.lastPacket  = packet
@@ -235,7 +259,7 @@ def aprsResponse(resp, data) {
 // ---------------------------------------------------------------------------
 
 private String buildPacket() {
-    def tempRaw = attrVal(attrTemp ?: "temperature")
+    def tempRaw = attrVal(wxDevice, attrTemp ?: "temperature")
     if (tempRaw == null) {
         state.lastOk = false
         state.lastError = "temperature attribute returned null; nothing sent"
@@ -254,23 +278,24 @@ private String buildPacket() {
         cal.get(Calendar.DAY_OF_MONTH), cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
 
     def wx = new StringBuilder()
-    wx << three(attrVal(attrWindDir), "...")          // wind direction
+    wx << three(attrVal(wxDevice, attrWindDir), "...")          // wind direction
     wx << "/"
-    wx << three(attrVal(attrWindSpd), "...")          // sustained wind speed, mph
-    wx << "g" << three(attrVal(attrWindGust), "...")  // gust, mph
+    wx << three(attrVal(wxDevice, attrWindSpd), "...")          // sustained wind speed, mph
+    wx << "g" << three(attrVal(wxDevice, attrWindGust), "...")  // gust, mph
     wx << "t" << tempField(tempF)                     // temperature, whole degF, signed
-    wx << "r" << three(rainHundredths(attrVal(attrRain1h)),  "...")
-    wx << "p" << three(rainHundredths(attrVal(attrRain24h)), "...")
-    if (attrRainMid) wx << "P" << three(rainHundredths(attrVal(attrRainMid)), "...")
-    wx << "h" << humidityField(attrVal(attrHum))
-    wx << "b" << pressureField(attrVal(attrPressure))
+    wx << "r" << three(rainHundredths(attrVal(rainDevice ?: wxDevice, attrRain1h)),  "...")
+    wx << "p" << three(rainHundredths(attrVal(rainDevice ?: wxDevice, attrRain24h)), "...")
+    def rainMid = rainHundredths(attrVal(rainDevice ?: wxDevice, attrRainMid))
+    if (rainMid != null) wx << "P" << three(rainMid, "...")
+    wx << "h" << humidityField(attrVal(wxDevice, attrHum))
+    wx << "b" << pressureField(attrVal(pressureDevice ?: wxDevice, attrPressure))
 
     return "${callsign}>APRS,TCPIP*:@${timestamp}${latStr}/${lonStr}_${wx} ${stationDesc}"
 }
 
-private def attrVal(String attr) {
-    if (!attr) return null
-    try { return wxDevice.currentValue(attr) }
+private def attrVal(dev, String attr) {
+    if (!attr || !dev) return null
+    try { return dev.currentValue(attr) }
     catch (Exception e) {
         if (enableLogging) log.debug "APRS: attribute '${attr}' not available"
         return null
