@@ -3,7 +3,12 @@
  * Sends Ecowitt weather data from Hubitat to APRS-IS
  *
  * Author: K0JRF
- * Version: 2.3
+ * Version: 2.4
+ *   - Temperature can now come from its own device, like pressure and rain
+ *     already could. A sensor array sitting in the sun reads several degrees
+ *     high; an averaged virtual sensor is usually the better number to
+ *     beacon, but it often exposes temperature alone and so cannot serve as
+ *     the main weather device.
  *   - Added an explicit "I have a rain gauge" switch, off by default. With no
  *     gauge the rain fields are omitted from the packet entirely rather than
  *     sent as "r...p...", so the report does not claim a sensor that is not
@@ -87,8 +92,11 @@ def mainPage() {
 
         section("Weather Devices") {
             input "wxDevice", "capability.temperatureMeasurement",
-                title: "Main weather device (temperature, humidity, wind)",
+                title: "Main weather device (humidity and wind — plus temperature unless overridden below)",
                 required: true, submitOnChange: true
+            input "tempDevice", "capability.temperatureMeasurement",
+                title: "Outdoor temperature device (optional) — use an averaged/shaded sensor here if the main array reads high in the sun",
+                required: false, submitOnChange: true
             input "pressureDevice", "capability.*",
                 title: "Barometric pressure device (optional) — on an Ecowitt this is normally the GATEWAY/console, not the outdoor array",
                 required: false, submitOnChange: true
@@ -107,14 +115,15 @@ def mainPage() {
 
         if (wxDevice) {
             def opts  = attributeOptions(wxDevice)
+            def tOpts = attributeOptions(tempDevice ?: wxDevice)
             def pOpts = attributeOptions(pressureDevice ?: wxDevice)
             def rOpts = attributeOptions(rainDevice ?: wxDevice)
             section("Attribute Mapping") {
                 paragraph "Pick the attribute on '${wxDevice.displayName}' that supplies each APRS field. " +
                           "Leave one blank to omit that field (it is sent as dots, which is valid APRS). " +
-                          "Pressure and rain are listed from their own device when you selected one above. " +
+                          "Temperature, pressure and rain are listed from their own device when you selected one above. " +
                           "Use the Diagnose button below to dump every attribute and its current value to the log."
-                input "attrTemp",     "enum", title: "Temperature",              options: opts, required: false, defaultValue: pick(opts, ["temperature"])
+                input "attrTemp",     "enum", title: "Temperature",              options: tOpts, required: false, defaultValue: pick(tOpts, ["temperature"])
                 input "attrHum",      "enum", title: "Humidity",                 options: opts, required: false, defaultValue: pick(opts, ["humidity"])
                 input "attrWindDir",  "enum", title: "Wind direction (degrees)", options: opts, required: false, defaultValue: pick(opts, ["windDirection", "windDir"])
                 input "attrWindSpd",  "enum", title: "Wind speed (mph)",         options: opts, required: false, defaultValue: pick(opts, ["windSpeed", "windAvg"])
@@ -206,7 +215,7 @@ def initialize() {
 
 def diagnose() {
     if (!wxDevice) { log.warn "APRS diagnose: no weather device selected"; return }
-    def devs = [wxDevice, pressureDevice, rainDevice].findAll { it != null }.unique { it.id }
+    def devs = [wxDevice, tempDevice, pressureDevice, rainDevice].findAll { it != null }.unique { it.id }
     devs.each { dev ->
         def attrs = attributeOptions(dev)
         log.info "APRS diagnose: device '${dev.displayName}' exposes ${attrs.size()} attribute(s)"
@@ -234,7 +243,7 @@ def sendWeatherReport() {
         def packet = buildPacket()
         if (packet == null) return
 
-        def login = "user ${callsign} pass ${passcode} vers HubitatAPRS 2.3"
+        def login = "user ${callsign} pass ${passcode} vers HubitatAPRS 2.4"
         def body  = "${login}\r\n${packet}\r\n"
 
         state.lastPacket  = packet
@@ -332,10 +341,11 @@ private String explainStatus(status, detail) {
 // ---------------------------------------------------------------------------
 
 private String buildPacket() {
-    def tempRaw = attrVal(wxDevice, attrTemp ?: "temperature")
+    def tempRaw = attrVal(tempDevice ?: wxDevice, attrTemp ?: "temperature")
     if (tempRaw == null) {
         state.lastOk = false
-        state.lastError = "temperature attribute returned null; nothing sent"
+        state.lastError = "temperature attribute returned null on " +
+                          "'${(tempDevice ?: wxDevice)?.displayName}'; nothing sent"
         log.warn "APRS: temperature not available, skipping report"
         return null
     }
