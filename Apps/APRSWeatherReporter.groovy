@@ -3,7 +3,11 @@
  * Sends Ecowitt weather data from Hubitat to APRS-IS
  *
  * Author: K0JRF
- * Version: 2.2
+ * Version: 2.3
+ *   - Added an explicit "I have a rain gauge" switch, off by default. With no
+ *     gauge the rain fields are omitted from the packet entirely rather than
+ *     sent as "r...p...", so the report does not claim a sensor that is not
+ *     there. Tick the switch and the device/attribute pickers come back.
  *   - Fixed a false-failure bug: v2.1 required HTTP 204 AND a non-zero
  *     X-Packetsrcvd header. Real Tier-2 servers answer a successful submit
  *     with a bare HTTP 200 and no such header, so genuinely delivered packets
@@ -88,9 +92,17 @@ def mainPage() {
             input "pressureDevice", "capability.*",
                 title: "Barometric pressure device (optional) — on an Ecowitt this is normally the GATEWAY/console, not the outdoor array",
                 required: false, submitOnChange: true
-            input "rainDevice", "capability.*",
-                title: "Rain device (optional) — leave blank if the main device reports rain",
-                required: false, submitOnChange: true
+            input "hasRainGauge", "bool",
+                title: "I have a rain gauge (report rainfall)",
+                defaultValue: false, submitOnChange: true
+            if (hasRainGauge) {
+                input "rainDevice", "capability.*",
+                    title: "Rain device (optional) — leave blank if the main device reports rain",
+                    required: false, submitOnChange: true
+            } else {
+                paragraph "No rain gauge: the rain fields are left out of the packet entirely, " +
+                          "rather than transmitted as \"r...p...\". Everything else is unaffected."
+            }
         }
 
         if (wxDevice) {
@@ -108,17 +120,21 @@ def mainPage() {
                 input "attrWindSpd",  "enum", title: "Wind speed (mph)",         options: opts, required: false, defaultValue: pick(opts, ["windSpeed", "windAvg"])
                 input "attrWindGust", "enum", title: "Wind gust (mph)",          options: opts, required: false, defaultValue: pick(opts, ["windGust", "gustSpeed"])
                 input "attrPressure", "enum", title: "Barometric pressure",      options: pOpts, required: false, defaultValue: pick(pOpts, ["pressure", "barometricPressure", "baromRelIn", "baromRel"])
-                input "attrRain1h",   "enum", title: "Rain, last hour",          options: rOpts, required: false, defaultValue: pick(rOpts, ["rainHourly", "hourlyRain", "rainRate"])
-                input "attrRain24h",  "enum", title: "Rain, last 24 hours",      options: rOpts, required: false, defaultValue: pick(rOpts, ["rain24", "rainDaily", "dailyRain"])
-                input "attrRainMid",  "enum", title: "Rain since midnight (optional)", options: rOpts, required: false, defaultValue: pick(rOpts, ["rainDaily", "dailyRain"])
+                if (hasRainGauge) {
+                    input "attrRain1h",   "enum", title: "Rain, last hour",          options: rOpts, required: false, defaultValue: pick(rOpts, ["rainHourly", "hourlyRain", "rainRate"])
+                    input "attrRain24h",  "enum", title: "Rain, last 24 hours",      options: rOpts, required: false, defaultValue: pick(rOpts, ["rain24", "rainDaily", "dailyRain"])
+                    input "attrRainMid",  "enum", title: "Rain since midnight (optional)", options: rOpts, required: false, defaultValue: pick(rOpts, ["rainDaily", "dailyRain"])
+                }
             }
             section("Units") {
                 input "pressureUnit", "enum", title: "Pressure attribute is reported in",
                     options: ["auto": "Auto-detect", "inhg": "inches of mercury", "hpa": "hectopascals / millibars"],
                     required: true, defaultValue: "auto"
-                input "rainUnit", "enum", title: "Rain attributes are reported in",
-                    options: ["in": "inches", "mm": "millimetres"],
-                    required: true, defaultValue: "in"
+                if (hasRainGauge) {
+                    input "rainUnit", "enum", title: "Rain attributes are reported in",
+                        options: ["in": "inches", "mm": "millimetres"],
+                        required: true, defaultValue: "in"
+                }
             }
         }
 
@@ -145,7 +161,8 @@ private String statusText() {
     line += state.lastOk ? "Result: DELIVERED (packets acknowledged: ${state.lastAccepted})\n"
                          : "Result: FAILED — ${state.lastError}\n"
     if (state.lastDelivered) line += "Last confirmed delivery: ${state.lastDelivered}\n"
-    if (state.lastPacket) line += "Packet: ${state.lastPacket}"
+    if (state.lastPacket) line += "Packet: ${state.lastPacket}\n"
+    line += hasRainGauge ? "Rain: reported" : "Rain: no gauge, fields omitted"
     return line
 }
 
@@ -204,6 +221,7 @@ def diagnose() {
         log.info "APRS diagnose:   (${empty.size()} attribute(s) null on this device: ${empty.join(', ')})"
     }
     log.info "APRS diagnose: hub temperature scale = ${location.temperatureScale}"
+    log.info "APRS diagnose: rain gauge = ${hasRainGauge ? 'configured' : 'NONE — rain fields omitted from the packet'}"
     log.info "APRS diagnose: packet that would be sent right now -> ${buildPacket()}"
 }
 
@@ -216,7 +234,7 @@ def sendWeatherReport() {
         def packet = buildPacket()
         if (packet == null) return
 
-        def login = "user ${callsign} pass ${passcode} vers HubitatAPRS 2.2"
+        def login = "user ${callsign} pass ${passcode} vers HubitatAPRS 2.3"
         def body  = "${login}\r\n${packet}\r\n"
 
         state.lastPacket  = packet
@@ -338,10 +356,16 @@ private String buildPacket() {
     wx << three(attrVal(wxDevice, attrWindSpd), "...")          // sustained wind speed, mph
     wx << "g" << three(attrVal(wxDevice, attrWindGust), "...")  // gust, mph
     wx << "t" << tempField(tempF)                     // temperature, whole degF, signed
-    wx << "r" << three(rainHundredths(attrVal(rainDevice ?: wxDevice, attrRain1h)),  "...")
-    wx << "p" << three(rainHundredths(attrVal(rainDevice ?: wxDevice, attrRain24h)), "...")
-    def rainMid = rainHundredths(attrVal(rainDevice ?: wxDevice, attrRainMid))
-    if (rainMid != null) wx << "P" << three(rainMid, "...")
+    // With no rain gauge the r/p/P fields are omitted entirely. Sending
+    // "r...p..." would claim a sensor that reports nothing; leaving them out
+    // says the station does not measure rainfall. Both are valid APRS, but
+    // only one is true here.
+    if (hasRainGauge) {
+        wx << "r" << three(rainHundredths(attrVal(rainDevice ?: wxDevice, attrRain1h)),  "...")
+        wx << "p" << three(rainHundredths(attrVal(rainDevice ?: wxDevice, attrRain24h)), "...")
+        def rainMid = rainHundredths(attrVal(rainDevice ?: wxDevice, attrRainMid))
+        if (rainMid != null) wx << "P" << three(rainMid, "...")
+    }
     wx << "h" << humidityField(attrVal(wxDevice, attrHum))
     wx << "b" << pressureField(attrVal(pressureDevice ?: wxDevice, attrPressure))
 
