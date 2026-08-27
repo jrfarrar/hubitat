@@ -123,10 +123,11 @@ def initialize() {
     }
 
     def mins = (checkMinutes ?: "10") as Integer
-    if (mins == 5)       runEvery5Minutes(evaluate)
-    else if (mins == 15) runEvery15Minutes(evaluate)
-    else                 runEvery10Minutes(evaluate)
+    if (mins == 5)       runEvery5Minutes("checkStatus")
+    else if (mins == 15) runEvery15Minutes("checkStatus")
+    else                 runEvery10Minutes("checkStatus")
 
+    log.info "Ecowitt Watchdog: scheduled checkStatus every ${mins} minutes"
     logDebug "initialized: heartbeat on ${gatewayDevice?.displayName}, ${sensors?.size() ?: 0} sensors, " +
              "gateway timeout ${gatewayTimeoutMinutes}m, orphan confirm ${orphanConfirmMinutes}m"
 }
@@ -138,7 +139,7 @@ def heartbeatHandler(evt) {
     if (state.gwAlerted) {
         state.gwAlerted = false
         state.gwAlertedAt = null
-        notify("Ecowitt gateway is reporting again (${gatewayDevice?.displayName}).", true)
+        sendNotify("Ecowitt gateway is reporting again (${gatewayDevice?.displayName}).", true)
     }
     logDebug "heartbeat"
 }
@@ -156,7 +157,7 @@ def orphanHandler(evt) {
         state.orphans = orphans
         if (rec?.alerted) {
             def downFor = friendlyDuration(now() - (rec.since as Long))
-            notify("${evt.displayName} is reporting again (was orphaned for ${downFor}).", true)
+            sendNotify("${evt.displayName} is reporting again (was orphaned for ${downFor}).", true)
         }
         logDebug "${evt.displayName} recovered"
     }
@@ -172,7 +173,7 @@ private recordOrphan(String id, String name) {
 
 // ------------------------------------------------------------ periodic evaluation
 
-def evaluate() {
+def checkStatus() {
     if (pauseApp) return
 
     def nowMs = now()
@@ -184,7 +185,7 @@ def evaluate() {
         if (!state.gwAlerted) {
             state.gwAlerted = true
             state.gwAlertedAt = nowMs
-            notify("Ecowitt gateway has not reported for ${friendlyDuration(nowMs - (state.lastHeartbeat as Long))}. " +
+            sendNotify("Ecowitt gateway has not reported for ${friendlyDuration(nowMs - (state.lastHeartbeat as Long))}. " +
                    "Check the gateway, its hub, and hub mesh.", false)
         } else {
             maybeRemind("gateway", nowMs)
@@ -199,7 +200,7 @@ def evaluate() {
         if (!rec.alerted && ageMin >= limit) {
             rec.alerted = true
             rec.alertedAt = nowMs
-            notify("${rec.name} has been orphaned for ${friendlyDuration(nowMs - (rec.since as Long))} " +
+            sendNotify("${rec.name} has been orphaned for ${friendlyDuration(nowMs - (rec.since as Long))} " +
                    "- the gateway is not receiving it.", false)
         } else if (rec.alerted) {
             maybeRemindSensor(rec, nowMs)
@@ -207,7 +208,7 @@ def evaluate() {
     }
     state.orphans = orphans
 
-    logDebug "evaluate: gateway ${Math.round(gwAgeMin)}m since heartbeat, ${orphans.size()} orphaned"
+    logDebug "checkStatus: gateway ${Math.round(gwAgeMin)}m since heartbeat, ${orphans.size()} orphaned"
 }
 
 private maybeRemind(String key, Long nowMs) {
@@ -216,7 +217,7 @@ private maybeRemind(String key, Long nowMs) {
     def last = state.gwAlertedAt as Long
     if (last && (nowMs - last) >= hrs * 3600000L) {
         state.gwAlertedAt = nowMs
-        notify("Still no Ecowitt gateway heartbeat - down ${friendlyDuration(nowMs - (state.lastHeartbeat as Long))}.", false)
+        sendNotify("Still no Ecowitt gateway heartbeat - down ${friendlyDuration(nowMs - (state.lastHeartbeat as Long))}.", false)
     }
 }
 
@@ -226,13 +227,13 @@ private maybeRemindSensor(Map rec, Long nowMs) {
     def last = rec.alertedAt as Long
     if (last && (nowMs - last) >= hrs * 3600000L) {
         rec.alertedAt = nowMs
-        notify("${rec.name} still orphaned - down ${friendlyDuration(nowMs - (rec.since as Long))}.", false)
+        sendNotify("${rec.name} still orphaned - down ${friendlyDuration(nowMs - (rec.since as Long))}.", false)
     }
 }
 
 // ------------------------------------------------------------ helpers
 
-private notify(String msg, Boolean isRecovery) {
+private sendNotify(String msg, Boolean isRecovery) {
     if (isRecovery && !notifyRecovery) return
     log.info "Ecowitt Watchdog: ${msg}"
     notifyDevices?.each { it.deviceNotification(msg) }
@@ -269,7 +270,7 @@ private String statusHtml() {
 
 def appButtonHandler(String btn) {
     if (btn == "testNotify") {
-        notify("Ecowitt Watchdog test notification.", false)
+        sendNotify("Ecowitt Watchdog test notification.", false)
     }
 }
 
