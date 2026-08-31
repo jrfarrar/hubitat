@@ -47,6 +47,16 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.1.2  2026-08-31  Fix: day-boundary work was unreachable under simulation.
+ *                      dayRollover() only ran from the midnight cron, and it is
+ *                      the only caller of recordDailyLevel() (which feeds the
+ *                      PRIMARY field-capacity estimate) and computeDryDown().
+ *                      So no scenario could bank a daily reading, record a
+ *                      dry-down, or ever reach a threshold - the main estimator
+ *                      path in this file was untestable on a hub. In sim mode it
+ *                      is now driven by reading count via simSamplesPerDay, and
+ *                      computeDryDown's real-time span guard is bypassed since a
+ *                      simulated day is not a real one.
  *  v0.1.1  2026-08-31  Fix: the wetting-event settle window was not sim-scaled,
  *                      so under simulation an event opened and then sat open for
  *                      60 REAL minutes before closing. Nothing downstream of
@@ -64,7 +74,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.1"
+@Field static final String VERSION = "0.1.2"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -191,6 +201,14 @@ def mainPage() {
             input "simSpeedup", "number",
                   title: "Simulation speed-up divisor (1 = normal). <b>Leave at 1 for real use.</b>",
                   defaultValue: 1, required: true
+            input "simSamplesPerDay", "number",
+                  title: "Readings per simulated day (sim mode only)",
+                  defaultValue: 1, required: true
+            paragraph "<i>Day-boundary work - banking the daily reading that feeds the " +
+                      "field-capacity estimate, and recording the dry-down - normally runs from a " +
+                      "midnight cron, which never fires inside a scenario. In sim mode it is driven " +
+                      "by reading count instead. At 1, every reading is a simulated day, so a " +
+                      "60-step scenario banks 60 days and can actually reach a threshold.</i>"
             paragraph "<i>Divides every long duration - the +6/12/24 h follow-ups, the probe-out " +
                       "grace period, the season-restart guard, the dry-down day window and the " +
                       "anchor window - so a simulated month can run in minutes. At any value above " +
@@ -397,6 +415,7 @@ private void clearLearned() {
     state.lowestSurvived = null
     state.seasonStartedMs = null
     state.remove("openEvent")
+    state.simSampleCount = 0
     state.lastClearIso = isoOf(now())
     saveAnchors()
     app.updateSetting("confirmClear", [type: "bool", value: false])
@@ -433,6 +452,19 @@ def soilHandler(evt) {
         appendRow(ms, pct, null)
         flush()
         backfillFollowUps()
+
+        // dayRollover() is otherwise only reachable from the midnight cron, and
+        // it is the sole caller of recordDailyLevel() and computeDryDown().
+        // Without this the simulator could never exercise the field-capacity
+        // estimator or produce a single dry-down record - i.e. the main
+        // estimator path in the shipped Groovy would be untested on-hub.
+        Integer n = intSetting(state.simSampleCount, 0) + 1
+        state.simSampleCount = n
+        Integer per = Math.max(1, intSetting(simSamplesPerDay, 1))
+        if (n % per == 0) {
+            logDebug "sim: simulated day boundary after ${n} reading(s)"
+            dayRollover()
+        }
     }
 }
 
@@ -1035,8 +1067,10 @@ private void computeDryDown() {
         // skipped by the freeze or season gate would leave dayStartMs pinned to
         // an older day and the next qualifying day would record a multi-day
         // drop as a single day's rate.
+        // In sim mode a "day" is a reading count, not elapsed time, so the
+        // real-time span guard would reject every one of them.
         Long spanMs = nowMs - dayStart
-        if (spanMs < scaleMs(20L * 3600000L) || spanMs > scaleMs(30L * 3600000L)) {
+        if (!simActive() && (spanMs < scaleMs(20L * 3600000L) || spanMs > scaleMs(30L * 3600000L))) {
             logDebug "dry-down skipped - span was ${spanMs / 3600000L} h, not about a day"
             return
         }

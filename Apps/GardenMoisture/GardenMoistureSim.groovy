@@ -35,11 +35,11 @@ import groovy.transform.Field
 @Field static final String VERSION = "0.1.0"
 
 @Field static final Map SCENARIOS = [
-    "dryDown"      : "Core: steady dry-down, no events",
+    "dryDown"      : "Core: steady dry-down, no events, dry-down records banked",
     "rainEvent"    : "Core: rain event, classified as rain, FC anchor recorded",
     "manualWater"  : "Core: manual watering with marker, classified manual-confirmed",
     "shallowWater" : "Core: big spike that drains away - should flag shallowSuspect",
-    "toThreshold"  : "Core: repeated soakings + stress marks until a threshold appears",
+    "toThreshold"  : "Core: END TO END - soakings + stress marks until a real threshold appears",
     "probePulled"  : "Edge: reading collapses and stays - probe-out guard",
     "seasonCycle"  : "Edge: season off, then on - FC cleared, stress kept",
     "seasonDoubleTap": "Edge: season switched on twice - anchors must SURVIVE",
@@ -218,11 +218,11 @@ private void applyStep(Map s) {
 
 private String expectationFor(String sc) {
     switch (sc) {
-        case "dryDown":     return "NO wetting events. Moisture falls steadily. Dry-down day records appear after a day boundary."
+        case "dryDown":     return "NO wetting events at all. Moisture falls steadily, lowest-survived tracks down, and one dry-down record is banked per simulated day (see simSamplesPerDay)."
         case "rainEvent":   return "ONE event, classification=rain, rainInches populated, and after the +24h follow-up an FC observation is added (obs count goes up)."
         case "manualWater": return "ONE event, classification=manual-confirmed (the marker was pressed), rainInches empty."
         case "shallowWater":return "ONE event with a big magnitude but a SMALL +24h effectiveGain, flagged shallowSuspect in the log. Should NOT look like a good soaking."
-        case "toThreshold": return "Several FC observations plus 2+ stress marks, after which 'Derived threshold' stops saying 'not yet' and Confidence leaves 'none'."
+        case "toThreshold": return "The full end-to-end run: ~60 daily readings banked, 3 stress marks pressed, after which Field capacity shows a number, 'Derived threshold' stops saying 'not yet', and Confidence leaves 'none'. This is the only scenario that exercises the whole estimator."
         case "probePulled": return "After the grace period, a warning that the probe may be out of the ground, learning suspended, and 'Would it notify' says probe may be out."
         case "seasonCycle": return "On season OFF nothing is learned. On season ON, FC observations reset to 0 but stress observations are KEPT."
         case "seasonDoubleTap": return "CRITICAL: the second 'on' must be ignored - FC observation count must NOT drop a second time, and the 30-day guard should log that it kept them."
