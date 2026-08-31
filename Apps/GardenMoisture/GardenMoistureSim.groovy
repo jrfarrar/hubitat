@@ -33,6 +33,14 @@
  *  v0.1.0  2026-08-31  Initial release.
  *  v0.1.1  2026-08-31  Scenarios now prime themselves so they can be run
  *                      back to back without cross-contamination.
+ *  v0.1.3  2026-08-31  Fixed two scenarios that were passing while testing
+ *                      nothing. seasonDoubleTap set the season switch "on" when
+ *                      the suite had already turned it on, so no event fired and
+ *                      seasonHandler never ran; it now cycles off/on/off/on,
+ *                      which is also the realistic shape of the risk. And
+ *                      sensorSilent gave the stale detector only the ~6 s
+ *                      inter-scenario gap to notice; steps can now carry
+ *                      waitAfter, and it holds 90 s of real silence.
  *  v0.1.2  2026-08-31  Added "Run all" - the whole suite in a deliberate order,
  *                      resetting the logger between each via the sim device's
  *                      markBoundary command. Requires Garden Sim Sensor v0.1.2
@@ -41,7 +49,7 @@
 
 import groovy.transform.Field
 
-@Field static final String VERSION = "0.1.2"
+@Field static final String VERSION = "0.1.3"
 
 @Field static final Map SCENARIOS = [
     "dryDown"      : "Core: steady dry-down, no events, dry-down records banked",
@@ -337,7 +345,8 @@ def stepTick() {
     applyStep(s)
     state.step = i + 1
 
-    Integer gap = Math.max(1, (stepSec ?: 3) as Integer)
+    Integer gap = Math.max(1, (s.waitAfter != null ? (s.waitAfter as Integer) : ((stepSec ?: 3) as Integer)))
+    if (s.waitAfter != null) log.info "SIM: holding ${gap} s with no readings"
     runIn(gap, "stepTick")
 }
 
@@ -377,11 +386,11 @@ private String expectationFor(String sc) {
         case "toThreshold": return "The full end-to-end run: ~60 daily readings banked, 3 stress marks pressed, after which Field capacity shows a number, 'Derived threshold' stops saying 'not yet', and Confidence leaves 'none'. This is the only scenario that exercises the whole estimator."
         case "probePulled": return "After the grace period, a warning that the probe may be out of the ground, learning suspended, and 'Would it notify' says probe may be out."
         case "seasonCycle": return "On season OFF nothing is learned. On season ON, FC observations reset to 0 but stress observations are KEPT."
-        case "seasonDoubleTap": return "CRITICAL: the second 'on' must be ignored - FC observation count must NOT drop a second time, and the 30-day guard should log that it kept them."
+        case "seasonDoubleTap": return "CRITICAL. First 'on' clears FC observations (correct - probe re-seated). Then off/on again seconds later: the 30-day guard MUST keep them, logging 'keeping field-capacity observations'. A second 'cleared' line here means one dashboard mis-tap destroys a season of anchors."
         case "freeze":      return "Readings fall but temperature is below the freeze guard, so NO anchors are learned and no FC observation appears."
         case "ambiguous":   return "ONE event classified 'ambiguous' - a manual watering that rain landed on top of, which must not be attributed to either."
         case "rapidFire":   return "Many events recorded, state stays bounded (event list capped at the keepEvents setting), no errors in the log."
-        case "sensorSilent":return "After the stale window with no readings, a 'sensor looks stale' warning and learning suspended."
+        case "sensorSilent":return "During the 90 s silent hold, a 'sensor looks stale' warning appears and learning is suspended; when readings resume, 'sensor readings are moving again'."
         case "jitterOnly":  return "NO events at all - noise below the rise threshold must not open one."
         default: return "see scenario description"
     }
@@ -488,11 +497,21 @@ private List buildPlan(String sc) {
             break
 
         case "seasonDoubleTap":
-            p << [note: "season on", season: true, temp: 70, raining: false, soil: 40]
+            // Must start OFF. The suite turns the season switch on before every
+            // scenario, and a virtual switch already on does not re-fire, so a
+            // literal "on, on" pair produced NO season events at all and this
+            // test silently checked nothing. An off/on cycle is also the
+            // realistic shape of the risk: not a true duplicate event, but the
+            // switch being cycled twice in quick succession.
+            p << [note: "season OFF, so the next 'on' is a real transition", season: false,
+                  temp: 70, raining: false, rainEv: 0, rainDay: 0, soil: 40]
+            p << [note: "season ON - first start of the season", season: true, soil: 40]
             p << [note: "soaking to bank an FC observation", raining: true, rainEv: 0.5, rainDay: 0.5, soil: 52]
             p << [note: "rain stops", raining: false, soil: 49]
             (0..8).each { p << [soil: 48] }
-            p << [note: "*** second 'on' - a dashboard double tap. Anchors MUST survive. ***", season: true, soil: 48]
+            p << [note: "switched off again...", season: false, soil: 48]
+            p << [note: "*** ...and straight back ON. The 30-day guard MUST keep the anchors. ***",
+                  season: true, soil: 48]
             (0..3).each { p << [soil: 47] }
             break
 
@@ -526,9 +545,13 @@ private List buildPlan(String sc) {
         case "sensorSilent":
             p << [note: "normal", temp: 70, raining: false, soil: 36]
             p << [note: "rise begins...", soil: 44]
-            p << [note: "...and the sensor goes silent mid-event. Nothing follows.", soil: 44]
-            // No further steps: the plan ends, the device stops updating, and the
-            // logger's stale detector should notice on its next scheduled tick.
+            // waitAfter holds the run open with NO readings. Without it the
+            // silence lasted only the inter-scenario gap - far shorter than the
+            // stale window - so the detector never got a chance and this test
+            // passed while checking nothing.
+            p << [note: "...and the sensor goes silent. Holding 90 s with no readings.",
+                  soil: 44, waitAfter: 90]
+            p << [note: "sensor comes back - the stale flag should clear", soil: 43]
             break
 
         case "jitterOnly":

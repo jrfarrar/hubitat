@@ -47,6 +47,11 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.1.6  2026-08-31  In sim mode, run checkStale() on a fast schedule. Stale
+ *                      detection fires when readings STOP, so it can never be
+ *                      driven by an arriving reading; its only other caller is
+ *                      the real 15-minute sampleTick, which meant the
+ *                      sensorSilent scenario could never trigger it.
  *  v0.1.5  2026-08-31  Added simBoundary subscription so the scenario runner can
  *                      reset this app between tests through a device event
  *                      rather than either app touching the other's state.
@@ -99,7 +104,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.5"
+@Field static final String VERSION = "0.1.6"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -417,6 +422,13 @@ def initialize() {
     // HANDLER NAME, so runIn(5, "sampleTick") would silently cancel the
     // runEvery15Minutes("sampleTick") job created moments earlier - leaving the
     // app with no scheduled sampling at all.
+    // Stale detection is timer-driven by nature: it fires when readings STOP,
+    // so it can never be triggered by a reading arriving. In sim mode the only
+    // other caller (sampleTick) is still on its real 15-minute schedule, which
+    // is far too slow for a scenario - so the sensorSilent test could never
+    // fire. A fast checker closes that.
+    if (simActive()) runEvery1Minute("simStaleTick")
+
     runIn(5, "sampleTickNow")
     if (useForecast != false) runIn(30, "fetchForecastNow")
 
@@ -467,6 +479,8 @@ private void clearLearned() {
     log.warn "${app.label}: LEARNED DATA CLEARED - discarded ${hadFc} field-capacity and " +
              "${hadSt} stress observation(s). Daily CSVs on disk are untouched."
 }
+
+def simStaleTick() { if (simActive()) checkStale() }
 
 def sampleTickNow()    { sampleTick() }
 def fetchForecastNow() { fetchForecast() }
