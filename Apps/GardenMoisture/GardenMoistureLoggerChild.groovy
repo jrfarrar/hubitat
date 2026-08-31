@@ -47,6 +47,22 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.1.7  2026-08-31  Three faults the full suite run exposed:
+ *                      (a) state.recent was not pruned when an event closed, so
+ *                          the pre-event low stayed in the lookback and every
+ *                          following flat reading re-opened an event off it.
+ *                          Production was shielded only by settleMin (60 min)
+ *                          happening to outlast the lookback (55 min) - a
+ *                          coincidence, not a guarantee.
+ *                      (b) rainAtT0 was captured when the event OPENED rather
+ *                          than at t0, by which point rain was already counted,
+ *                          so before == after and rainInches was always 0.0.
+ *                          That is the input to the whole rain-efficiency
+ *                          question. Now taken from the same sample as startPct.
+ *                      (c) the sim-scaled stale window fell below the gap
+ *                          between scenarios, so the app went stale in every
+ *                          pause and follow-ups landing there skipped their FC
+ *                          observation. Floored at 30 s in sim mode.
  *  v0.1.6  2026-08-31  In sim mode, run checkStale() on a fast schedule. Stale
  *                      detection fires when readings STOP, so it can never be
  *                      driven by an arriving reading; its only other caller is
@@ -104,7 +120,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.6"
+@Field static final String VERSION = "0.1.7"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -657,7 +673,7 @@ def sampleTick() {
 
 private void pushRecent(Long ms, BigDecimal pct) {
     List r = state.recent ?: []
-    r << [ms: ms, pct: pct, ad: state.lastAD]
+    r << [ms: ms, pct: pct, ad: state.lastAD, rainEv: state.lastRainEvent]
     Integer windowMin = intSetting(riseWindowMin, 45)
     if (simActive()) {
         // A time-based window is meaningless in simulation: readings arrive
@@ -759,7 +775,11 @@ private void checkRise(Long ms, BigDecimal pct) {
             startAD    : lowest.ad,          // from the same sample as startPct
             peakPct    : pct,
             peakMs     : ms,
-            rainAtT0   : state.lastRainEvent,
+            // From the SAME sample as startPct, not from now. Captured at
+            // event-open time this was already post-rain, so before == after
+            // and every event reported 0.0 inches - which would have silently
+            // emptied the rain-efficiency data for a whole season.
+            rainAtT0   : lowest.rainEv,
             rainRateMax: state.lastRainRate
         ]
         logInfo "wetting event opened - up ${rise} points from ${lowest.pct} since ${isoOf(lowest.ms)}"
@@ -831,6 +851,19 @@ private void closeEvent(Long ms) {
     ]
     pushEvent(rec)
     state.remove("openEvent")
+
+    // Once an event has completed, the dry baseline that preceded it must leave
+    // the lookback buffer. Otherwise the very next flat reading is still "up 24
+    // points from 21" and opens a fresh event off the same stale low, again and
+    // again. The suite showed this plainly: four near-identical rain events per
+    // soaking, every one starting at 21.
+    //
+    // Production was accidentally shielded from this - the 60-minute settle
+    // outlasts the 55-minute lookback, so the old low had already aged out by
+    // the time an event closed. That is a coincidence of two settings, not a
+    // guarantee, and it breaks the moment either is changed.
+    List trimmed = (state.recent ?: []).findAll { (it.ms as Long) >= peakMs }
+    state.recent = trimmed
 
     logInfo "wetting event closed - ${cls}, ${oe.startPct} -> ${oe.peakPct} " +
             "(+${magnitude}) over ${riseMin} min" + (rainIn != null ? ", ${rainIn} in rain" : "")
@@ -986,6 +1019,12 @@ private void checkStale() {
     BigDecimal hrs = numSetting(staleHours, 6)
     if (hrs == null || hrs <= 0) return
     Long win = scaleMs((long) (hrs.doubleValue() * 3600000.0d))
+    // At high speed-ups this scales below the gap between scenarios (4.3 s at
+    // 5000x), so the app flagged itself stale during every pause - and while
+    // stale, canLearn() is false, so a follow-up firing in that gap silently
+    // skipped its field-capacity observation. Floor it above the gap but well
+    // under the 90 s that sensorSilent holds.
+    if (simActive() && win < 30000L) win = 30000L
     Long ms = now()
     Long lastEvt = state.lastEventMs as Long
     Long lastChg = state.lastChangeMs as Long
