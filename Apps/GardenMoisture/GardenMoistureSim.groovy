@@ -35,6 +35,13 @@
  *  v0.1.0  2026-08-31  Initial release.
  *  v0.1.1  2026-08-31  Scenarios now prime themselves so they can be run
  *                      back to back without cross-contamination.
+ *  v0.1.5  2026-08-31  Priming copied plan[0]'s rain fields, so any scenario
+ *                      whose first step IS the soaking (toThreshold,
+ *                      seasonCycle, seasonDoubleTap) had rainEvent already at
+ *                      its final value before the scenario began. No increase,
+ *                      so no rain detected, so the first soaking of each of
+ *                      those scenarios was mis-classified as "manual" with no
+ *                      inches. Priming now forces a dry baseline.
  *  v0.1.4  2026-08-31  The inter-scenario gap is now sized from the logger's
  *                      speed-up instead of a fixed 6 s. At 500x the +24 h
  *                      follow-up needs 173 s, so the boundary reset was wiping
@@ -57,7 +64,7 @@
 
 import groovy.transform.Field
 
-@Field static final String VERSION = "0.1.4"
+@Field static final String VERSION = "0.1.5"
 
 @Field static final Map SCENARIOS = [
     "dryDown"      : "Core: steady dry-down, no events, dry-down records banked",
@@ -482,9 +489,17 @@ private List primed(List plan) {
     if (!plan) return plan
     Map f = plan[0]
     List out = []
-    out << [soil: f.soil, temp: f.temp, raining: f.raining, rainEv: f.rainEv,
-            rainDay: f.rainDay, rainRt: f.rainRt, batt: f.batt,
-            note: "priming - settling the detector on this scenario's baseline"]
+    // Carry soil and temperature only, and force a DRY baseline.
+    //
+    // Copying plan[0]'s rain fields was wrong: for scenarios whose first step is
+    // itself the soaking (toThreshold, seasonCycle, seasonDoubleTap), priming
+    // pre-applied rainEvent, so when the real soaking step arrived the value had
+    // not increased - no rain was detected, and the event was classified
+    // "manual" with no inches. That is exactly what toThreshold's first cycle
+    // reported. Rain must ARRIVE during the scenario, not before it starts.
+    out << [soil: f.soil, temp: f.temp, batt: f.batt,
+            raining: false, rainRt: 0, rainEv: 0, rainDay: 0,
+            note: "priming - dry baseline, settling the detector"]
     (1..11).each { out << [soil: f.soil] }
     out.addAll(plan)
     return out
