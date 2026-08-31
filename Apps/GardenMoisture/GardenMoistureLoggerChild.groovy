@@ -47,6 +47,22 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.1.8  2026-08-31  Four more, all found in the logger's own log:
+ *                      (a) a SHALLOW event still fed the field-capacity anchor.
+ *                          Its settled value is the dry baseline it fell back
+ *                          to, not field capacity - the run recorded "FC
+ *                          observation: 23" and flagged the same event shallow
+ *                          on the next line. Shallow is now decided first and
+ *                          excludes the event from the anchor.
+ *                      (b) recordFollowUp was not idempotent, so the runIn and
+ *                          the backfill sweep both processed the same event and
+ *                          one soaking produced two FC observations.
+ *                      (c) the probe-out grace scaled to 1.44 s at 5000x, so a
+ *                          single low reading could suspend learning. Floored.
+ *                      (d) the "not learned from" log lumped three guards
+ *                          together and omitted stale, which made a dropped
+ *                          stress mark impossible to diagnose. It now names the
+ *                          actual guard.
  *  v0.1.7  2026-08-31  Three faults the full suite run exposed:
  *                      (a) state.recent was not pruned when an event closed, so
  *                          the pre-event low stayed in the lookback and every
@@ -120,7 +136,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.7"
+@Field static final String VERSION = "0.1.8"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -922,6 +938,11 @@ private void recordFollowUp(String id, String field) {
     Integer idx = ev.findIndexOf { it.id == id }
     if (idx < 0) return
     Map e = ev[idx]
+    // Idempotent. The runIn and the backfill sweep can both reach the same
+    // event a second or two apart, and the suite showed each "settled at" line
+    // twice, each one adding a field-capacity observation - so one soaking
+    // counted as two.
+    if (e[field] != null) return
     BigDecimal pct = safeDec(state.lastPct)
     if (pct == null) {
         // Writing null would leave the field unset and backfillFollowUps would
@@ -940,13 +961,26 @@ private void recordFollowUp(String id, String field) {
         // reading was actually taken near +24 h. A backfilled sample three days
         // late would poison the one dataset that cannot be regenerated.
         BigDecimal minRise = numSetting(fcMinRise, 10)
-        if (canLearn() && !e.followUpLate && safeDec(e.magnitude) >= minRise) {
-            addFcObservation(pct, e.t0 as Long)
-        }
-        if (safeDec(e.magnitude) >= minRise &&
-            e.effectiveGain != null && safeDec(e.effectiveGain) < (safeDec(e.magnitude) / 3)) {
+
+        // Decide SHALLOW first. A shallow event's settled value is the dry
+        // baseline it fell back to, not field capacity - the suite recorded
+        // "field-capacity observation: 23" from an event flagged shallow in the
+        // very next line, which would drag the FC estimate toward the dry end.
+        Boolean shallow = (safeDec(e.magnitude) >= minRise &&
+                           e.effectiveGain != null &&
+                           safeDec(e.effectiveGain) < (safeDec(e.magnitude) / 3))
+        if (shallow) {
             e.shallowSuspect = true
             logInfo "event ${isoOf(e.t0)} looks shallow - rose ${e.magnitude} but only ${e.effectiveGain} left after 24 h"
+        }
+
+        // Only a large event that actually HELD its water tells us what this
+        // soil holds against gravity. Late follow-ups are excluded because the
+        // reading would not be a +24 h value at all.
+        if (canLearn() && !e.followUpLate && !shallow && safeDec(e.magnitude) >= minRise) {
+            addFcObservation(pct, e.t0 as Long)
+        } else if (shallow) {
+            logInfo "event ${isoOf(e.t0)} did NOT feed the field-capacity anchor - it drained away"
         }
     }
     ev[idx] = e
@@ -980,6 +1014,16 @@ private Boolean freezing() {
     BigDecimal t = safeDec(state.lastTempF)
     if (t == null) return false
     return t < numSetting(freezeGuardF, 36)
+}
+
+/** Names the specific guard, because "freeze or probe-out" lumped three
+ *  different causes together and left the last suite run undiagnosable. */
+private String blockReason() {
+    if (!seasonActive())          return "season is off"
+    if (freezing())               return "temperature ${state.lastTempF} F is below the freeze guard ${numSetting(freezeGuardF, 36)}"
+    if (state.suspectOutOfGround) return "probe is flagged as possibly out of the ground"
+    if (state.sensorStale)        return "sensor is flagged stale (${state.staleReason ?: 'no detail'})"
+    return "no guard is set - this should not happen, please report it"
 }
 
 private Boolean canLearn() {
@@ -1047,11 +1091,19 @@ private void checkStale() {
     }
 }
 
+/** Scaled, but floored: at 5000x the raw 2 h grace becomes 1.44 s, so a single
+ *  low reading would trip the probe-out guard and silently stop learning. */
+private Long outGraceMs() {
+    Long g = scaleMs(7200000L)
+    if (simActive() && g < 30000L) g = 30000L
+    return g
+}
+
 private void checkOutOfGround(BigDecimal pct) {
     BigDecimal limit = numSetting(outOfGroundPct, 6)
     if (pct <= limit) {
         if (state.lowReadingSinceMs == null) state.lowReadingSinceMs = now()
-        else if ((now() - (state.lowReadingSinceMs as Long)) > scaleMs(7200000L) && !state.suspectOutOfGround) {
+        else if ((now() - (state.lowReadingSinceMs as Long)) > outGraceMs() && !state.suspectOutOfGround) {
             state.suspectOutOfGround = true
             log.warn "${app.label}: reading has sat at or below ${limit}% for over 2 h - " +
                      "probe may be out of the ground. Learning suspended until it recovers."
@@ -1088,7 +1140,7 @@ private void recordStressMark(String why) {
     }
     noteRow("marked-needed-water")
     if (!canLearn()) {
-        logInfo "stress mark noted in the log but not learned from (${seasonActive() ? 'freeze or probe-out guard' : 'season off'})"
+        logInfo "stress mark noted in the log but NOT learned from - ${blockReason()}"
         return
     }
     List o = state.stressObs ?: []
