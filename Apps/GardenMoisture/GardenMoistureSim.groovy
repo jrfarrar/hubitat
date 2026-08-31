@@ -12,9 +12,11 @@
  *       source AND the outdoor temperature - it satisfies all three.
  *       Create virtual switches for the two markers and the season, and select
  *       those too.
- *    3. Set the logger child's Testing > "Simulation speed-up divisor" to
- *       something like 500. Without it the +6/12/24 h follow-ups stay at real
- *       hours and most scenarios cannot complete.
+ *    3. Set the logger child's Testing > "Simulation speed-up divisor" to 5000,
+ *       and tell this app the same number. 5000 is not arbitrary: below ~200 the
+ *       event settle window outlasts the scenario and events never close; below
+ *       ~1000 the +24 h follow-up cannot complete between scenarios; above
+ *       ~20000 the season guard drops under a minute and stops being tested.
  *    4. Pick a scenario here, press Run, and watch the logger child's status
  *       block and the logs.
  *    5. Run as many scenarios as you like, back to back. Each one primes itself,
@@ -33,6 +35,12 @@
  *  v0.1.0  2026-08-31  Initial release.
  *  v0.1.1  2026-08-31  Scenarios now prime themselves so they can be run
  *                      back to back without cross-contamination.
+ *  v0.1.4  2026-08-31  The inter-scenario gap is now sized from the logger's
+ *                      speed-up instead of a fixed 6 s. At 500x the +24 h
+ *                      follow-up needs 173 s, so the boundary reset was wiping
+ *                      every in-flight follow-up: effectiveGain, the shallow
+ *                      flag and the follow-up FC observation could never be
+ *                      produced by a suite run. Recommended divisor is now 5000.
  *  v0.1.3  2026-08-31  Fixed two scenarios that were passing while testing
  *                      nothing. seasonDoubleTap set the season switch "on" when
  *                      the suite had already turned it on, so no event fired and
@@ -49,7 +57,7 @@
 
 import groovy.transform.Field
 
-@Field static final String VERSION = "0.1.3"
+@Field static final String VERSION = "0.1.4"
 
 @Field static final Map SCENARIOS = [
     "dryDown"      : "Core: steady dry-down, no events, dry-down records banked",
@@ -137,6 +145,10 @@ def mainPage() {
             input "scenario", "enum", title: "Pick one", options: SCENARIOS, required: true, submitOnChange: true
             if (scenario) paragraph "<i>${SCENARIOS[scenario]}</i>"
             input "stepSec", "number", title: "Seconds between simulated readings", defaultValue: 3, required: true
+            input "loggerSpeedup", "number",
+                  title: "The logger's speed-up divisor <b>(must match what you set in the logger)</b>",
+                  defaultValue: 5000, required: true, submitOnChange: true
+            paragraph speedupAdvice()
             paragraph "<i>Each step is one sensor reading. Keep it at 2 s or more - the logger " +
                       "writes a file per sample, and a faster drip just queues work on the hub.</i>"
         }
@@ -168,11 +180,68 @@ def mainPage() {
     }
 }
 
+/**
+ * Gap between scenarios, sized from the logger's speed-up.
+ *
+ * The +24 h follow-up is the long pole: at speed-up S it lands 86400/S seconds
+ * after an event closes, and the boundary reset at the start of the next
+ * scenario wipes the event it belongs to. At the old fixed 6 s gap with S=500
+ * that follow-up needed 173 s and never survived - so effectiveGain, the
+ * shallow-watering flag and the follow-up field-capacity observation could
+ * never be produced by a suite run at all.
+ */
+private Integer suiteGapSec() {
+    Integer sp = Math.max(1, intOr(loggerSpeedup, 5000))
+    Integer fu24 = (Integer) Math.ceil(86400.0d / sp)
+    return Math.max(10, fu24 + 8)
+}
+
+private Integer intOr(def v, Integer dflt) {
+    if (v == null) return dflt
+    try { return (v as BigDecimal).intValue() } catch (ex) { return dflt }
+}
+
+/**
+ * The speed-up is load-bearing in both directions, so say so rather than
+ * leaving it to be discovered.
+ */
+private String speedupAdvice() {
+    Integer sp = Math.max(1, intOr(loggerSpeedup, 5000))
+    Integer step = Math.max(1, intOr(stepSec, 3))
+    BigDecimal settle = new BigDecimal(Math.max(1.0d, 3600.0d / sp)).setScale(1, java.math.RoundingMode.HALF_UP)
+    BigDecimal fu24   = new BigDecimal(86400.0d / sp).setScale(1, java.math.RoundingMode.HALF_UP)
+    BigDecimal stale  = new BigDecimal(21600.0d / sp).setScale(1, java.math.RoundingMode.HALF_UP)
+
+    List bad = []
+    if (settle.doubleValue() > (step * 8))
+        bad << "<b>events will never close</b> - the settle window is ${settle}s but scenarios only " +
+               "hold ~${step * 9}s after a peak. Raise the divisor."
+    if (stale.doubleValue() > 85)
+        bad << "<b>the stale-sensor test cannot fire</b> - it needs ${stale}s but only 90s of silence is held."
+    if (sp > 20000)
+        bad << "<b>too fast</b> - the season guard drops below a minute and seasonDoubleTap stops being meaningful."
+
+    String body = "<i>At ${sp}x: event settle ${settle}s, +24h follow-up ${fu24}s, " +
+                  "stale window ${stale}s. Scenarios will be spaced ${suiteGapSec()}s apart so the " +
+                  "follow-ups land before the next reset.</i>"
+    if (bad) {
+        return "<div style='background:#fdd;border:2px solid #b00;padding:6px'>" +
+               "<b>These settings will not work:</b><br>" + bad.join("<br>") + "<br>" + body + "</div>"
+    }
+    return body
+}
+
 private Integer suiteMinutes() {
-    Integer gap = Math.max(1, (stepSec ?: 3) as Integer)
+    Integer gap = Math.max(1, intOr(stepSec, 3))
     Integer steps = 0
-    SUITE.each { steps += (primed(buildPlan(it))?.size() ?: 0) }
-    Integer secs = (steps * gap) + (SUITE.size() * 6)
+    Integer waits = 0
+    SUITE.each { sc ->
+        primed(buildPlan(sc))?.each { st ->
+            steps += 1
+            if (st.waitAfter != null) waits += ((st.waitAfter as Integer) - gap)
+        }
+    }
+    Integer secs = (steps * gap) + waits + (SUITE.size() * suiteGapSec())
     return Math.max(1, (Integer) Math.ceil(secs / 60.0d))
 }
 
@@ -242,6 +311,10 @@ private void startSuite() {
     log.info "SIM SUITE: starts from a known-empty state."
     log.info "SIM SUITE: this run ORCHESTRATES and LOGS - it cannot assert."
     log.info "SIM SUITE: read each scenario's EXPECT line against what follows it."
+    log.info "SIM SUITE: logger speed-up declared as ${intOr(loggerSpeedup, 5000)}x - scenarios"
+    log.info "SIM SUITE: spaced ${suiteGapSec()}s apart so follow-ups complete."
+    log.info "SIM SUITE: If that does not match the logger's actual Testing > divisor,"
+    log.info "SIM SUITE: these results are not trustworthy."
     log.info "SIM SUITE: order: ${SUITE.join(' -> ')}"
     log.info "=============================================================="
 
@@ -334,9 +407,9 @@ def stepTick() {
 
         if (state.suite != null) {
             state.suiteIdx = ((state.suiteIdx ?: 0) as Integer) + 1
-            // A beat before the next one, so the follow-ups scheduled by this
-            // scenario's last event land before the boundary reset wipes it.
-            runIn(6, "nextInSuite")
+            // Long enough for this scenario's +24 h follow-up to land before the
+            // next boundary reset wipes the event it belongs to.
+            runIn(suiteGapSec(), "nextInSuite")
         }
         return
     }
