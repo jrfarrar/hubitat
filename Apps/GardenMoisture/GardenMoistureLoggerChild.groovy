@@ -47,6 +47,18 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.1.3  2026-08-31  Fix: two rain-attribution faults found while running the
+ *                      manual-watering scenario.
+ *                      (a) rainEventHandler stamped "rain just rose" whenever
+ *                          the previous value was null, so the FIRST rainEvent
+ *                          reading ever seen set the marker even at value 0.
+ *                          A hand watering within the next 15 minutes would be
+ *                          classified as rain. Now only a real increase counts.
+ *                      (b) the +/-15 min rain grace window in closeEvent was not
+ *                          sim-scaled, so it spanned entire scenario runs: a
+ *                          rainEvent run followed within 15 real minutes by a
+ *                          manualWater run leaked the rain marker across and
+ *                          mis-classified the watering.
  *  v0.1.2  2026-08-31  Fix: day-boundary work was unreachable under simulation.
  *                      dayRollover() only ran from the midnight cron, and it is
  *                      the only caller of recordDailyLevel() (which feeds the
@@ -74,7 +86,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.2"
+@Field static final String VERSION = "0.1.3"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -490,7 +502,11 @@ def rainEventHandler(evt) {
     BigDecimal r = safeDec(evt.value)
     if (r == null) return
     BigDecimal prev = safeDec(state.lastRainEvent)
-    if (prev == null || r > prev) state.lastRainRiseMs = now()
+    // Only an actual INCREASE counts as rain arriving. The old test also fired
+    // when prev was null, so the very first rainEvent reading ever seen stamped
+    // "rain just rose" even when its value was 0 - a false marker that could
+    // mis-attribute a hand watering in the first 15 minutes after install.
+    if (prev != null && r > prev) state.lastRainRiseMs = now()
     state.lastRainEvent = r
 }
 
@@ -692,7 +708,11 @@ private void closeEvent(Long ms) {
     BigDecimal rainIn = null
     if (rainDev) {
         Long rainRise = state.lastRainRiseMs as Long
-        Boolean rainedDuring = (rainRise != null && rainRise >= t0 - 900000L && rainRise <= peakMs + 900000L)
+        // Scaled: unscaled, this 15-minute grace spans whole simulated runs, so
+        // a rain scenario followed by a manual-watering scenario would leak its
+        // rain marker across and mis-classify the watering.
+        Long grace = scaleMs(900000L)
+        Boolean rainedDuring = (rainRise != null && rainRise >= t0 - grace && rainRise <= peakMs + grace)
         Boolean rainingNow = ((state.lastRaining ?: "false") == "true")
         if (rainedDuring || rainingNow) {
             cls = "rain"
