@@ -47,6 +47,16 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.1.1  2026-08-31  Fix: the wetting-event settle window was not sim-scaled,
+ *                      so under simulation an event opened and then sat open for
+ *                      60 REAL minutes before closing. Nothing downstream of
+ *                      closeEvent() - classification, the +6/12/24 h follow-ups,
+ *                      the field-capacity observation - could run inside a
+ *                      scenario. The manual-watering attribution window had the
+ *                      same problem. Both now go through scaleMs().
+ *                      NOTE: riseWindowMin is deliberately NOT scaled. Shrinking
+ *                      the detection window would stop the sim seeing the
+ *                      pre-rain low at all.
  */
 
 import groovy.transform.Field
@@ -54,7 +64,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.0"
+@Field static final String VERSION = "0.1.1"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -609,7 +619,7 @@ private void checkRise(Long ms, BigDecimal pct) {
         }
         state.openEvent = oe
         Long since = ms - (oe.peakMs as Long)
-        if (since > (intSetting(settleMin, 60) * 60000L)) closeEvent(ms)
+        if (since > scaleMs(intSetting(settleMin, 60) * 60000L)) closeEvent(ms)
         return
     }
 
@@ -645,7 +655,7 @@ private void closeEvent(Long ms) {
 
     // Classify from what the rain gauge was doing during the rise.
     Boolean manualNear = (state.lastManualWaterMs != null &&
-                          (state.lastManualWaterMs as Long) >= t0 - 3600000L)
+                          (state.lastManualWaterMs as Long) >= t0 - scaleMs(3600000L))
     String cls = "manual"
     BigDecimal rainIn = null
     if (rainDev) {
