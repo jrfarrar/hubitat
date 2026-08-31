@@ -47,6 +47,12 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.1.4  2026-08-31  Fix: scenarios contaminated each other through the rise
+ *                      detector. state.recent is time-windowed at riseWindowMin
+ *                      (45 real minutes, deliberately unscaled), so it carried a
+ *                      previous scenario's readings into the next one and
+ *                      checkRise could open an event off the old run's tail. In
+ *                      sim mode it is now bounded by count.
  *  v0.1.3  2026-08-31  Fix: two rain-attribution faults found while running the
  *                      manual-watering scenario.
  *                      (a) rainEventHandler stamped "rain just rose" whenever
@@ -86,7 +92,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.3"
+@Field static final String VERSION = "0.1.4"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -597,6 +603,18 @@ private void pushRecent(Long ms, BigDecimal pct) {
     List r = state.recent ?: []
     r << [ms: ms, pct: pct, ad: state.lastAD]
     Integer windowMin = intSetting(riseWindowMin, 45)
+    if (simActive()) {
+        // A time-based window is meaningless in simulation: readings arrive
+        // seconds apart, so 45 minutes holds the ENTIRE previous scenario and
+        // checkRise finds its low point - e.g. a run ending at 42 followed by
+        // one starting at 46 opens a spurious 4-point event before the new
+        // scenario has done anything. Bound by count instead; the priming steps
+        // the sim runner prepends then flush it completely between runs.
+        Integer simCap = 10
+        if (r.size() > simCap) r = r[(-simCap)..-1]
+        state.recent = r
+        return
+    }
     Long cutoff = ms - ((windowMin * 60000L) + 600000L)
     r = r.findAll { (it.ms as Long) >= cutoff }
     // Size the cap from the window, not a fixed 60. The WH51 transmits about

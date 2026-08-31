@@ -22,6 +22,8 @@
  *  NOT FOR PRODUCTION USE. This is a test fixture.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.1.1  2026-08-31  humidity and soilAD now fire with isStateChange so
+ *                      repeated values still produce events.
  */
 
 metadata {
@@ -80,13 +82,16 @@ def setHumidity(percent) {
     Integer v = Math.round((percent as BigDecimal).doubleValue()) as Integer
     if (v < 0) v = 0
     if (v > 100) v = 100
-    sendEvent(name: "humidity", value: v, unit: "%")
+    // isStateChange so a repeated value still fires. Hubitat suppresses
+    // duplicate-value events by default, which would silently swallow the
+    // priming readings the sim runner uses to flush the detector between runs.
+    sendEvent(name: "humidity", value: v, unit: "%", isStateChange: true)
     if (logEnable) log.debug "${device.displayName}: humidity = ${v}%"
 }
 
 def setSoilAD(mv) {
     BigDecimal v = mv as BigDecimal
-    sendEvent(name: "soilAD", value: v, unit: "mv")
+    sendEvent(name: "soilAD", value: v, unit: "mv", isStateChange: true)
     if (logEnable) log.debug "${device.displayName}: soilAD = ${v} mv"
 }
 

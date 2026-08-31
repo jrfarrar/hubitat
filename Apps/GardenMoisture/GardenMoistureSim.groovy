@@ -17,8 +17,11 @@
  *       hours and most scenarios cannot complete.
  *    4. Pick a scenario here, press Run, and watch the logger child's status
  *       block and the logs.
- *    5. WHEN FINISHED: set the speed-up back to 1 and use "Clear learned data"
- *       on the logger, or every anchor it holds is simulation garbage.
+ *    5. Run as many scenarios as you like, back to back. Each one primes itself,
+ *       so no clearing is needed between runs.
+ *    6. WHEN FINISHED WITH ALL OF THEM: set the speed-up back to 1 and use
+ *       "Clear learned data" on the logger, or every anchor it holds is
+ *       simulation garbage. That is a once-at-the-end step, not a per-run one.
  *
  *  Each scenario prints the expected outcome to the log when it starts, so the
  *  log itself reads as a pass/fail checklist.
@@ -28,11 +31,13 @@
  *  which is the point: the logger is tested through its real inputs.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.1.1  2026-08-31  Scenarios now prime themselves so they can be run
+ *                      back to back without cross-contamination.
  */
 
 import groovy.transform.Field
 
-@Field static final String VERSION = "0.1.0"
+@Field static final String VERSION = "0.1.1"
 
 @Field static final Map SCENARIOS = [
     "dryDown"      : "Core: steady dry-down, no events, dry-down records banked",
@@ -149,7 +154,7 @@ private void startScenario() {
     if (!simDev) { log.warn "SIM: pick a sim device first"; return }
     unschedule("stepTick")
 
-    List plan = buildPlan(scenario)
+    List plan = primed(buildPlan(scenario))
     if (!plan) { log.warn "SIM: no plan built for '${scenario}'"; return }
 
     state.scenario = scenario
@@ -233,6 +238,27 @@ private String expectationFor(String sc) {
         case "jitterOnly":  return "NO events at all - noise below the rise threshold must not open one."
         default: return "see scenario description"
     }
+}
+
+/**
+ * Every scenario is prefixed with a run of readings at its own opening value.
+ *
+ * Scenarios must be independent, and they were not: the logger's rise detector
+ * keeps a lookback buffer, so a run ending at 42 followed by one starting at 46
+ * looked like a 4-point rise and opened a wetting event before the new scenario
+ * had done anything. Priming fills that buffer with the new baseline first, so
+ * you can run all thirteen back to back without clearing anything in between.
+ */
+private List primed(List plan) {
+    if (!plan) return plan
+    Map f = plan[0]
+    List out = []
+    out << [soil: f.soil, temp: f.temp, raining: f.raining, rainEv: f.rainEv,
+            rainDay: f.rainDay, rainRt: f.rainRt, batt: f.batt,
+            note: "priming - settling the detector on this scenario's baseline"]
+    (1..11).each { out << [soil: f.soil] }
+    out.addAll(plan)
+    return out
 }
 
 /**
