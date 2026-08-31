@@ -33,11 +33,15 @@
  *  v0.1.0  2026-08-31  Initial release.
  *  v0.1.1  2026-08-31  Scenarios now prime themselves so they can be run
  *                      back to back without cross-contamination.
+ *  v0.1.2  2026-08-31  Added "Run all" - the whole suite in a deliberate order,
+ *                      resetting the logger between each via the sim device's
+ *                      markBoundary command. Requires Garden Sim Sensor v0.1.2
+ *                      and Garden Moisture Logger Child v0.1.5.
  */
 
 import groovy.transform.Field
 
-@Field static final String VERSION = "0.1.1"
+@Field static final String VERSION = "0.1.2"
 
 @Field static final Map SCENARIOS = [
     "dryDown"      : "Core: steady dry-down, no events, dry-down records banked",
@@ -53,6 +57,37 @@ import groovy.transform.Field
     "rapidFire"    : "Abuse: many events back to back - pruning and state limits",
     "sensorSilent" : "Abuse: sensor stops reporting mid-event - stale detector",
     "jitterOnly"   : "Abuse: noise below the rise threshold - must NOT open events"
+]
+
+/**
+ * Suite order is not arbitrary. Cheapest and most fundamental first, so an
+ * early failure invalidates as little as possible:
+ *
+ *   1. jitterOnly   - if noise CREATES events, every later event is suspect,
+ *                     so this is the cheapest thing that can invalidate the
+ *                     rest of the run. It goes first for that reason alone.
+ *   2. dryDown      - the other negative case: falling readings, no events.
+ *   3. rainEvent    - canonical positive case.
+ *   4. manualWater  - the other positive case, plus her marker.
+ *   5. shallowWater - classification nuance: peak vs 24 h gain.
+ *   6. ambiguous    - the case that must NOT be forced into a category.
+ *   7. probePulled  }
+ *   8. freeze       }  guards. Each must SUPPRESS learning.
+ *   9. sensorSilent }
+ *  10. seasonCycle     - anchors clear on a genuine re-seat...
+ *  11. seasonDoubleTap - ...but must SURVIVE a stray second tap. Runs straight
+ *                        after seasonCycle so the contrast is visible in one
+ *                        stretch of log.
+ *  12. rapidFire       - stress: pruning and state limits.
+ *  13. toThreshold     - end to end, and longest. Last, because it is only
+ *                        meaningful once everything above holds.
+ */
+@Field static final List SUITE = [
+    "jitterOnly", "dryDown", "rainEvent", "manualWater",
+    "shallowWater", "ambiguous",
+    "probePulled", "freeze", "sensorSilent",
+    "seasonCycle", "seasonDoubleTap",
+    "rapidFire", "toThreshold"
 ]
 
 definition(
@@ -98,8 +133,22 @@ def mainPage() {
                       "writes a file per sample, and a faster drip just queues work on the hub.</i>"
         }
 
-        section("<b>Run</b>") {
+        section("<b>Run one</b>") {
             input "btnRun",  "button", title: "Run scenario"
+        }
+
+        section("<b>Run the whole suite</b>") {
+            paragraph "Runs all ${SUITE.size()} scenarios in a deliberate order, resetting the " +
+                      "logger between each so every test starts clean.<br>" +
+                      "<i>Roughly <b>${suiteMinutes()} minutes</b> at ${stepSec ?: 3} s per reading. " +
+                      "Walk away and read the log afterwards.</i>"
+            input "btnRunAll", "button", title: "Run all ${SUITE.size()} scenarios"
+            paragraph "<i>This orchestrates and logs; it cannot assert. The sim drives the logger " +
+                      "through real device events and has no way to read the logger's conclusions " +
+                      "back, so the log is a checklist for you, not a pass/fail result.</i>"
+        }
+
+        section("<b>Control</b>") {
             input "btnStop", "button", title: "Stop"
             input "btnReset","button", title: "Reset sim device to neutral"
             paragraph statusText()
@@ -111,11 +160,25 @@ def mainPage() {
     }
 }
 
+private Integer suiteMinutes() {
+    Integer gap = Math.max(1, (stepSec ?: 3) as Integer)
+    Integer steps = 0
+    SUITE.each { steps += (primed(buildPlan(it))?.size() ?: 0) }
+    Integer secs = (steps * gap) + (SUITE.size() * 6)
+    return Math.max(1, (Integer) Math.ceil(secs / 60.0d))
+}
+
 private String statusText() {
     if (!state.running) {
+        if (state.suiteDone) {
+            return "<br><b>Suite finished.</b> ${state.suiteDone}" +
+                   "<br><i>Set the logger's speed-up back to 1 and clear its learned data " +
+                   "before the real probe goes in.</i>"
+        }
         return state.lastResult ? "<br><b>Last run:</b> ${state.lastResult}" : "<br><i>Idle.</i>"
     }
-    return "<br><b>Running ${state.scenario}</b> - step ${state.step} of ${state.plan?.size() ?: '?'}" +
+    String where = state.suite ? " &nbsp;(suite ${(state.suiteIdx ?: 0) + 1} of ${state.suite.size()})" : ""
+    return "<br><b>Running ${state.scenario}</b>${where} - step ${state.step} of ${state.plan?.size() ?: '?'}" +
            "<br><i>Refresh this page to update.</i>"
 }
 
@@ -127,7 +190,8 @@ def initialize() { logDebug "sim ready" }
 
 def appButtonHandler(String btn) {
     switch (btn) {
-        case "btnRun":   startScenario(); break
+        case "btnRun":    startScenario(); break
+        case "btnRunAll": startSuite();    break
         case "btnStop":  stopScenario();  break
         case "btnReset": resetSim();      break
     }
@@ -145,27 +209,103 @@ private void resetSim() {
 
 private void stopScenario() {
     unschedule("stepTick")
+    unschedule("nextInSuite")
+    Boolean wasSuite = (state.suite != null)
     state.running = false
-    state.lastResult = "stopped at step ${state.step}"
-    log.info "SIM: stopped"
+    state.remove("suite")
+    state.remove("suiteIdx")
+    state.lastResult = "stopped at step ${state.step}" + (wasSuite ? " (suite abandoned)" : "")
+    log.info "SIM: stopped${wasSuite ? ' - suite abandoned' : ''}"
 }
+
+/* ----------------------------------------------------------------- suite */
+
+private void startSuite() {
+    if (!simDev) { log.warn "SIM: pick a sim device first"; return }
+    unschedule("stepTick"); unschedule("nextInSuite")
+
+    state.suite = SUITE.collect { it }
+    state.suiteIdx = 0
+    state.remove("suiteDone")
+
+    log.info "=============================================================="
+    log.info "SIM SUITE: ${SUITE.size()} scenarios, about ${suiteMinutes()} minutes."
+    log.info "SIM SUITE: the logger is reset before each one, so every test"
+    log.info "SIM SUITE: starts from a known-empty state."
+    log.info "SIM SUITE: this run ORCHESTRATES and LOGS - it cannot assert."
+    log.info "SIM SUITE: read each scenario's EXPECT line against what follows it."
+    log.info "SIM SUITE: order: ${SUITE.join(' -> ')}"
+    log.info "=============================================================="
+
+    nextInSuite()
+}
+
+def nextInSuite() {
+    List suite = state.suite
+    if (suite == null) return
+    Integer idx = (state.suiteIdx ?: 0) as Integer
+
+    if (idx >= suite.size()) {
+        state.running = false
+        state.remove("suite")
+        state.remove("suiteIdx")
+        state.suiteDone = "all ${SUITE.size()} scenarios completed at ${new Date()}"
+        log.info "=============================================================="
+        log.info "SIM SUITE: COMPLETE - ${SUITE.size()} scenarios."
+        log.info "SIM SUITE: Now check the logger's status block. The last scenario"
+        log.info "SIM SUITE: was toThreshold, so it should show a real derived"
+        log.info "SIM SUITE: threshold and a confidence other than 'none'."
+        log.info "SIM SUITE: THEN: set the logger's speed-up divisor back to 1 and"
+        log.info "SIM SUITE: use Maintenance > Clear learned data before the real"
+        log.info "SIM SUITE: probe goes in, or it carries simulation garbage."
+        log.info "=============================================================="
+        return
+    }
+
+    // Reset the logger through a device event - the sim never touches the
+    // logger's state directly. Guarded on the logger's side by simActive().
+    try {
+        simDev.markBoundary()
+    } catch (ex) {
+        log.error "SIM SUITE: markBoundary failed (${ex.message}). Update the Garden Sim " +
+                  "Sensor driver to v0.1.2 or later - without it, scenarios will contaminate " +
+                  "each other and the results are not trustworthy. Stopping."
+        stopScenario()
+        return
+    }
+    simNeeded?.off(); simWatered?.off()
+    simSeason?.on()          // every scenario assumes an active season unless it says otherwise
+
+    String sc = suite[idx]
+    log.info "--------------------------------------------------------------"
+    log.info "SIM SUITE ${idx + 1}/${suite.size()}: ${sc}"
+    runOne(sc)
+}
+
+/* --------------------------------------------------------------- control */
 
 private void startScenario() {
     if (!simDev) { log.warn "SIM: pick a sim device first"; return }
+    unschedule("stepTick"); unschedule("nextInSuite")
+    state.remove("suite")
+    state.remove("suiteIdx")
+    runOne(scenario)
+}
+
+private void runOne(String sc) {
     unschedule("stepTick")
+    List plan = primed(buildPlan(sc))
+    if (!plan) { log.warn "SIM: no plan built for '${sc}'"; return }
 
-    List plan = primed(buildPlan(scenario))
-    if (!plan) { log.warn "SIM: no plan built for '${scenario}'"; return }
-
-    state.scenario = scenario
+    state.scenario = sc
     state.plan = plan
     state.step = 0
     state.running = true
     state.lastResult = null
 
     log.info "=========================================================="
-    log.info "SIM: starting '${scenario}' - ${SCENARIOS[scenario]}"
-    log.info "SIM: EXPECT -> ${expectationFor(scenario)}"
+    log.info "SIM: starting '${sc}' - ${SCENARIOS[sc]}"
+    log.info "SIM: EXPECT -> ${expectationFor(sc)}"
     log.info "SIM: ${plan.size()} steps at ${stepSec ?: 3} s each"
     log.info "=========================================================="
 
@@ -180,9 +320,16 @@ def stepTick() {
         state.running = false
         state.lastResult = "'${state.scenario}' completed ${plan?.size() ?: 0} steps at ${new Date()}"
         log.info "=========================================================="
-        log.info "SIM: '${state.scenario}' COMPLETE. Now check the logger child's status block against:"
+        log.info "SIM: '${state.scenario}' COMPLETE. Check the logger against:"
         log.info "SIM: EXPECT -> ${expectationFor(state.scenario)}"
         log.info "=========================================================="
+
+        if (state.suite != null) {
+            state.suiteIdx = ((state.suiteIdx ?: 0) as Integer) + 1
+            // A beat before the next one, so the follow-ups scheduled by this
+            // scenario's last event land before the boundary reset wipes it.
+            runIn(6, "nextInSuite")
+        }
         return
     }
 

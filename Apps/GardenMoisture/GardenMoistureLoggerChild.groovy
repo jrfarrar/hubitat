@@ -47,6 +47,13 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.1.5  2026-08-31  Added simBoundary subscription so the scenario runner can
+ *                      reset this app between tests through a device event
+ *                      rather than either app touching the other's state.
+ *                      Guarded on simActive() so it is inert in production.
+ *                      clearLearned() now also drops the volatile cross-run
+ *                      state (rain attribution, stale flags, dry-down window),
+ *                      not just the anchors.
  *  v0.1.4  2026-08-31  Fix: scenarios contaminated each other through the rise
  *                      detector. state.recent is time-windowed at riseWindowMin
  *                      (45 real minutes, deliberately unscaled), so it carried a
@@ -92,7 +99,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.4"
+@Field static final String VERSION = "0.1.5"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -377,6 +384,9 @@ def initialize() {
     subscribe(soil, "humidity", soilHandler)
     subscribe(soil, "soilAD", adHandler)
     subscribe(soil, "battery", batteryHandler)
+    // Only ever acted on while simActive(); harmless on a real WH51, which has
+    // no such attribute and will never fire it.
+    subscribe(soil, "simBoundary", simBoundaryHandler)
 
     if (rainDev) {
         subscribe(rainDev, "raining", rainingHandler)
@@ -434,6 +444,23 @@ private void clearLearned() {
     state.seasonStartedMs = null
     state.remove("openEvent")
     state.simSampleCount = 0
+    // Volatile cross-run state. Without these, a scenario boundary would still
+    // leak rain attribution, stale flags and the dry-down window into the next
+    // test - the anchors would be clean but the classification would not be.
+    state.remove("lastRainEvent")
+    state.remove("lastRainRiseMs")
+    state.remove("lastManualWaterMs")
+    state.remove("lastRaining")
+    state.remove("dayStartPct")
+    state.remove("dayStartMs")
+    state.remove("lowReadingSinceMs")
+    state.remove("staleRefPct")
+    state.remove("staleRefAD")
+    state.remove("lastChangeMs")
+    state.remove("lastEventMs")
+    state.suspectOutOfGround = false
+    state.sensorStale = false
+    state.staleReason = null
     state.lastClearIso = isoOf(now())
     saveAnchors()
     app.updateSetting("confirmClear", [type: "bool", value: false])
@@ -530,6 +557,21 @@ def markWateredHandler(evt) {
 
 def resetNeededMarker()  { try { markNeeded?.off() }  catch (ex) { logDebug "marker reset failed - ${ex.message}" } }
 def resetWateredMarker() { try { markWatered?.off() } catch (ex) { logDebug "marker reset failed - ${ex.message}" } }
+
+/**
+ * Pulsed by the scenario runner between tests so each scenario starts from a
+ * known-empty logger. Guarded on simActive(): in production this is inert, so a
+ * stray device event cannot destroy real anchors.
+ */
+def simBoundaryHandler(evt) {
+    if (!simActive()) {
+        log.warn "${app.label}: simBoundary received but simulation mode is OFF - ignoring. " +
+                 "Nothing was cleared."
+        return
+    }
+    clearLearned()
+    log.info "${app.label}: === scenario boundary - learned and volatile state reset ==="
+}
 
 def seasonHandler(evt) {
     // EDGE DETECTION IS LOAD-BEARING. Turning the season on clears the

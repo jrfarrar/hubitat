@@ -24,6 +24,9 @@
  *  v0.1.0  2026-08-31  Initial release.
  *  v0.1.1  2026-08-31  humidity and soilAD now fire with isStateChange so
  *                      repeated values still produce events.
+ *  v0.1.2  2026-08-31  Added simBoundary / markBoundary so the scenario runner
+ *                      can tell the logger to reset between tests, without
+ *                      either app reaching into the other's state.
  */
 
 metadata {
@@ -39,6 +42,7 @@ metadata {
         attribute "rainEvent", "number"
         attribute "rainDaily", "number"
         attribute "raining",   "string"   // "true" / "false" - string, like Ecowitt
+        attribute "simBoundary", "string"  // pulsed between scenarios; see markBoundary
 
         command "setHumidity",  [[name: "percent*", type: "NUMBER"]]
         command "setSoilAD",    [[name: "mv*",      type: "NUMBER"]]
@@ -54,6 +58,12 @@ metadata {
         command "setSoil", [[name: "percent*", type: "NUMBER"]]
 
         command "resetAll"
+
+        // Pulsed by the scenario runner between tests. The logger subscribes to
+        // it and resets its learned + volatile state, but ONLY while its own
+        // simulation speed-up is above 1 - so this can never wipe a production
+        // install even if the command is sent by accident.
+        command "markBoundary"
     }
 
     preferences {
@@ -135,6 +145,11 @@ def setRaining(trueOrFalse) {
 def setRainRate(inPerHr)  { sendEvent(name: "rainRate",  value: (inPerHr as BigDecimal), unit: "in/h") }
 def setRainEvent(inches)  { sendEvent(name: "rainEvent", value: (inches  as BigDecimal), unit: "in") }
 def setRainDaily(inches)  { sendEvent(name: "rainDaily", value: (inches  as BigDecimal), unit: "in") }
+
+def markBoundary() {
+    sendEvent(name: "simBoundary", value: now().toString(), isStateChange: true)
+    log.info "${device.displayName}: scenario boundary marked"
+}
 
 def resetAll() {
     setSoil(35)
