@@ -47,6 +47,14 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.1.9  2026-08-31  t0 was taken from the FIRST sample tying the minimum
+ *                      rather than the last. Soil sits flat before it rises, so
+ *                      several samples tie routinely, and Groovy's min() returns
+ *                      the earliest - putting t0 minutes before the rise really
+ *                      started. That inflated rise duration, and took startAD
+ *                      and the rain baseline from a stale sample, which is how
+ *                      one soaking reported 0.5 in of rain and an identical one
+ *                      reported 0.0. Now takes the last tying sample.
  *  v0.1.8  2026-08-31  Four more, all found in the logger's own log:
  *                      (a) a SHALLOW event still fed the field-capacity anchor.
  *                          Its settled value is the dry baseline it fell back
@@ -136,7 +144,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.8"
+@Field static final String VERSION = "0.1.9"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -781,7 +789,19 @@ private void checkRise(Long ms, BigDecimal pct) {
     if (r.size() < 2) return
 
     // Find the lowest point inside the rise window and see how far we have come up.
-    Map lowest = r.min { (it.pct as BigDecimal) }
+    //
+    // When several samples tie at the minimum - which is the normal case, since
+    // soil sits flat before it rises - take the LAST one, not the first.
+    // Groovy's min() returns the earliest, which puts t0 further back than the
+    // rise actually began. That inflates the rise duration (and so distorts
+    // rise/h), and it takes startAD and the rain baseline from a sample whose
+    // context may be minutes stale - which is how a soaking could report 0.0 in
+    // of rain while an identical one reported 0.5.
+    BigDecimal lowVal = null
+    r.each { BigDecimal v = safeDec(it.pct); if (v != null && (lowVal == null || v < lowVal)) lowVal = v }
+    if (lowVal == null) return
+    Map lowest = null
+    r.each { if (safeDec(it.pct) == lowVal) lowest = it }   // last match wins
     if (lowest == null) return
     BigDecimal rise = pct - safeDec(lowest.pct)
     if (rise >= numSetting(riseThreshold, 4)) {
