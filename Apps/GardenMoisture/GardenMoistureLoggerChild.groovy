@@ -47,6 +47,14 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.1.10 2026-08-31  Floored the rain-attribution grace in sim mode. At 5000x
+ *                      the 15-minute window scaled to 180 ms - shorter than
+ *                      Hubitat's own event-delivery jitter (6-357 ms observed) -
+ *                      so when a scenario's rain and its t0 fell in the same
+ *                      step, detecting the rain at all was a coin flip. That is
+ *                      why toThreshold cycle 1 read "manual" while cycles 2 and
+ *                      3, whose t0 precedes the soaking, read "rain". Harness
+ *                      scaling only; production uses 15 real minutes.
  *  v0.1.9  2026-08-31  t0 was taken from the FIRST sample tying the minimum
  *                      rather than the last. Soil sits flat before it rises, so
  *                      several samples tie routinely, and Groovy's min() returns
@@ -144,7 +152,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.9"
+@Field static final String VERSION = "0.1.10"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -841,7 +849,15 @@ private void closeEvent(Long ms) {
         // Scaled: unscaled, this 15-minute grace spans whole simulated runs, so
         // a rain scenario followed by a manual-watering scenario would leak its
         // rain marker across and mis-classify the watering.
+        // Floored. At 5000x the raw 15 min becomes 180 ms, which is SHORTER than
+        // Hubitat's own event-delivery jitter between two sendEvents in the same
+        // step (measured 6-357 ms). When a scenario's rain and its t0 land in the
+        // same step - which happens whenever the rise begins immediately, as in
+        // toThreshold's first cycle - whether the rain is seen at all becomes a
+        // coin flip. Production is unaffected: there the window is 15 real
+        // minutes.
         Long grace = scaleMs(900000L)
+        if (simActive() && grace < 30000L) grace = 30000L
         Boolean rainedDuring = (rainRise != null && rainRise >= t0 - grace && rainRise <= peakMs + grace)
         Boolean rainingNow = ((state.lastRaining ?: "false") == "true")
         if (rainedDuring || rainingNow) {
