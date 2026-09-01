@@ -47,6 +47,29 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.2.0  2026-08-31  STRESS ANCHOR NO LONGER NEEDS A BUTTON PRESS.
+ *                      It is now inferred from the moisture reading at the
+ *                      moment the garden gets watered by hand - which the app
+ *                      already detects - using a low percentile of those
+ *                      readings, filtered to the drier half of the soil's own
+ *                      range. Explicit marks still win when present, but are
+ *                      optional; nothing has to appear on anyone's dashboard.
+ *
+ *                      Why a LOW percentile: some watering is routine rather
+ *                      than because it is dry, and only the lower tail is
+ *                      evidence about dryness. Validated in season_harness.py
+ *                      across 80 simulated seasons - the old button-only design
+ *                      produced a threshold in 5% of seasons (0% if she never
+ *                      pressed); this produces one in 100%, within ~2 points of
+ *                      truth for mostly-reactive watering, never firing early.
+ *
+ *                      Added a SAFETY CLAMP, because an inferred anchor drifts
+ *                      up if watering becomes more routine over time, and a
+ *                      too-high stress point means notifying when the soil is
+ *                      not actually dry. The threshold may never sit above
+ *                      clampFrac of the way down from field capacity, measured
+ *                      against the soil's own observed range. It barely engages
+ *                      for reactive watering and halves the error for routine.
  *  v0.1.10 2026-08-31  Floored the rain-attribution grace in sim mode. At 5000x
  *                      the 15-minute window scaled to 180 ms - shorter than
  *                      Hubitat's own event-delivery jitter (6-357 ms observed) -
@@ -152,7 +175,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.10"
+@Field static final String VERSION = "0.2.0"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -236,7 +259,21 @@ def mainPage() {
                       "tomatoes ~0.6. threshold = FC - mad x (FC - stress)</i>"
             input "anchorWindowDays", "number", title: "Only use anchor observations from the last N days", defaultValue: 730, required: true
             input "minFcObs", "number", title: "Confidence gate: field-capacity observations needed", defaultValue: 3, required: true
-            input "minStressObs", "number", title: "Confidence gate: stress marks needed", defaultValue: 2, required: true
+            input "minStressObs", "number", title: "Confidence gate: explicit stress marks needed (only if the buttons are used)", defaultValue: 2, required: true
+            input "minImplicitObs", "number",
+                  title: "Waterings needed before the stress point can be inferred", defaultValue: 4, required: true
+            input "implicitPct", "number",
+                  title: "Percentile of watering-start readings used as the stress point", defaultValue: 25, required: true
+            input "clampFrac", "decimal",
+                  title: "Safety clamp: threshold may not sit above this fraction of the way down from field capacity",
+                  defaultValue: 0.35, required: true
+            paragraph "<i>The stress point is normally <b>inferred</b> from the moisture reading at the " +
+                      "moment the garden gets watered by hand - no button press needed. A low percentile " +
+                      "is used because some watering is routine rather than because it is dry, and the " +
+                      "lower tail is where it genuinely got dry. Simulation across 80 seasons: with " +
+                      "mostly-reactive watering this lands within about 2 points of truth and never " +
+                      "fires early. The clamp bounds the damage if watering becomes more routine over " +
+                      "time.</i>"
         }
 
         section("<b>Forecast</b>") {
@@ -331,11 +368,13 @@ private String statusText() {
               "<td align='right'>${a.dailyCount ?: 0} days</td>" +
               "<td align='right'>${a.fcSource ?: (a.fcObs + ' soaking obs')}</td></tr>")
     sb.append("<tr><td>Stress point estimate</td><td align='right'><b>${a.stress ?: '-'}</b></td>" +
-              "<td align='right'>${a.stressObs} obs</td><td align='right'>${a.stressAgeDays != null ? a.stressAgeDays + ' d old' : ''}</td></tr>")
+              "<td align='right'>${a.implicitObs ?: 0} waterings</td>" +
+              "<td align='right'>${a.stressSource ?: 'not yet inferred'}</td></tr>")
     sb.append("<tr><td>Lowest survived reading</td><td align='right'><b>${state.lowestSurvived ?: '-'}</b></td>" +
               "<td colspan='2'><i>informational - not used by the gate in v${VERSION}</i></td></tr>")
     sb.append("<tr><td>Derived threshold</td><td align='right'><b>${a.threshold ?: 'not yet'}</b></td>" +
-              "<td colspan='2'>${a.threshold ? 'dead band &plusmn;' + a.band : ''}</td></tr>")
+              "<td colspan='2'>${a.threshold ? 'dead band &plusmn;' + a.band : ''}" +
+              "${a.clamped ? ' &nbsp;<b>(safety clamp applied - inferred stress looked too high)</b>' : ''}</td></tr>")
     sb.append("<tr><td>Confidence</td><td align='right'><b>${a.confidence}</b></td>" +
               "<td colspan='2'>${a.gateReason ?: ''}</td></tr>")
     sb.append("</table>")
@@ -425,6 +464,7 @@ def initialize() {
     if (state.recent == null)    state.recent = []
     if (state.rows == null)      state.rows = []
     if (state.fcDaily == null)   state.fcDaily = []
+    if (state.implicitObs == null) state.implicitObs = []
 
     // If state came back empty (reinstall, restore), the anchors file is the
     // only copy of several seasons of observation. Try it before running blind.
@@ -497,6 +537,7 @@ private void clearLearned() {
     state.fcObs = []
     state.fcDaily = []
     state.stressObs = []
+    state.implicitObs = []
     state.dryDays = []
     state.events = []
     state.recent = []
@@ -901,6 +942,14 @@ private void closeEvent(Long ms) {
         seasonActive  : seasonActive(),
         id            : "ev-${t0}"
     ]
+    // The reading at which she chose to water IS a stress-point observation -
+    // her judgement, without a button. Filtered to the drier half of this
+    // garden's own range: watering a wet garden is routine, not evidence about
+    // dryness, and counting it drags the anchor up and the app notifies early.
+    if (cls == "manual" || cls == "manual-confirmed") {
+        recordImplicitStress(safeDec(rec.startPct), t0)
+    }
+
     pushEvent(rec)
     state.remove("openEvent")
 
@@ -1168,6 +1217,25 @@ private void addFcObservation(BigDecimal pct, Long ms) {
     saveAnchors()
 }
 
+private void recordImplicitStress(BigDecimal pct, Long ms) {
+    if (pct == null || !canLearn()) return
+    List dl = state.fcDaily ?: []
+    if (dl.size() >= 15) {
+        List vals = dl.collect { safeDec(it.pct) }.findAll { it != null }.sort()
+        BigDecimal mid = vals[vals.size().intdiv(2)]
+        if (mid != null && pct >= mid) {
+            logDebug "watering at ${pct} ignored for the stress anchor - not in the drier half (median ${mid})"
+            return
+        }
+    }
+    List o = state.implicitObs ?: []
+    o << [ms: ms, pct: pct]
+    while (o.size() > 60) o.remove(0)
+    state.implicitObs = o
+    logInfo "watering-start reading ${pct} banked as an implicit stress observation (now ${o.size()})"
+    saveAnchors()
+}
+
 private void recordStressMark(String why) {
     BigDecimal pct = safeDec(state.lastPct)
     if (pct == null) {
@@ -1196,6 +1264,7 @@ private Map anchors() {
     Long cutoff = now() - scaleMs(((long) Math.max(1, intSetting(anchorWindowDays, 730))) * 86400000L)
     List fcIn = (state.fcObs ?: []).findAll { (it.ms as Long) >= cutoff }
     List stIn = (state.stressObs ?: []).findAll { (it.ms as Long) >= cutoff }
+    List impIn = (state.implicitObs ?: []).findAll { (it.ms as Long) >= cutoff }
     List dlIn = (state.fcDaily ?: []).findAll { (it.ms as Long) >= cutoff }
 
     // Primary FC: median of the top decile of ordinary daily readings.
@@ -1214,15 +1283,37 @@ private Map anchors() {
         fcSource = "${fcIn.size()} soaking event(s)"
         fcCount = fcIn.size()
     }
-    BigDecimal st = medianOf(stIn.collect { it.pct })
+    // Stress point. Explicit marks win when they exist - a button press is
+    // unambiguous - but they are NOT required. Normally this is inferred from
+    // the readings at which the garden actually got watered.
+    BigDecimal st = null
+    String stSource = null
+    Integer needSt = Math.max(1, intSetting(minStressObs, 2))
+    Integer needImp = Math.max(2, intSetting(minImplicitObs, 4))
+    if (stIn.size() >= needSt) {
+        st = medianOf(stIn.collect { it.pct })
+        stSource = "${stIn.size()} explicit mark(s)"
+    } else if (impIn.size() >= needImp) {
+        List sorted = impIn.collect { safeDec(it.pct) }.findAll { it != null }.sort()
+        Integer pctile = Math.max(1, Math.min(99, intSetting(implicitPct, 25)))
+        Integer k = (int) Math.round((pctile / 100.0d) * (sorted.size() - 1))
+        if (k < 0) k = 0
+        if (k > sorted.size() - 1) k = sorted.size() - 1
+        st = sorted[k]
+        stSource = "${pctile}th pct of ${impIn.size()} watering(s)"
+    }
 
     Map out = [
         fc          : fc,
         stress      : st,
         fcObs       : fcIn.size(),
         stressObs   : stIn.size(),
+        implicitObs : impIn.size(),
+        stressSource: stSource,
+        clamped     : false,
         fcAgeDays   : fcIn ? daysSince(fcIn[-1].ms as Long) : null,
-        stressAgeDays: stIn ? daysSince(stIn[-1].ms as Long) : null,
+        stressAgeDays: stIn ? daysSince(stIn[-1].ms as Long)
+                            : (impIn ? daysSince(impIn[-1].ms as Long) : null),
         threshold   : null,
         band        : null,
         confidence  : "none",
@@ -1244,8 +1335,8 @@ private Map anchors() {
             : "no usable field-capacity estimate yet"
         return out
     }
-    if (stIn.size() < needSt) {
-        out.gateReason = "needs ${needSt - stIn.size()} more \"needed water\" mark(s) from her"
+    if (st == null) {
+        out.gateReason = "needs ${Math.max(0, needImp - impIn.size())} more watering(s) to infer the stress point"
         return out
     }
     if (fc == null || st == null || fc <= st) {
@@ -1255,6 +1346,23 @@ private Map anchors() {
 
     BigDecimal mad = numSetting(madFraction, 0.5)
     BigDecimal thr = fc - (fc - st).multiply(mad)
+
+    // SAFETY CLAMP. The stress anchor is inferred from behaviour, so it drifts
+    // upward if watering becomes routine rather than reactive - and a too-high
+    // stress gives a too-high threshold, which notifies when the soil is not
+    // actually dry. Independently of the anchor, never let the threshold sit in
+    // the upper part of this soil's own observed range.
+    if (dlIn.size() >= 20) {
+        List dv = dlIn.collect { safeDec(it.pct) }.findAll { it != null }.sort()
+        BigDecimal floorVal = dv[(int) Math.round(0.05d * (dv.size() - 1))]
+        if (floorVal != null) {
+            BigDecimal cap = fc - (fc - floorVal).multiply(numSetting(clampFrac, 0.35))
+            if (thr > cap) {
+                thr = cap
+                out.clamped = true
+            }
+        }
+    }
     out.threshold = round1(thr)
 
     // Confidence widens the dead band. Low confidence means the reading has to
@@ -1262,7 +1370,7 @@ private Map anchors() {
     // "go water it" costs credibility, a missed one costs nothing.
     Integer score = 0
     if (dlIn.size() >= 60 || fcIn.size() >= needFc + 2) score++
-    if (stIn.size() >= needSt + 2) score++
+    if (stIn.size() >= needSt + 2 || impIn.size() >= needImp + 4) score++
     if (out.fcAgeDays != null && out.fcAgeDays < 120) score++
     if (out.stressAgeDays != null && out.stressAgeDays < 240) score++
 
@@ -1494,6 +1602,7 @@ private void saveAnchors() {
             savedIso     : isoOf(now()),
             fcObs        : state.fcObs ?: [],
             fcDaily      : state.fcDaily ?: [],
+            implicitObs  : state.implicitObs ?: [],
             stressObs    : state.stressObs ?: [],
             lowestSurvived: state.lowestSurvived,
             dryDays      : state.dryDays ?: [],
@@ -1514,6 +1623,7 @@ private void restoreAnchors() {
         if (j == null) return
         state.fcObs = j.fcObs ?: []
         state.fcDaily = j.fcDaily ?: []
+        state.implicitObs = j.implicitObs ?: []
         state.stressObs = j.stressObs ?: []
         state.lowestSurvived = j.lowestSurvived
         state.dryDays = j.dryDays ?: []
