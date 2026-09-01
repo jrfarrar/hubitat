@@ -47,6 +47,23 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.2.2  2026-09-01  Fix found on the real install, within minutes of the
+ *                      probe being connected: the app had already banked an
+ *                      implicit stress observation of 0%.
+ *
+ *                      When a soil device is first attached its reading is 0
+ *                      until real data arrives. The jump from 0 to the first
+ *                      genuine value (44%) is a large rise with no rain, so it
+ *                      was classified as a manual watering and 0 was recorded
+ *                      as "the moisture at which this garden gets watered" -
+ *                      which is the anchor the whole threshold rests on.
+ *
+ *                      Two guards: checkRise will not open an event whose
+ *                      baseline is at or below the probe-out level, and
+ *                      recordImplicitStress refuses such a reading outright and
+ *                      says so loudly. The simulator could not have produced
+ *                      this - the sim device always starts at a sane value, so
+ *                      only attaching a real sensor exposes it.
  *  v0.2.1  2026-08-31  Fix: three locals were declared twice inside anchors()
  *                      (needSt, sorted, k), which Groovy refuses to compile.
  *                      Found by J.R. on install for the first, then by a new
@@ -182,7 +199,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.2.1"
+@Field static final String VERSION = "0.2.2"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -860,6 +877,17 @@ private void checkRise(Long ms, BigDecimal pct) {
     r.each { if (safeDec(it.pct) == lowVal) lowest = it }   // last match wins
     if (lowest == null) return
     BigDecimal rise = pct - safeDec(lowest.pct)
+    // A rise up from a probe-out / no-data baseline is not a wetting event. When
+    // the device is first attached the reading is 0 until real data arrives, and
+    // the jump to the first genuine value looks exactly like a large watering -
+    // which then banks a stress observation at 0%. Seen on the real install; the
+    // simulator could never produce it because the sim device always starts sane.
+    BigDecimal lowPct = safeDec(lowest.pct)
+    if (lowPct != null && lowPct <= numSetting(outOfGroundPct, 6)) {
+        logDebug "ignoring a rise from ${lowPct} - baseline is at or below the probe-out level, " +
+                 "so this is the sensor coming online rather than water going in"
+        return
+    }
     if (rise >= numSetting(riseThreshold, 4)) {
         state.openEvent = [
             t0         : lowest.ms,
@@ -1226,6 +1254,12 @@ private void addFcObservation(BigDecimal pct, Long ms) {
 
 private void recordImplicitStress(BigDecimal pct, Long ms) {
     if (pct == null || !canLearn()) return
+    // Never anchor on a reading the probe-out guard would call "not in soil".
+    if (pct <= numSetting(outOfGroundPct, 6)) {
+        log.warn "${app.label}: refusing to bank ${pct} as a stress observation - at or below " +
+                 "the probe-out level, so it is not a real watering baseline"
+        return
+    }
     List dl = state.fcDaily ?: []
     if (dl.size() >= 15) {
         List vals = dl.collect { safeDec(it.pct) }.findAll { it != null }.sort()
