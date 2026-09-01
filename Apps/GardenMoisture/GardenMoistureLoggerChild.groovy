@@ -47,6 +47,13 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.2.1  2026-08-31  Fix: three locals were declared twice inside anchors()
+ *                      (needSt, sorted, k), which Groovy refuses to compile.
+ *                      Found by J.R. on install for the first, then by a new
+ *                      duplicate-local checker for the other two - the same
+ *                      structural pass that had been verifying brace balance
+ *                      and handler names all along could not see this class of
+ *                      error, and now can.
  *  v0.2.0  2026-08-31  STRESS ANCHOR NO LONGER NEEDS A BUTTON PRESS.
  *                      It is now inferred from the moisture reading at the
  *                      moment the garden gets watered by hand - which the app
@@ -175,7 +182,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.2.0"
+@Field static final String VERSION = "0.2.1"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -1294,12 +1301,14 @@ private Map anchors() {
         st = medianOf(stIn.collect { it.pct })
         stSource = "${stIn.size()} explicit mark(s)"
     } else if (impIn.size() >= needImp) {
-        List sorted = impIn.collect { safeDec(it.pct) }.findAll { it != null }.sort()
+        // Distinct names: 'sorted' and 'k' are already used by the field-capacity
+        // block further down this same method.
+        List impSorted = impIn.collect { safeDec(it.pct) }.findAll { it != null }.sort()
         Integer pctile = Math.max(1, Math.min(99, intSetting(implicitPct, 25)))
-        Integer k = (int) Math.round((pctile / 100.0d) * (sorted.size() - 1))
-        if (k < 0) k = 0
-        if (k > sorted.size() - 1) k = sorted.size() - 1
-        st = sorted[k]
+        Integer impIdx = (int) Math.round((pctile / 100.0d) * (impSorted.size() - 1))
+        if (impIdx < 0) impIdx = 0
+        if (impIdx > impSorted.size() - 1) impIdx = impSorted.size() - 1
+        st = impSorted[impIdx]
         stSource = "${pctile}th pct of ${impIn.size()} watering(s)"
     }
 
@@ -1322,8 +1331,9 @@ private Map anchors() {
         dailyCount  : 0
     ]
 
+    // needSt and needImp are already declared above, where the stress source is
+    // chosen. Re-declaring needSt here is what broke the v0.2.0 compile.
     Integer needFc = Math.max(1, intSetting(minFcObs, 3))
-    Integer needSt = Math.max(1, intSetting(minStressObs, 2))
 
     out.fcSource = fcSource
     out.dailyCount = dlIn.size()
