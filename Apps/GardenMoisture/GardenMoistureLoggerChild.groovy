@@ -47,6 +47,32 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.3.1  2026-09-02  Fix: rainEvent is not monotonic, and closeEvent
+ *                      assumed it was.
+ *
+ *                      Two storms hit within three hours. Between them the
+ *                      WS90 started a new gauge "event" and reset its counter
+ *                      to 0 - caught in the CSV at 09:29, dropping 0.56 to
+ *                      0.05 between consecutive samples. closeEvent read that
+ *                      as the counter running backwards and fell through to
+ *                      rainDaily, attributing the WHOLE DAY (0.83 in, which
+ *                      included the earlier storm's 0.50 in) to the second
+ *                      event alone. The recorded figure was roughly triple the
+ *                      truth and looked entirely plausible.
+ *
+ *                      rainDaily is monotonic within a day, so it is now the
+ *                      primary source; rainEvent is the fallback for an event
+ *                      spanning midnight; and if both counters go backwards the
+ *                      result is null with a warning naming the reason, rather
+ *                      than a wrong number that reads as real. rainSource on
+ *                      each event record says which path produced the value.
+ *
+ *                      Third time the rain accounting has been wrong, and each
+ *                      time the symptom was a plausible number rather than an
+ *                      error. Worth stating the general rule: a counter read
+ *                      from a device is only monotonic if the DEVICE promises
+ *                      it is, and a fallback that silently substitutes a
+ *                      different quantity is worse than no value at all.
  *  v0.3.0  2026-09-02  Recording changes only - no new gates. J.R.'s call
  *                      after the first real rain: "skip putting in any gates
  *                      right now and just do pure data recording and analysis."
@@ -223,7 +249,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.3.0"
+@Field static final String VERSION = "0.3.1"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -818,7 +844,8 @@ def sampleTick() {
 
 private void pushRecent(Long ms, BigDecimal pct) {
     List r = state.recent ?: []
-    r << [ms: ms, pct: pct, ad: state.lastAD, rainEv: state.lastRainEvent]
+    r << [ms: ms, pct: pct, ad: state.lastAD, rainEv: state.lastRainEvent,
+          rainDy: state.lastRainDaily]
     Integer windowMin = intSetting(riseWindowMin, 45)
     if (simActive()) {
         // A time-based window is meaningless in simulation: readings arrive
@@ -950,7 +977,8 @@ private void checkRise(Long ms, BigDecimal pct) {
             // event-open time this was already post-rain, so before == after
             // and every event reported 0.0 inches - which would have silently
             // emptied the rain-efficiency data for a whole season.
-            rainAtT0   : lowest.rainEv,
+            rainAtT0     : lowest.rainEv,
+            rainDailyAtT0: lowest.rainDy,
             rainRateMax: state.lastRainRate
         ]
         logInfo "wetting event opened - up ${rise} points from ${lowest.pct} since ${isoOf(lowest.ms)}"
@@ -971,6 +999,7 @@ private void closeEvent(Long ms) {
                           (state.lastManualWaterMs as Long) >= t0 - scaleMs(3600000L))
     String cls = "manual"
     BigDecimal rainIn = null
+    String rainSource = null
     if (rainDev) {
         Long rainRise = state.lastRainRiseMs as Long
         // Scaled: unscaled, this 15-minute grace spans whole simulated runs, so
@@ -989,10 +1018,36 @@ private void closeEvent(Long ms) {
         Boolean rainingNow = ((state.lastRaining ?: "false") == "true")
         if (rainedDuring || rainingNow) {
             cls = "rain"
-            BigDecimal before = safeDec(oe.rainAtT0)
-            BigDecimal after = safeDec(state.lastRainEvent)
-            if (before != null && after != null && after >= before) rainIn = after - before
-            else rainIn = safeDec(state.lastRainDaily)
+            // rainEvent is NOT monotonic. The WS90 starts a new "event" after a
+            // dry gap and resets the counter to 0 - observed 2026-09-02 09:29,
+            // mid-storm, dropping 0.56 -> 0.05 between two samples. The old code
+            // read that as the counter going backwards and fell through to
+            // rainDaily, which attributed the ENTIRE DAY's rain (0.83 in,
+            // including a previous storm's 0.50) to a single event.
+            //
+            // rainDaily IS monotonic within a day, so it is the primary source
+            // now. rainEvent is the fallback, and both failing yields null
+            // rather than a plausible-looking wrong number. rainSource records
+            // which path was taken so the value is auditable afterwards.
+            BigDecimal dBefore = safeDec(oe.rainDailyAtT0)
+            BigDecimal dAfter  = safeDec(state.lastRainDaily)
+            BigDecimal eBefore = safeDec(oe.rainAtT0)
+            BigDecimal eAfter  = safeDec(state.lastRainEvent)
+            if (dBefore != null && dAfter != null && dAfter >= dBefore) {
+                rainIn = dAfter - dBefore
+                rainSource = "daily-delta"
+            } else if (eBefore != null && eAfter != null && eAfter >= eBefore) {
+                // Crossed midnight: rainDaily reset but the gauge's event did not.
+                rainIn = eAfter - eBefore
+                rainSource = "event-delta"
+            } else {
+                rainIn = null
+                rainSource = "unavailable"
+                log.warn "${app.label}: cannot attribute rainfall to this event - " +
+                         "rainDaily ${dBefore}->${dAfter}, rainEvent ${eBefore}->${eAfter}. " +
+                         "Both counters went backwards (a midnight crossing during a " +
+                         "gauge event reset). Recording null rather than a wrong number."
+            }
             // A rise that began before any rain, then got rained on, cannot be
             // attributed cleanly. Flag it rather than guess - same discipline as
             // possibleMergedRun in the washer app.
@@ -1022,6 +1077,7 @@ private void closeEvent(Long ms) {
         magnitude     : magnitude,
         riseRatePerHr : ratePerHr,
         rainInches    : rainIn,
+        rainSource    : rainSource,
         rainRateMax   : oe.rainRateMax,
         classification: cls,
         frozen        : freezing(),
