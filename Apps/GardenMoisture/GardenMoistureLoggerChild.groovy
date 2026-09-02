@@ -32,7 +32,7 @@
  *      built to be conservative later - hence the confidence gate.
  *    - Daily CSVs pruned at years, not the 30-file window used by
  *      LaundryCycleLogger. If this takes seasons to dial in, the history is the
- *      asset. ~9 KB/day, ~3 MB/year.
+ *      asset. ~23 KB/day at 5-minute sampling, ~8 MB/year retained.
  *      Daily rather than monthly on purpose: a month buffer would either sit in
  *      state (hundreds of KB re-serialised on every sample) or live in a @Field
  *      that a reboot wipes, which would then truncate the month's file on the
@@ -47,6 +47,30 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.3.0  2026-09-02  Recording changes only - no new gates. J.R.'s call
+ *                      after the first real rain: "skip putting in any gates
+ *                      right now and just do pure data recording and analysis."
+ *
+ *                      Rationale: gravity drainage rate depends on how far
+ *                      above field capacity the soil starts, so "time to
+ *                      plateau" is not a constant and any fixed drainage gate
+ *                      would be wrong in both directions. Record first, derive
+ *                      the rule from several events of different sizes later.
+ *
+ *                      (a) Sample interval default 15 -> 5 min. Resolution is
+ *                          the ONLY thing that cannot be recovered afterwards;
+ *                          every other threshold in this app merely shapes
+ *                          derived anchors, which can be recomputed offline
+ *                          from the raw CSV. Observed on 2026-09-02: the
+ *                          gateway read 70% while the app still held 51%.
+ *                      (b) rainEvent added to the CSV. rainRate and rainDaily
+ *                          were logged but not rainEvent - the per-event
+ *                          accumulator, which is what rainAtT0 uses and the
+ *                          only clean way to pair rainfall with a rise.
+ *                          rainDaily cannot substitute: it resets at midnight
+ *                          and cannot separate two events in one day.
+ *                      (c) Row cap 400 -> 900 to suit 5-minute sampling.
+ *                      (d) Forecast accuracy log - see flushForecastLog().
  *  v0.2.2  2026-09-01  Fix found on the real install, within minutes of the
  *                      probe being connected: the app had already banked an
  *                      implicit stress observation of 0%.
@@ -199,7 +223,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.2.2"
+@Field static final String VERSION = "0.3.0"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -261,7 +285,7 @@ def mainPage() {
         }
 
         section("<b>Sampling</b>") {
-            input "sampleMin", "enum", title: "Sample interval", defaultValue: "15",
+            input "sampleMin", "enum", title: "Sample interval", defaultValue: "5",
                   options: ["5": "5 minutes", "10": "10 minutes", "15": "15 minutes", "30": "30 minutes"], required: true
             input "freezeGuardF", "decimal", title: "Suspend learning when outdoor temperature is below (°F)", defaultValue: 36, required: true
             paragraph "<i>Frozen soil reads dry - a capacitive probe measures dielectric constant, " +
@@ -517,7 +541,7 @@ def initialize() {
         state.seasonState = seasonSwitch.currentValue("switch")
     }
 
-    Integer mins = (sampleMin ?: "15") as Integer
+    Integer mins = (sampleMin ?: "5") as Integer
     switch (mins) {
         case 5:  runEvery5Minutes("sampleTick");  break
         case 10: runEvery10Minutes("sampleTick"); break
@@ -749,12 +773,36 @@ def sampleTick() {
     Long ms = now()
     state.lastPct = pct
     state.lastSampleMs = ms
-    state.lastAD = safeDec(soil?.currentValue("soilAD")) ?: state.lastAD
-    state.lastBattery = safeDec(soil?.currentValue("battery")) ?: state.lastBattery
+    // Explicit null tests, NOT elvis: BigDecimal ZERO is falsy under Groovy
+    // truth, so `?: previous` silently discards a legitimate reading of 0 and
+    // pins the value at the last non-zero one forever. A dead cell reporting
+    // battery 0 would log the last good value indefinitely.
+    BigDecimal adNow = safeDec(soil?.currentValue("soilAD"))
+    if (adNow != null) state.lastAD = adNow
+    BigDecimal battNow = safeDec(soil?.currentValue("battery"))
+    if (battNow != null) state.lastBattery = battNow
     if (rainDev) {
         state.lastRaining   = rainDev.currentValue("raining")?.toString() ?: state.lastRaining
         state.lastRainDaily = safeDec(rainDev.currentValue("rainDaily"))
         state.lastRainRate  = safeDec(rainDev.currentValue("rainRate"))
+        // Same trap, and it matters more here: rainEvent legitimately reads 0
+        // between storms and on every fresh install. A null or stale-high value
+        // makes closeEvent fall back to the WHOLE DAY's rain instead of the
+        // event's, which is the exact number this column exists to record.
+        BigDecimal reNow = safeDec(rainDev.currentValue("rainEvent"))
+        if (reNow != null) state.lastRainEvent = reNow
+        // rainDaily resets at midnight but dayRollover does not run until 00:05,
+        // by which time the day's total is already gone. So the running maximum
+        // is banked against the day it belongs to BEFORE it can be overwritten.
+        // Order matters: roll the day first, then take the maxima.
+        rollRainDay()
+        BigDecimal rdNow = safeDec(state.lastRainDaily)
+        BigDecimal rdMax = safeDec(state.rainDailyMax)
+        if (rdNow != null && (rdMax == null || rdNow > rdMax)) state.rainDailyMax = rdNow
+        BigDecimal rrNow = safeDec(state.lastRainRate)
+        BigDecimal rrMax = safeDec(state.rainRateMaxToday)
+        if (rrNow != null && (rrMax == null || rrNow > rrMax)) state.rainRateMaxToday = rrNow
+        noteForecastActual()
     }
     if (tempDev) state.lastTempF = safeDec(tempDev.currentValue("temperature"))
 
@@ -764,7 +812,7 @@ def sampleTick() {
     checkOutOfGround(pct)
     trackLowestSurvived(pct)
     appendRow(ms, pct, null)
-    flush()
+    flushThrottled()
     backfillFollowUps()
 }
 
@@ -815,6 +863,7 @@ private void appendRow(Long ms, BigDecimal pct, String note) {
         batt    : state.lastBattery,
         rate    : state.lastRainRate,
         daily   : state.lastRainDaily,
+        event   : state.lastRainEvent,
         raining : state.lastRaining,
         tempF   : state.lastTempF,
         et0     : state.forecast?.et0Today,
@@ -824,11 +873,13 @@ private void appendRow(Long ms, BigDecimal pct, String note) {
         note    : note
     ]
     // Guard against a runaway event stream filling state on a bad day.
-    while (rows.size() > 400) rows.remove(0)
+    while (rows.size() > 900) rows.remove(0)
     state.rows = rows
 }
 
 def dayRollover() {
+    rollRainDay()
+    flushForecastLog()
     recordDailyLevel()
     computeDryDown()
     flush()
@@ -1559,18 +1610,143 @@ def forecastCallback(resp, data) {
             et0Today   : et0s ? safeDec(et0s[0]) : null,
             et0Tomorrow: (et0s && et0s.size() > 1) ? safeDec(et0s[1]) : null
         ]
+        // Bank what was predicted so it can be scored against what actually falls.
+        fcstUpsert(dayKey(now()), [
+            issued  : state.forecast.fetchedIso,
+            sameFcst: state.forecast.rainToday,
+            prob    : state.forecast.probToday,
+            et0Fcst : state.forecast.et0Today
+        ])
+        // Only the FIRST prediction for a date counts as the day-ahead one.
+        // updated() fires runIn(30,"fetchForecastNow") on every Done press, so
+        // without this an evening Done would overwrite a genuine ~24 h-ahead
+        // forecast with one issued 4 h before midnight - biasing the log's
+        // measured skill optimistically, with nothing in the row to detect it.
+        String aheadDay = dayKey(now() + 86400000L)
+        Map aheadRec = fcstLog().find { it.day == aheadDay }
+        if (aheadRec == null || aheadRec.aheadFcst == null) {
+            fcstUpsert(aheadDay, [
+                aheadFcst  : state.forecast.rainTomorrow,
+                aheadIssued: state.forecast.fetchedIso
+            ])
+        }
         logDebug "forecast: ${state.forecast.rain48} in over 48 h, ET0 today ${state.forecast.et0Today}"
     } catch (ex) {
         log.warn "${app.label}: forecast parse failed - ${ex.message}"
     }
 }
 
+/* ------------------------------------------- forecast accuracy log -- */
+
+/**
+ * One row per day: what was forecast, against what actually fell.
+ *
+ * Prompted by 2026-09-02. Open-Meteo called 0.00 in for the day and put 0.52 in
+ * on tomorrow; 0.46 in fell that morning. The 48-hour total was close - the
+ * daily split was inverted. That distinction decides whether a forecast may
+ * ever be allowed to suppress a notification, and it cannot be settled by
+ * reasoning about it, only by a season of paired forecast/actual values.
+ *
+ * Two errors are tracked separately because they are not the same error:
+ *   sameFcst  - issued that morning for that day
+ *   aheadFcst - issued ~24 h earlier for the same date
+ * Costs nothing to collect and answers the question with evidence.
+ */
+private List fcstLog() { return (state.fcstLog ?: []) as List }
+
+private void fcstUpsert(String day, Map fields) {
+    if (!day) return
+    if (fields.every { fk, fv -> fv == null }) return   // nothing to record yet
+    List fl = fcstLog()
+    Map rec = fl.find { it.day == day }
+    if (rec == null) {
+        rec = [day: day]
+        fl << rec
+    }
+    fields.each { fk, fv -> if (fv != null) rec[fk] = fv }
+    fl = fl.sort { it.day }
+    while (fl.size() > 400) fl.remove(0)
+    // Reassign rather than mutate in place: nested mutation inside state is not
+    // reliably persisted by Hubitat.
+    state.fcstLog = fl
+}
+
+/**
+ * Bank the accumulated daily rain against the day it belongs to, at the moment
+ * the date changes. Must be called BEFORE the running maxima are updated,
+ * otherwise the new day's reset-to-zero reading is compared against yesterday's
+ * maximum and yesterday's total leaks forward.
+ */
+private void rollRainDay() {
+    String dk = dayKey(now())
+    if (state.rainDayKey == dk) return
+    if (state.rainDayKey) {
+        fcstUpsert(state.rainDayKey as String, [
+            actual : safeDec(state.rainDailyMax),
+            rateMax: safeDec(state.rainRateMaxToday)
+        ])
+    }
+    state.rainDayKey       = dk
+    state.rainDailyMax     = null
+    state.rainRateMaxToday = null
+}
+
+private void noteForecastActual() {
+    fcstUpsert(dayKey(now()), [
+        actual : safeDec(state.rainDailyMax),
+        rateMax: safeDec(state.rainRateMaxToday)
+    ])
+}
+
+private void flushForecastLog() {
+    if (writeFiles == false) return
+    List fl = fcstLog()
+    if (!fl) return
+    try {
+        StringBuilder fb = new StringBuilder()
+        fb.append("# garden-moisture-logger v${VERSION} forecast accuracy log - app=${app.label}\n")
+        fb.append("# aheadFcstIn  = forecast issued about 24 h earlier for this date\n")
+        fb.append("# sameDayFcstIn = forecast issued that morning for the same date\n")
+        fb.append("# actualIn = observed total for the date (peak rainDaily before the midnight reset)\n")
+        fb.append("date,issuedIso,aheadIssuedIso,aheadFcstIn,sameDayFcstIn,probPct,et0FcstIn,actualIn,peakRateInHr\n")
+        fl.each { r ->
+            fb.append("${r.day},${nz(r.issued)},${nz(r.aheadIssued)},${nz(r.aheadFcst)},${nz(r.sameFcst)},")
+            fb.append("${nz(r.prob)},${nz(r.et0Fcst)},${nz(r.actual)},${nz(r.rateMax)}\n")
+        }
+        uploadHubFile("${filePrefix()}forecast.csv", fb.toString().getBytes("UTF-8"))
+        logDebug "wrote forecast accuracy log (${fl.size()} days)"
+    } catch (ex) {
+        log.warn "${app.label}: forecast log write failed - ${ex.message}"
+    }
+}
+
 /* ------------------------------------------------------------ file output */
 
 /**
- * Rewrites the whole of today's file. Cheap at ~9 KB, and it means a reboot
+ * Rewrites the whole of today's file (~23 KB at 5-minute sampling), so it is
+ * called via flushThrottled() from the sampler. It means a reboot
  * loses nothing and there is no append/recovery path that can corrupt history.
  */
+/**
+ * flush() rewrites the ENTIRE day's file each call, so write volume grows with
+ * the SQUARE of the sample count: at 5-minute sampling that is 288 whole-file
+ * writes of a file ending near 23 KB - about 3.3 MB/day, against 0.4 MB/day at
+ * the old 15-minute rate, or roughly 1.2 GB/year onto the hub's eMMC.
+ *
+ * state.rows is the source of truth and survives a reboot, so the FILE is
+ * allowed to lag: a skipped flush costs at most a couple of samples of file
+ * content and never any recorded data. Marker rows, event closes and the daily
+ * rollover all still call flush() directly, so nothing important waits.
+ */
+private void flushThrottled() {
+    Integer fc = (state.flushCount ?: 0) + 1
+    state.flushCount = fc
+    // Every third sample restores the old once-per-15-minutes write rate while
+    // keeping three times the data. Simulation always writes, so the suite sees
+    // every row immediately.
+    if (fc % 3 == 0 || simActive()) flush()
+}
+
 private void flush() {
     if (writeFiles == false) return
     List rows = state.rows
@@ -1579,12 +1755,12 @@ private void flush() {
         String fname = "${filePrefix()}${state.dayKey}.csv"
         StringBuilder sb = new StringBuilder()
         sb.append("# garden-moisture-logger v${VERSION} app=${app.label} device=${soil?.displayName}\n")
-        sb.append("# day=${state.dayKey} sampleMin=${sampleMin ?: 15}\n")
+        sb.append("# day=${state.dayKey} sampleMin=${sampleMin ?: 5}\n")
         sb.append("# moisturePct is the Ecowitt 'humidity' attribute - remapped capacitance, NOT volumetric water content\n")
-        sb.append("epochMs,iso,moisturePct,soilAD,battery,rainRate,rainDaily,raining,outdoorTempF,et0Today,fcstRain48h,seasonActive,frozen,note\n")
+        sb.append("epochMs,iso,moisturePct,soilAD,battery,rainRate,rainDaily,rainEvent,raining,outdoorTempF,et0Today,fcstRain48h,seasonActive,frozen,note\n")
         rows.each { r ->
             sb.append("${r.ms},${isoOf(r.ms)},${nz(r.pct)},${nz(r.ad)},${nz(r.batt)},")
-            sb.append("${nz(r.rate)},${nz(r.daily)},${nz(r.raining)},${nz(r.tempF)},")
+            sb.append("${nz(r.rate)},${nz(r.daily)},${nz(r.event)},${nz(r.raining)},${nz(r.tempF)},")
             sb.append("${nz(r.et0)},${nz(r.fcst48)},${r.season},${r.frozen},${nz(r.note)}\n")
         }
         uploadHubFile(fname, sb.toString().getBytes("UTF-8"))
