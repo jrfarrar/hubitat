@@ -1,8 +1,23 @@
 /**
- * Power Cycle Monitor v2.42 (Smart Dashboard)
+ * Power Cycle Monitor v2.43 (Smart Dashboard)
  *
  * Monitor power meters to detect cycling patterns and stuck-on failures
  * with historical tracking and trend analysis.
+ *
+ * v2.43 Changes — CYCLING NOTIFIES, AND STUCK-ON NAGS:
+ * - NEW: the cycling detector now notifies. It previously only set a switch, and the
+ *   alert itself lived in a Notifier app on another hub that watched that switch for
+ *   30 minutes. That made the switch load-bearing and left the notification text out
+ *   of this app's control -- it read "running for more than 10 minutes" when what it
+ *   actually detects is short-cycling. The alert now says what it detects, and the
+ *   switch becomes optional rather than required.
+ * - The 30-minute dwell is preserved deliberately (cyclingNotifyDelay). Notifying the
+ *   instant 3 cycles land in the window would page for every brief flurry that
+ *   resolves on its own; the old chain waited, so this waits.
+ * - NEW: Stuck-ON can re-notify on an interval until the condition clears
+ *   (stuckOnRepeatMinutes, 0 = once). Stuck-ON is the one path where a missed push
+ *   matters, because the load is still running and will keep running. Cycling and
+ *   health alerts stay one-shot.
  *
  * v2.42 Changes:
  * - NEW: Notification support. A latched switch is durable state, but it is not an
@@ -130,7 +145,18 @@ def mainPage() {
             if (settings.notifyDevice) {
                 input "notifyOnHealth", "bool", title: "Notify on equipment health alerts", defaultValue: true
                 input "notifyOnStuckOn", "bool", title: "Notify on Stuck-ON", defaultValue: true
-                paragraph "<small style='color:#666;'>One notification per distinct alert, not one per session &mdash; a latched alert that stays latched will not re-notify.</small>"
+                input "notifyOnCycling", "bool", title: "Notify on cycling detected", defaultValue: true
+                if (settings.notifyOnCycling != false) {
+                    input "cyclingNotifyDelay", "number", title: "...only if still cycling after (min)",
+                            required: false, defaultValue: 30,
+                            description: "0 notifies immediately. 30 matches the old switch-watching notifier."
+                }
+                input "stuckOnRepeatMinutes", "number", title: "Re-notify Stuck-ON every (min, 0 = once)",
+                        required: false, defaultValue: 15
+                paragraph "<small style='color:#666;'>One notification per distinct alert, not one per session &mdash; " +
+                        "a latched alert that stays latched will not re-notify. The exception is Stuck-ON, which " +
+                        "repeats on the interval above until the load actually stops, because the pump is still " +
+                        "running while you are not reading the first message.</small>"
             }
         }
 
@@ -473,6 +499,7 @@ def handleDeviceOn(currentTime, power) {
         if (state.stuckOnDetected) {
             log.warn "Stuck-ON Cleared: Device cycled off/on."
             state.stuckOnDetected = false
+            unschedule("stuckOnRepeatCheck")
             if (stuckOnAlertSwitch) stuckOnAlertSwitch.off()
         }
 
@@ -494,6 +521,7 @@ def handleDeviceOff(currentTime) {
         if (state.stuckOnDetected) {
             log.warn "Stuck-ON Cleared: pump stopped."
             state.stuckOnDetected = false
+            unschedule("stuckOnRepeatCheck")
             if (stuckOnAlertSwitch) stuckOnAlertSwitch.off()
         }
 
@@ -535,8 +563,69 @@ def checkForCyclingAlert() {
     if (state.cycleHistory.size() >= cycleCount && !state.leftOnDetected) {
         log.info "CYCLING DETECTED: ${state.cycleHistory.size()} cycles detected in ${timeWindow} min (Usage Monitor)"
         state.leftOnDetected = true
+        state.cyclingDetectedAt = now()
+        state.cyclingNotified = false
         if (cycleAlertSwitch) cycleAlertSwitch.on()
+
+        // The notification waits out a dwell rather than firing on detection. This is
+        // not caution for its own sake: the previous chain set this switch and left a
+        // Notifier on another hub to watch it for 30 minutes before pushing. Firing
+        // immediately would page for every brief flurry that settles on its own.
+        if (notifyOnCycling != false && notifyDevice) {
+            Integer dwell = (cyclingNotifyDelay == null) ? 30 : (cyclingNotifyDelay as Integer)
+            if (dwell <= 0) {
+                notifyCyclingNow()
+            } else {
+                runIn(dwell * 60, "cyclingDwellCheck", [overwrite: true])
+            }
+        }
     }
+}
+
+// Fires only if cycling is STILL latched when the dwell expires. finishSession()
+// clears state.leftOnDetected and unschedules this, so a flurry that ends quietly
+// never reaches the phone.
+def cyclingDwellCheck() {
+    if (!state.leftOnDetected) {
+        logDebug "Cycling dwell elapsed but the condition already cleared -- no notification sent"
+        return
+    }
+    notifyCyclingNow()
+}
+
+def notifyCyclingNow() {
+    if (state.cyclingNotified) return
+    state.cyclingNotified = true
+    Integer mins = 0
+    if (state.cyclingDetectedAt) {
+        mins = ((now() - (state.cyclingDetectedAt as Long)) / 60000L) as Integer
+    }
+    // Say what is actually detected. The old notifier claimed "running for more than
+    // 10 minutes", which described neither the trigger nor its own 30-minute timer.
+    sendNotify("${labelPrefix ?: powerMeter?.displayName}: SHORT-CYCLING -- " +
+            "${cycleCount}+ cycles within ${timeWindow} min" +
+            (mins > 0 ? ", still cycling ${mins} min later." : "."))
+}
+
+// Stuck-ON is the one path that repeats. A missed push elsewhere costs you a late
+// look at history; a missed Stuck-ON push means the pump is still running.
+def scheduleStuckOnRepeat() {
+    Integer every = (stuckOnRepeatMinutes == null) ? 15 : (stuckOnRepeatMinutes as Integer)
+    if (every <= 0) return
+    runIn(every * 60, "stuckOnRepeatCheck", [overwrite: true])
+}
+
+def stuckOnRepeatCheck() {
+    if (!state.stuckOnDetected || !state.deviceOn) {
+        logDebug "Stuck-ON repeat: condition cleared, not re-notifying"
+        return
+    }
+    Integer mins = 0
+    if (state.continuousOnStart) {
+        mins = ((now() - (state.continuousOnStart as Long)) / 60000L) as Integer
+    }
+    sendNotify("${labelPrefix ?: powerMeter?.displayName}: STILL STUCK ON -- ${mins} minutes and counting.")
+    scheduleStuckOnRepeat()
 }
 
 def checkStuckOn() {
@@ -558,6 +647,7 @@ def checkStuckOn() {
         if (notifyOnStuckOn != false) {
             sendNotify("${labelPrefix ?: powerMeter?.displayName}: STUCK ON for " +
                     "${String.format('%.0f', onDurationMinutes)} minutes (limit ${stuckOnTimeout}).")
+            scheduleStuckOnRepeat()
         }
 
         if (enableHistoryTracking) {
@@ -627,6 +717,14 @@ def finishSession() {
     state.offDurations = []
     state.leftOnDetected = false
     state.currentSessionWattages = []
+
+    // Clear the cycling notification state with the condition itself. Leaving a dwell
+    // scheduled past the session that raised it would fire an alert about cycling that
+    // has already stopped -- the same class of bug as the v2.40 latch that stayed on
+    // after its reason was erased.
+    state.cyclingDetectedAt = null
+    state.cyclingNotified = false
+    unschedule("cyclingDwellCheck")
 
     if (cycleAlertSwitch && cycleAlertSwitch.currentValue("switch") == "on") {
         cycleAlertSwitch.off()
