@@ -3,6 +3,14 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.4.5 - 09/03/26 - Fixed false "healthy" reporting: a retained MQTT message replayed by the broker on
+ *                      subscribe no longer counts as proof the device is alive, so a Garadget that has
+ *                      stopped responding is now detected instead of being masked by the replay.
+ *                      Watchdog now polls the device directly before forcing a reconnect, so a door that
+ *                      is simply idle is no longer reconnected every cycle. Repeated failed reconnects
+ *                      now escalate to log.error. Door commands no longer wait behind a watchdog
+ *                      reconnect, and the scheduled refresh polls before checking staleness.
+ *                      state.version is now stamped on install/update/initialize, not only on refresh.
  * 1.4.4 - 02/04/26 - Fixed connection recovery: watchdog survives reboots, detects stale connections,
  *                      explicit disconnect before reconnect, fixed cron for >59 min, added lastMessageReceived tracking
  * 1.4.3 - 11/12/25 - Code cleanup: fixed syntax error, blocking loop, null safety, variable declarations
@@ -86,14 +94,27 @@ metadata {
 
 void setVersion(){
     //state.name = "Garadget MQTT"
-    state.version = "1.4.4 - Garadget MQTT Device Handler version"
+    state.version = "1.4.5 - Garadget MQTT Device Handler version"
 }
 
 void installed() {
     log.warn "installed..."
+    setVersion()
     state.lastMessageReceived = 0
     state.reconnectAttempts = 0
+    state.trustData = true
+    state.lastSubscribeAt = 0
 }
+
+// Tuning constants, kept as plain methods to stay well inside the Hubitat sandbox.
+//
+// TRUST_TIMEOUT_MS: after a subscribe we refuse to treat an incoming message as proof the
+// device is alive, because the broker replays RETAINED messages on subscribe and those are
+// history, not life. Replays arrive in milliseconds; this long backstop only matters if
+// nothing ever polls, so that trust is eventually restored anyway.
+Long trustTimeoutMs() { return 120000L }
+// How long to wait for an answer to a direct poll before declaring the device unreachable.
+Integer probeWaitSec() { return 30 }
 
 // Parse incoming device messages to generate events
 void parse(String description) {
@@ -101,11 +122,24 @@ void parse(String description) {
     def topic = topicFull.split('/')
 
     def message = interfaces.mqtt.parseMessage(description).payload
-    
-    // Track message receipt for staleness detection
-    state.lastMessageReceived = now()
-    state.reconnectAttempts = 0
-    
+
+    // Track message receipt for staleness detection.
+    //
+    // IMPORTANT: not every inbound message proves the device is alive. When we subscribe, the
+    // broker immediately replays the RETAINED message for each topic. That payload can be hours
+    // or days old and is delivered even if the Garadget is powered off, unreachable, or publishing
+    // to a different topic. Counting it as fresh data is what made a dead door report as healthy:
+    // the watchdog would force a reconnect, the reconnect would trigger a replay, the replay would
+    // reset the clock, and the outage stayed invisible. So only refresh the clock once we have
+    // asked for data (see pollNow), or after enough time has passed that a replay is impossible.
+    Long sinceSubscribe = now() - (state.lastSubscribeAt ?: 0L)
+    if (state.trustData || sinceSubscribe > trustTimeoutMs()) {
+        state.lastMessageReceived = now()
+        state.reconnectAttempts = 0
+    } else {
+        debuglog "Ignoring retained replay ${sinceSubscribe}ms after subscribe - not proof of life"
+    }
+
     if (message) {
         def jsonVal = parseJson(message)
         if (topic[2] == "status") {
@@ -238,8 +272,17 @@ void refresh(){
     setVersion()
 }
 //refresh data from status and config topics
+//NOTE: this polls FIRST and no longer calls watchDog(). Previously the staleness check ran here,
+//before the poll that would have cleared it, which guaranteed an extra reconnect on every refresh.
+//The watchdog now runs only on its own schedule, and probes before acting.
 void requestStatus() {
-    watchDog()
+    pollNow()
+}
+
+//Ask the Garadget directly for its status and config.
+//Anything that arrives after this IS proof of life, so trust incoming data again.
+void pollNow() {
+    state.trustData = true
     debuglog "Getting status and config..."
     //Garadget requires sending a command to force it to update the config topic
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-config")
@@ -249,6 +292,7 @@ void requestStatus() {
 }
 void updated() {
     infolog "updated..."
+    setVersion()
     //write the configuration
     configure()
     
@@ -305,11 +349,16 @@ void uninstalled() {
 
 void initialize() {
     infolog "initialize..."
-    
+    //stamp the version here too - previously only refresh() did, so an HPM upgrade kept showing
+    //the old version in state until something happened to call refresh
+    setVersion()
+
     // Initialize state variables
     if (state.lastMessageReceived == null) state.lastMessageReceived = 0
     if (state.reconnectAttempts == null) state.reconnectAttempts = 0
-    
+    if (state.trustData == null) state.trustData = true
+    if (state.lastSubscribeAt == null) state.lastSubscribeAt = 0
+
     // Connect to MQTT broker
     connectMqtt()
     
@@ -318,7 +367,12 @@ void initialize() {
     unschedule()
     pauseExecution(500)
     setupSchedules()
-    
+
+    //Ask for real data now that we are subscribed. connectMqtt() has just set trustData=false to
+    //discard the broker's retained replay, and this is what restores it - scheduled after
+    //unschedule() so it does not get cancelled.
+    runIn(15, pollNow)
+
     //if logs are in "Need Help" turn down to "Running" after an hour
     def logL = logLevel ? logLevel.toInteger() : 1
     if (logL == 2) runIn(3600, logsOff)
@@ -341,6 +395,10 @@ void connectMqtt() {
         //subscribe to status and config topics
         mqttInt.subscribe("garadget/${doorName}/status")
         mqttInt.subscribe("garadget/${doorName}/config")
+        //The broker will now replay the RETAINED message for each topic. Those are history, not
+        //evidence the device is alive, so stop trusting inbound data until we have asked for some.
+        state.lastSubscribeAt = now()
+        state.trustData = false
     } catch(e) {
         log.warn "${device.label?device.label:device.name}: MQTT connect error: ${e.message}"
     }
@@ -351,24 +409,39 @@ void connectMqtt() {
  * Used when connection is suspected stale (isConnected() lies about half-open TCP connections)
  */
 void reconnectMqtt() {
-    state.reconnectAttempts = (state.reconnectAttempts ?: 0) + 1
-    infolog "Reconnect attempt #${state.reconnectAttempts} - disconnecting first..."
-    
+    Integer attempts = (state.reconnectAttempts ?: 0) + 1
+    state.reconnectAttempts = attempts
+    infolog "Reconnect attempt #${attempts} - disconnecting first..."
+
+    //Reconnecting repeatedly without ever getting data back means the problem is not the
+    //connection. Say so loudly rather than quietly cycling forever - this is the message that
+    //would have identified a Garadget publishing to a topic we were not subscribed to.
+    if (attempts == 3 || (attempts > 3 && attempts % 10 == 0)) {
+        log.error "${device.label?device.label:device.name}: ${attempts} reconnects with no data from the " +
+                  "Garadget. The broker connection is fine - check that the device is powered on, on WiFi, " +
+                  "and that its topic name still matches the 'Garadget Door Name' setting (${doorName})."
+    }
+
     try {
         interfaces.mqtt.disconnect()
     } catch(e) {
         debuglog "Disconnect error (expected if already disconnected): ${e.message}"
     }
-    
+
     pauseExecution(2000)
-    
+
     infolog "Reconnecting to MQTT broker..."
     connectMqtt()
+
+    //Ask for fresh data shortly after reconnecting. A live device answers and the staleness clock
+    //resets honestly; a dead one does not, and the watchdog keeps escalating.
+    runIn(15, pollNow)
 }
 
 void configure(){
     infolog "configure..."
-    watchDog()
+    //only repair a genuinely dead connection here; do not let a staleness check delay the write
+    if (!interfaces.mqtt.isConnected()) reconnectMqtt()
 
     //Build Option Map based on preferences
     def options = [:]
@@ -389,46 +462,86 @@ void configure(){
     interfaces.mqtt.publish("garadget/${doorName}/command", "get-config")
 }
 
+/**
+ * Send a command to the door.
+ *
+ * These used to call watchDog() first. If the watchdog decided to reconnect, the door command
+ * had to wait behind a disconnect, a 2 second pause and a fresh connect, and was then published
+ * on a connection that had only just come up. For a garage door that is a real reliability
+ * problem, so we now only repair the connection when it is genuinely down, and publish promptly.
+ */
+void sendDoorCommand(String cmd) {
+    if (!interfaces.mqtt.isConnected()) {
+        log.warn "${device.label?device.label:device.name}: not connected - reconnecting before sending '${cmd}'"
+        reconnectMqtt()
+    }
+    interfaces.mqtt.publish("garadget/${doorName}/command", cmd)
+}
+
 void open() {
     infolog "Open command sent..."
-    watchDog()
-    interfaces.mqtt.publish("garadget/${doorName}/command", "open")
+    sendDoorCommand("open")
 }
 void close() {
     infolog "Close command sent..."
-    watchDog()
-    interfaces.mqtt.publish("garadget/${doorName}/command", "close")
+    sendDoorCommand("close")
 }
 void stop(){
     infolog "Stop command sent..."
-    watchDog()
-    interfaces.mqtt.publish("garadget/${doorName}/command", "stop")
+    sendDoorCommand("stop")
 }
 
 /**
  * Watchdog - checks MQTT connection health
- * Now checks both isConnected() AND whether we've received data recently
+ *
+ * Checks isConnected() AND whether we have received data recently. Silence on its own is NOT
+ * proof of a problem: a door that has not moved, with scheduled refresh turned off, is quiet
+ * for hours quite legitimately. So when data looks stale we poll the device directly and give
+ * it a moment to answer, and only reconnect if it stays silent. See watchDogVerify().
  */
 void watchDog() {
     debuglog "Watchdog: Checking MQTT status"
-    
+
     def connected = interfaces.mqtt.isConnected()
     def lastMsg = state.lastMessageReceived ?: 0
     def elapsed = lastMsg > 0 ? now() - lastMsg : -1
     def staleThreshold = (staleMinutes ?: 30) * 60 * 1000
-    
+
     if (!connected) {
         // Definitely disconnected - reconnect
         log.warn "Watchdog: MQTT disconnected - reconnecting"
         reconnectMqtt()
-    } else if (lastMsg > 0 && elapsed > staleThreshold) {
-        // Connected but no data - likely a ghost/stale connection
-        def minsSince = Math.round(elapsed / 60000)
-        log.warn "Watchdog: MQTT reports connected but no data in ${minsSince} minutes - forcing reconnect"
-        reconnectMqtt()
-    } else {
-        debuglog "Watchdog: MQTT OK (connected: ${connected}, last data: ${elapsed > 0 ? Math.round(elapsed / 60000) + ' min ago' : 'never'})"
+        return
     }
+
+    if (lastMsg > 0 && elapsed > staleThreshold) {
+        def minsSince = Math.round(elapsed / 60000)
+        infolog "Watchdog: no data in ${minsSince} minutes - polling the device before reconnecting"
+        pollNow()
+        runIn(probeWaitSec(), watchDogVerify)
+        return
+    }
+
+    debuglog "Watchdog: MQTT OK (connected: ${connected}, last data: ${elapsed > 0 ? Math.round(elapsed / 60000) + ' min ago' : 'never'})"
+}
+
+/**
+ * Second half of the watchdog: did the device answer the direct poll?
+ * Answered  -> it was merely idle, nothing is wrong, leave the connection alone.
+ * Silent    -> the connection is a ghost or the device is unreachable, so reconnect.
+ */
+void watchDogVerify() {
+    def lastMsg = state.lastMessageReceived ?: 0
+    def elapsed = lastMsg > 0 ? now() - lastMsg : -1
+    def staleThreshold = (staleMinutes ?: 30) * 60 * 1000
+
+    if (lastMsg > 0 && elapsed <= staleThreshold) {
+        debuglog "Watchdog: device answered the poll - alive, no reconnect needed"
+        return
+    }
+
+    log.warn "Watchdog: no answer to a direct poll after ${probeWaitSec()}s - forcing reconnect"
+    reconnectMqtt()
 }
 
 void mqttClientStatus(String message) {

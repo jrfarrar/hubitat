@@ -1,11 +1,11 @@
 {
   "packageName": "Garadget MQTT Driver",
   "author": "J.R. Farrar",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "minimumHEVersion": "2.1.9",
   "communityLink":"https://community.hubitat.com/t/release-garadget-mqtt-device-handler/43377",
-  "dateReleased": "2026-02-04",
-  "releaseNotes": "Fixed connection recovery: watchdog survives reboots, detects stale connections, explicit disconnect before reconnect, fixed cron for >59 min, added lastMessageReceived tracking",
+  "dateReleased": "2026-09-03",
+  "releaseNotes": "Fixes a device that has gone offline being reported as healthy. On subscribe the broker replays the RETAINED message for each topic, and 1.4.4 counted that replay as fresh data - so the watchdog would reconnect, the reconnect would trigger a replay, and the outage stayed hidden while every attribute sat frozen. Retained replays no longer reset the staleness clock. The watchdog now polls the device directly and waits for an answer before reconnecting, so an idle door with scheduled refresh turned off is no longer reconnected every cycle. Repeated failed reconnects escalate to log.error with what to check. Door commands no longer wait behind a watchdog reconnect, and the scheduled refresh polls before checking staleness.",
   "drivers": [
     {
       "id": "58801d01-51bd-4116-a271-2e7a7c9e24a0",
