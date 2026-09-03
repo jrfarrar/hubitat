@@ -1,8 +1,31 @@
 /**
- * Septic Pump Monitor v2.2
+ * Septic Pump Monitor v2.3
  *
  * Monitor septic pump runtime with historical tracking and trend analysis.
  * Detects changes in pump behavior over time (perfect after pump replacement).
+ *
+ * V 2.3 - 2026-09-02
+ *   • NEW: Notification support is BACK. It was removed in 2.2.1 in favour of virtual
+ *         switches, but that was a workaround for this hub having no notification
+ *         device at all -- solved now by Hub Mesh rather than by giving up the feature.
+ *         A switch is durable state; a notification is the event. Both now run.
+ *   • FIX: the anomaly alert was a ONE-WAY latch. checkForAnomaly() set
+ *         state.anomalyDetected and anomalySwitch.on(), and the only code that ever
+ *         cleared either was the "Reset All Historical Data" button. It has never
+ *         fired, so nothing was stuck -- but the first time it did, it would have
+ *         stuck forever and marked every later month anomalous. The latch is now
+ *         deliberate, carries its reason and timestamp, and has its own Acknowledge
+ *         button. (tempSwitch and tooLongSwitch always cleared correctly on pump
+ *         activity, and healthCheck() resets the daily/rapid-cycle switches nightly;
+ *         the anomaly switch was the only genuine one-way path.)
+ *   • NEW: "Rebuild History & Baseline from CSV". The detection rule here is sound --
+ *         measured over 511 real runs the duration CV is 6.2% and ZERO would have
+ *         fired at the 30% threshold, because a septic run is one continuous pump-out
+ *         of a fixed float-switch volume rather than a burst of demand-driven cycles.
+ *         But the stored baseline had drifted low (5.1 vs a true 5.24 mean), putting
+ *         the upper trip point at 6.63 when the natural maximum already reached 6.50 --
+ *         one long run away from a permanent false latch. Rebuilding from the logs
+ *         restores the margin and does not require waiting months for new snapshots.
  *
  * V 2.2.1 - 2025-12-04
  *   • FIX: All setScale() calls now wrap values in safeToBigDecimal() to prevent
@@ -115,19 +138,38 @@ def pageConfig() {
             paragraph "<small style='color:#666;'>Clears only the table above. Historical data and CSV preserved.</small>"
         }
 
+        // 8b. Notifications
+        section(getFormat("header-green", "Notifications")) {
+            input "notifyDevice", "capability.notification", title: "Send alerts to", required: false, multiple: true,
+                    description: "Phones, email, or any notifier. Alert switches still latch independently."
+            if (settings.notifyDevice) {
+                input "notifyAnomaly", "bool", title: "Notify on duration anomaly", defaultValue: true
+                input "notifyOverdue", "bool", title: "Notify when pump hasn't run in X days", defaultValue: true
+                input "notifyTooLong", "bool", title: "Notify when pump runs too long", defaultValue: true
+                input "notifyRapidCycle", "bool", title: "Notify on rapid cycling / daily run limit", defaultValue: true
+                paragraph "<small style='color:#666;'>One notification per distinct alert, not one per run &mdash; a latched anomaly that stays latched will not re-notify.</small>"
+            }
+        }
+
         // 9. Historical Analysis
         section(getFormat("header-green", "Historical Analysis")) {
             input "enableHistoryTracking", "bool", title: "Enable Historical Analysis", defaultValue: true, submitOnChange: true
 
             if (settings.enableHistoryTracking) {
                 paragraph "<div style='font-weight:bold;margin-top:15px;margin-bottom:10px;'>Anomaly Detection</div>"
+                paragraph getAnomalyAlertHtml()
                 input "anomalyThreshold", "number", title: "Duration Anomaly Threshold (%)", range: "15..100", required: true, defaultValue: 30
-                input "anomalySwitch", "capability.switch", title: "Anomaly Alert Switch (optional)", required: false
+                input "anomalySwitch", "capability.switch", title: "Anomaly Alert Switch (optional, latching)", required: false
+                input "btnAckAnomaly", "button", title: "Acknowledge & Clear Anomaly Alert"
+                paragraph "<small style='color:#666;'>The anomaly latch is deliberate: it stays set until acknowledged so an alert cannot be missed while you are away. Historical data and baseline are not affected.</small>"
 
                 paragraph "<div style='font-weight:bold;margin-top:15px;margin-bottom:10px;'>Baseline Management</div>"
                 input "lockBaseline", "bool", title: "Lock Current Baseline", defaultValue: false, submitOnChange: true
                 paragraph getBaselineDisplayHtml()
                 paragraph "<small style='color:#666;'><b>Tip:</b> Lock baseline after pump replacement once stable. Unlock to adapt gradually.</small>"
+
+                input "btnRebuildSeptic", "button", title: "Rebuild History &amp; Baseline from CSV"
+                paragraph "<small style='color:#666;'>Recomputes every monthly snapshot and the baseline from this app's own yearly CSV logs, using every recorded run rather than only the months still held in state. Safe: reads the CSVs, does not modify them.${state.rebuildResult ? "<br><b>Last run:</b> ${state.rebuildResult}" : ''}</small>"
             }
         }
 
@@ -572,20 +614,86 @@ def checkForAnomaly(duration) {
     def baseline = safeToBigDecimal(state.baselineDuration)
     if (baseline == 0) return false
 
-    def diff = (safeToBigDecimal(duration) - baseline).abs()
+    // Coerce ONCE, up front, and format only from the coerced value. String.format('%f')
+    // throws IllegalFormatConversionException on an Integer, so passing the raw argument
+    // straight into the message made this function total only for Double callers. Same
+    // Integer/Double family as the setScale() fixes in v2.2.1; the harness caught it.
+    def dur = safeToBigDecimal(duration)
+    def diff = (dur - baseline).abs()
     def pct = (diff / baseline) * 100.0
 
     if (pct > anomalyThreshold) {
-        def msg = "Duration anomaly: ${String.format('%.1f', duration)}m vs baseline ${String.format('%.1f', baseline)}m (${String.format('%.0f', pct)}% deviation)"
-        log.warn msg
+        def msg = "Duration anomaly: ${String.format('%.1f', dur)}m vs baseline ${String.format('%.1f', baseline)}m (${String.format('%.0f', pct)}% deviation)"
         state.anomalyDetected = true
         state.anomalyMessage = msg
-        
+
+        // v2.3: the latch now carries its reason and timestamp. Previously this set a
+        // bare boolean that only btnResetHistory could clear, so once tripped the app
+        // showed a red label forever with nothing on screen saying why.
+        def alreadyLatched = (state.anomalyAlert != null)
+        state.anomalyAlert = [
+                msg  : msg,
+                at   : now(),
+                atStr: new Date().format("M/d/yyyy h:mm a"),
+                durationMin: dur
+        ]
+
         anomalySwitch?.on()
-        
+
+        // Notify only on a NEW latch, so a persistent condition does not notify per run.
+        if (!alreadyLatched) {
+            log.warn msg
+            if (notifyAnomaly != false) {
+                sendNotify("${thisName ?: 'Septic pump'}: ${msg}")
+            }
+        } else {
+            debuglog "Anomaly still present (already latched): ${msg}"
+        }
+
         return true
     }
     return false
+}
+
+def clearAnomalyAlert(reason) {
+    if (!state.anomalyAlert && !state.anomalyDetected) {
+        infolog "No anomaly alert to clear."
+        return
+    }
+    infolog "Anomaly alert cleared (${reason})"
+    state.anomalyAlert = null
+    state.anomalyDetected = false
+    state.anomalyMessage = null
+    if (anomalySwitch?.currentValue("switch") == "on") anomalySwitch.off()
+    updateAppLabel()
+}
+
+def getAnomalyAlertHtml() {
+    def a = state.anomalyAlert
+    if (!a) {
+        return "<div style='background-color:#f7f7f7;padding:10px;border-radius:5px;'>" +
+                "<b style='color:#27ae60;'>No anomaly latched.</b><br>" +
+                "<small style='color:#666;'>A septic run is one continuous pump-out of a fixed float-switch volume, " +
+                "so its duration is genuinely stable &mdash; measured across 511 runs the spread is about 6%. " +
+                "That is why a single run can be judged here, unlike a well pump.</small></div>"
+    }
+    return "<div style='background-color:#fdecea;padding:10px;border-radius:5px;border-left:4px solid #cc0000;'>" +
+            "<b style='color:#cc0000;'>&#9888; DURATION ANOMALY</b><br>${a.msg}<br>" +
+            "<small style='color:#666;'>Latched ${a.atStr} &middot; stays latched until acknowledged</small></div>"
+}
+
+// Notify without letting a bad notifier take the app down with it: a notification
+// target is often a phone that has gone away, and that must not abort an alert path
+// that has already set state and thrown a switch.
+def sendNotify(msg) {
+    if (!notifyDevice) return
+    notifyDevice.each { d ->
+        try {
+            d.deviceNotification(msg)
+        } catch (e) {
+            log.error "Notification to ${d?.displayName} failed: ${e.message}"
+        }
+    }
 }
 
 def checkRapidCycling() {
@@ -607,7 +715,12 @@ def checkRapidCycling() {
     if (count >= threshold) {
         def msg = "Rapid cycling detected: ${count} runs in ${rapidCycleWindow} minutes!"
         log.warn msg
+        // Only notify on the transition, not on every run while it persists. These
+        // switches are reset nightly by healthCheck(), so "already on" means we have
+        // already said so today.
+        def already = (rapidCycleSwitch?.currentValue("switch") == "on")
         rapidCycleSwitch?.on()
+        if (!already && notifyRapidCycle != false) sendNotify("${thisName ?: 'Septic pump'}: ${msg}")
     }
 }
 
@@ -621,6 +734,7 @@ def checkDailyRunCount() {
         def msg = "Excessive daily runs: ${runs} (limit: ${limit})"
         log.warn msg
         dailyRunSwitch?.on()
+        if (notifyRapidCycle != false) sendNotify("${thisName ?: 'Septic pump'}: ${msg}")
     }
 }
 
@@ -629,6 +743,7 @@ void pumpOverdue() {
         def msg = "Pump hasn't run in ${xdays} days!"
         log.warn msg
         tempSwitch?.on()
+        if (notifyOverdue != false) sendNotify("${thisName ?: 'Septic pump'}: ${msg}")
         updateAppLabel()
     }
 }
@@ -636,7 +751,12 @@ void pumpOverdue() {
 void pumpRunningLong() {
     def msg = "Pump running longer than ${tooLong} minutes!"
     log.warn msg
+    def already = (tooLongSwitch?.currentValue("switch") == "on")
     tooLongSwitch?.on()
+    // This is scheduled once per run and unscheduled when the pump stops, so it
+    // normally fires at most once -- the guard is belt and braces against a
+    // duplicate schedule surviving a hub restart.
+    if (!already && notifyTooLong != false) sendNotify("${thisName ?: 'Septic pump'}: ${msg}")
     updateAppLabel()
 }
 
@@ -777,6 +897,97 @@ def getFileName() {
     return "septic-pump-${clean}-${year}.csv"
 }
 
+// Rebuild every monthly snapshot and the baseline from this app's own yearly CSVs.
+// The CSV is the complete record; state.monthlySnapshots only holds whatever months
+// happened to roll over while the app was running with history enabled. Uses exactly
+// the same estimators as updateMonthlySnapshot()/calculateBaseline() so the rebuilt
+// values are directly comparable -- this recomputes them, it does not redefine them.
+def rebuildSepticHistoryFromCsv() {
+    def clean = pwrClamp?.displayName?.replaceAll(/[^a-zA-Z0-9]/, "") ?: "SepticPump"
+    def byMonth = [:]
+    def filesRead = []
+    def thisYear = new Date().format("yyyy").toInteger()
+
+    for (int y = thisYear - 3; y <= thisYear; y++) {
+        def fname = "septic-pump-${clean}-${y}.csv"
+        def text = null
+        try {
+            def b = downloadHubFile(fname)
+            if (b) text = new String(b)
+        } catch (e) {
+            continue
+        }
+        if (!text) continue
+        filesRead.add("${y}")
+
+        text.split("\n").each { line ->
+            def p = line.trim().split(",")
+            if (p.size() < 2) return
+            if (p[0] == "Timestamp") return
+            def ts = p[0]
+            if (ts.size() < 7) return
+            def monthKey = ts.substring(0, 7)          // yyyy-MM
+            def dur = safeToBigDecimal(p[1])
+            if (dur <= 0) return
+            def gal = (p.size() > 4 && p[4]) ? safeToBigDecimal(p[4]) : 0.0
+            def anom = (p.size() > 6 && p[6]?.trim() == "YES")
+            if (!byMonth[monthKey]) byMonth[monthKey] = [durs: [], gal: 0.0, anom: false]
+            byMonth[monthKey].durs.add(dur)
+            byMonth[monthKey].gal = byMonth[monthKey].gal + gal
+            if (anom) byMonth[monthKey].anom = true
+        }
+    }
+
+    if (byMonth.size() < 2) {
+        log.warn "Septic rebuild aborted [GUARD: only ${byMonth.size()} month(s) found in CSV ${filesRead}]"
+        state.rebuildResult = "FAILED - only ${byMonth.size()} month(s) readable"
+        return
+    }
+
+    def keys = byMonth.keySet().sort().reverse()       // newest first
+    def rebuilt = []
+    def totalRunsAll = 0
+    keys.each { k ->
+        def d = byMonth[k].durs.sort()
+        def n = d.size()
+        totalRunsAll += n
+        def median = d[(int)(n / 2)]
+        def avg = d.sum() / n
+        rebuilt.add([
+                monthYear    : Date.parse("yyyy-MM", k).format("MMM yyyy"),
+                totalRuns    : n,
+                medianDuration: String.format('%.1f', median),
+                avgDuration  : String.format('%.1f', avg),
+                minDuration  : String.format('%.1f', d.min()),
+                maxDuration  : String.format('%.1f', d.max()),
+                runsPerDay   : String.format('%.1f', n / 30.0),
+                totalGallons : byMonth[k].gal > 0 ? String.format('%.0f', byMonth[k].gal) : null,
+                hadAnomalies : byMonth[k].anom
+        ])
+    }
+
+    state.monthlySnapshots = rebuilt.take(12)
+    state.baselineMonthsCollected = state.monthlySnapshots.size()
+
+    def list = state.monthlySnapshots
+    def medians = list.collect { safeToBigDecimal(it.medianDuration) }
+    state.baselineDuration = medians.sum() / medians.size()
+    state.baselineMin = list.collect { safeToBigDecimal(it.minDuration) }.min()
+    state.baselineMax = list.collect { safeToBigDecimal(it.maxDuration) }.max()
+
+    def lo = safeToBigDecimal(state.baselineDuration) * (1 - safeToBigDecimal(anomalyThreshold ?: 30) / 100.0)
+    def hi = safeToBigDecimal(state.baselineDuration) * (1 + safeToBigDecimal(anomalyThreshold ?: 30) / 100.0)
+
+    def msg = "Rebuilt ${list.size()} months from CSV ${filesRead} (${totalRunsAll} runs). " +
+            "Baseline ${String.format('%.2f', state.baselineDuration)}m " +
+            "(range ${String.format('%.1f', state.baselineMin)}-${String.format('%.1f', state.baselineMax)}m). " +
+            "At ${anomalyThreshold ?: 30}% the trip points are " +
+            "${String.format('%.2f', lo)}m and ${String.format('%.2f', hi)}m; " +
+            "observed extremes were ${String.format('%.1f', state.baselineMin)}m and ${String.format('%.1f', state.baselineMax)}m."
+    infolog msg
+    state.rebuildResult = msg
+}
+
 def getFileManagerUrl(filename) {
     return "/local/${filename}"
 }
@@ -835,9 +1046,11 @@ def appButtonHandler(btn) {
             state.lifetimeGallons = 0
             state.anomalyDetected = false
             state.anomalyMessage = null
+            state.anomalyAlert = null
+            state.rebuildResult = null
             state.showFullHistory = false
             state.recentRunTimes = []
-            
+
             if (anomalySwitch?.currentValue("switch") == "on") anomalySwitch.off()
             if (rapidCycleSwitch?.currentValue("switch") == "on") rapidCycleSwitch.off()
             if (dailyRunSwitch?.currentValue("switch") == "on") dailyRunSwitch.off()
@@ -845,6 +1058,14 @@ def appButtonHandler(btn) {
             infolog "All historical data reset"
             break
             
+        case "btnAckAnomaly":
+            clearAnomalyAlert("acknowledged from app UI")
+            break
+
+        case "btnRebuildSeptic":
+            rebuildSepticHistoryFromCsv()
+            break
+
         case "btnRefresh":
             infolog "Refreshing subscriptions"
             unsubscribe()
