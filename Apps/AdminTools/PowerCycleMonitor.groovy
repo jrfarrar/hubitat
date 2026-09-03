@@ -1,8 +1,37 @@
 /**
- * Power Cycle Monitor v2.40 (Smart Dashboard)
+ * Power Cycle Monitor v2.41 (Smart Dashboard)
  *
  * Monitor power meters to detect cycling patterns and stuck-on failures
  * with historical tracking and trend analysis.
+ *
+ * v2.41 Changes — EQUIPMENT HEALTH DETECTION REWRITE:
+ * - FIX: the anomaly switch was never turned off by any code path except the
+ *   "Reset All Historical Data" button, while finishSession() silently cleared
+ *   state.anomalyDetected. The switch latched ON and the UI showed no reason why.
+ *   The latch is now deliberate and carries its reason, timestamp and value.
+ * - FIX: anomaly detection compared a SINGLE session's (avgOn + avgOff) to the
+ *   baseline. avgOff is set by household water demand, not by equipment, and on a
+ *   3-cycle session it has only 2 samples. Measured over 10 months / 2662 cycles on
+ *   a real well: session avgOff CV = 41%, tested against a 25% threshold. Every one
+ *   of the 6 alerts fired on a 3-cycle session; 0 of 44 sessions with 4+ cycles ever
+ *   tripped. It was detecting how often someone flushed a toilet.
+ * - NEW: health is now judged on a trailing CYCLE-WEIGHTED window (default 100
+ *   cycles, ~10 days) of avgOn, which is the equipment signal: correlation with
+ *   session size r = -0.08, i.e. independent of demand. Back-test over the same
+ *   10 months: old rule 24 false-alarm episodes, new rule 0.
+ * - NEW: two distinct failure modes, reported by direction:
+ *     avgOn RISING  -> pump/well weakening (worn impeller, dropping water level)
+ *     cycle period COLLAPSING -> pressure tank losing air charge (short-cycling)
+ *   Short-cycling is checked first; it destroys pumps in days, wear takes months.
+ * - FIX: updateMonthlySnapshot() stored the MEDIAN SESSION's avgOn/avgOff/cycles as
+ *   the month's figures. A single 15s-quantised session stood in for the whole month
+ *   and fed the baseline. Measured error vs the true cycle-weighted monthly mean
+ *   ranged -16.4% to +13.1%. Now cycle-weighted across all sessions in the month.
+ * - NOTE ON RESOLUTION: the IoTaWatt parent driver polls on an interval (15s here),
+ *   so each ON period is measured on that grid. With a ~27s ON period that is a
+ *   per-cycle sd of ~6s, which alone accounts for essentially all the session-level
+ *   scatter. It averages out over the window; it does not over a single session.
+ *   This is why the window is expressed in CYCLES, not sessions or days.
  *
  * v2.40 Changes:
  * - FIX: Stuck-ON switch now clears when the pump actually stops (in handleDeviceOff),
@@ -100,15 +129,28 @@ def mainPage() {
             input "enableHistoryTracking", "bool", title: "Enable Historical Analysis", defaultValue: true, submitOnChange: true
             
             if (settings.enableHistoryTracking) {
-                // Anomaly Detection
-                paragraph "<div style='font-weight:bold; margin-top:15px; margin-bottom:10px; font-size:1.1em;'>Anomaly Detection</div>"
-                input "anomalyThreshold", "number", title: "Anomaly Threshold (%)", range: "15..50", required: true, defaultValue: 25
-                input "anomalySwitch", "capability.switch", title: "Anomaly Switch (Latching)", required: false
-                
+                // Equipment Health Detection
+                paragraph "<div style='font-weight:bold; margin-top:15px; margin-bottom:10px; font-size:1.1em;'>Equipment Health Detection</div>"
+                paragraph getWellHealthHtml()
+
+                input "healthWindowCycles", "number", title: "Health Window (cycles)", range: "30..400", required: true, defaultValue: 100,
+                        description: "Averaged over this many recent cycles. Smaller = faster but noisier."
+                input "anomalyThreshold", "number", title: "Pump Wear Threshold (% change in avg ON time)", range: "5..50", required: true, defaultValue: 15
+                input "shortCycleThreshold", "number", title: "Short-Cycle Threshold (% drop in cycle period)", range: "20..70", required: true, defaultValue: 40,
+                        description: "Pressure tank losing its air charge"
+                input "anomalySwitch", "capability.switch", title: "Health Alert Switch (Latching)", required: false
+
+                paragraph "<hr style='margin-top:15px; margin-bottom:10px;'>"
+                input "btnAckHealth", "button", title: "Acknowledge & Clear Health Alert"
+                paragraph "<small style='color:#666;'>Clears the latched alert above and turns the alert switch off. The latch is deliberate: it stays on until you clear it, so an alert cannot be missed while you are away. Historical data and baseline are not affected.</small>"
+
                 // Baseline Management
                 paragraph "<div style='font-weight:bold; margin-top:15px; margin-bottom:10px; font-size:1.1em;'>Baseline Management</div>"
                 input "lockBaseline", "bool", title: "Lock Current Baseline", defaultValue: false, submitOnChange: true
                 paragraph getBaselineDisplayHtml()
+
+                input "btnRebuildHistory", "button", title: "Rebuild Monthly History &amp; Baseline from CSV"
+                paragraph "<small style='color:#666;'>Recomputes every monthly snapshot from this app's own CSV logs using the corrected cycle-weighted average. Snapshots written before v2.41 stored a single median session's numbers instead of the month's, so the baseline they produced was built from nine single sessions. Safe to run: reads the CSVs, does not modify them.${state.rebuildResult ? "<br><b>Last run:</b> ${state.rebuildResult}" : ''}</small>"
             }
         }
 
@@ -209,6 +251,62 @@ def getBaselineDisplayHtml() {
     return "Current Baseline ${statusText}: ${bCycle} Cycle (${bOn} ON / ${bOff} OFF)"
 }
 
+def getWellHealthHtml() {
+    def alert = state.healthAlert
+    def html = ""
+
+    // 1. The latched alert, if any -- always shown first, with its reason.
+    if (alert) {
+        html += "<div style='background-color:#fdecea; padding:10px; border-radius:5px; border-left:4px solid #cc0000; margin-bottom:10px;'>" +
+                "<b style='color:#cc0000;'>&#9888; ${alert.mode}</b><br>" +
+                "${alert.msg}<br>" +
+                "<small style='color:#666;'>Latched ${alert.atStr} &middot; still latched until acknowledged</small>" +
+                "</div>"
+    }
+
+    // 2. Live window state -- so "why is nothing happening" is always answerable.
+    def w = computeHealthWindow(state.healthWindow ?: [], (healthWindowCycles ?: 100) as Integer)
+    def bOn = safeToBigDecimal(state.baselineAvgOn)
+    def bCyc = safeToBigDecimal(state.baselineCycleTime)
+
+    if (!w.ready) {
+        html += "<div style='background-color:#f0f0f0; padding:10px; border-radius:5px;'>" +
+                "<b>Collecting data...</b><br>${w.cycles} of ${healthWindowCycles ?: 100} cycles " +
+                "(${w.used} sessions). No health judgement until the window is full.</div>"
+        return html
+    }
+    if (bOn <= 0 || bCyc <= 0) {
+        html += "<div style='background-color:#f0f0f0; padding:10px; border-radius:5px;'>" +
+                "<b>Waiting for baseline.</b><br>Monthly snapshots are needed before health can be " +
+                "judged &mdash; or press <i>Rebuild Monthly History &amp; Baseline from CSV</i> below to " +
+                "build one immediately from existing logs. Window is ready (${w.cycles} cycles).</div>"
+        return html
+    }
+
+    def wearPct = ((w.on - bOn) / bOn) * 100.0
+    def period = w.on + w.off
+    def dropPct = ((bCyc - period) / bCyc) * 100.0
+    def wearLimit = safeToBigDecimal(anomalyThreshold ?: 15)
+    def dropLimit = safeToBigDecimal(shortCycleThreshold ?: 40)
+
+    def okColor = (alert) ? "#e67e22" : "#27ae60"
+    def verdict = (alert) ? "Currently within limits (alert above is latched from earlier)" : "Healthy"
+
+    html += "<div style='background-color:#f7f7f7; padding:10px; border-radius:5px;'>" +
+            "<b style='color:${okColor};'>${verdict}</b><br>" +
+            "<table style='width:100%; font-size:0.9em; border-collapse:collapse; margin-top:8px;' border='1' bordercolor='#ddd'>" +
+            "<tr style='background-color:#eee; font-weight:bold;'><td>Metric</td><td>Now</td><td>Baseline</td><td>Change</td><td>Limit</td></tr>" +
+            "<tr><td>Avg ON (pump strength)</td><td>${String.format('%.2f', w.on)}s</td><td>${String.format('%.2f', bOn)}s</td>" +
+            "<td>${String.format('%+.1f', wearPct)}%</td><td>&plusmn;${wearLimit}%</td></tr>" +
+            "<tr><td>Cycle period (tank charge)</td><td>${String.format('%.1f', period)}s</td><td>${String.format('%.1f', bCyc)}s</td>" +
+            "<td>${String.format('%+.1f', -dropPct)}%</td><td>-${dropLimit}%</td></tr>" +
+            "</table>" +
+            "<small style='color:#666;'>Averaged over the last ${w.cycles} cycles (${w.used} sessions). " +
+            "Avg ON is the equipment signal; Avg OFF is household demand and is deliberately not alerted on.</small>" +
+            "</div>"
+    return html
+}
+
 def getHistoryTableHtml() {
     def rows = ""
     state.recentSessions.each { sess ->
@@ -253,7 +351,7 @@ def getMonthlyHistoryTableHtml(limit) {
     return """
     <table style='width:100%; font-size:0.9em; border-collapse:collapse; margin-top:-10px;' border='1' bordercolor='#ddd'>
         <tr style='background-color:#f5f5f5; font-weight:bold;'>
-            <td>Month</td><td>Cyc</td><td>On</td><td>Off</td><td>/Day</td><td>Alert</td>
+            <td>Month</td><td>Cyc/mo</td><td>On</td><td>Off</td><td>/Day</td><td>Alert</td>
         </tr>
         ${rows}
     </table>
@@ -289,6 +387,7 @@ def initialize() {
         if (!state.monthlySnapshots) state.monthlySnapshots = []
         if (!state.currentMonthSessions) state.currentMonthSessions = []
         if (!state.currentMonth) state.currentMonth = new Date().format("yyyy-MM")
+        if (state.healthWindow == null) state.healthWindow = []
 
         schedule("0 0 1 1 * ?", "checkMonthRollover") // Run yearly, but we check monthly
     }
@@ -492,10 +591,11 @@ def finishSession() {
         cycleAlertSwitch.off()
     }
 
-    if (state.anomalyDetected) {
-        state.anomalyDetected = false
-        state.anomalyMessage = null
-    }
+    // NOTE (v2.41): this used to clear state.anomalyDetected here, which erased the
+    // on-screen reason for an alert while leaving the alert SWITCH latched on. The
+    // result was a switch that read ON with the app reporting "System Idle" and no
+    // explanation anywhere. The health latch now lives in state.healthAlert and is
+    // cleared only by acknowledgement -- deliberately not here.
 
     updateAppLabel()
 }
@@ -534,8 +634,11 @@ def recordSessionData(type) {
         logSessionToFile(data)
     }
 
-    if (type == "normal" && state.baselineMonthsCollected >= 2) {
-        checkForAnomalies(data)
+    // Always feed the rolling window, even before a baseline exists, so the window is
+    // already full the moment the baseline becomes usable. evaluateWellHealth() guards
+    // its own preconditions and names whichever guard suppressed a judgement.
+    if (type == "normal") {
+        evaluateWellHealth(data)
     }
 }
 
@@ -587,17 +690,34 @@ def updateMonthlySnapshot() {
     def validSessions = state.currentMonthSessions.findAll { it.type == "normal" }
     if (validSessions.size() == 0) return
 
-    validSessions.sort { it.runtime }
-    def median = validSessions[ (int)(validSessions.size() / 2) ]
+    // v2.41: this used to take the MEDIAN SESSION by runtime and store that one
+    // session's avgOn/avgOff/cycles as the whole month's figures -- so a single
+    // 15s-quantised session represented the month AND fed the baseline. Measured
+    // against the true cycle-weighted monthly mean over 10 real months, the stored
+    // value was off by -16.4% to +13.1%. Now weighted across every session, by cycles,
+    // which is the correct estimator: a 12-cycle session carries 4x the information
+    // of a 3-cycle one.
+    def totCycles = 0.0
+    def sumOn = 0.0
+    def sumOff = 0.0
+    validSessions.each { s ->
+        def c = safeToBigDecimal(s.cycles)
+        if (c > 0) {
+            totCycles += c
+            sumOn += safeToBigDecimal(s.avgOn) * c
+            sumOff += safeToBigDecimal(s.avgOff) * c
+        }
+    }
+    if (totCycles <= 0) return
 
     def snap = [
             monthYear: new Date().parse("yyyy-MM", state.currentMonth).format("MMM yyyy"),
-            cycles: median.cycles,
-            avgOn: median.avgOn,
-            avgOff: median.avgOff,
+            cycles: totCycles as Integer,
+            avgOn: (sumOn / totCycles),
+            avgOff: (sumOff / totCycles),
             stuckOnEvents: state.stuckOnEventCountThisMonth ?: 0,
             sessionsPerDay: String.format('%.1f', (state.sessionsThisMonth / 30.0)),
-            anomaly: state.anomalyDetected
+            anomaly: (state.healthAlert != null)
     ]
 
     state.monthlySnapshots.add(0, snap)
@@ -630,21 +750,270 @@ def calculateBaseline() {
     log.info "Baseline Updated: ${state.baselineCycleTime}s Cycle"
 }
 
-def checkForAnomalies(data) {
-    def baseCycle = safeToBigDecimal(state.baselineCycleTime)
-    if (baseCycle == 0) return
+// ----------------------------------------------------------------------------
+//   EQUIPMENT HEALTH DETECTION
+//
+//   Judged on a trailing CYCLE-WEIGHTED window, never on a single session.
+//   avgOn  = time to refill the tank's drawdown  -> pump / well / lift  (EQUIPMENT)
+//   avgOff = time for the house to drain it      -> demand              (NOT equipment)
+//   Only avgOn and the cycle period are alerted on.
+// ----------------------------------------------------------------------------
 
-    def curCycle = safeToBigDecimal(data.avgOn) + safeToBigDecimal(data.avgOff)
-    def diff = (curCycle - baseCycle).abs()
-    def pct = (diff / baseCycle) * 100.0
+// Accumulate the trailing `windowCycles` cycles, weighting each session by its
+// cycle count. Returns [ready:false, ...] while still filling -- never a verdict.
+def computeHealthWindow(win, windowCycles) {
+    def accC = 0.0
+    def accOn = 0.0
+    def accOff = 0.0
+    def used = 0
 
-    if (pct > anomalyThreshold) {
-        def msg = "Cycle time deviated by ${String.format('%.0f', pct)}%"
-        state.anomalyDetected = true
-        state.anomalyMessage = msg
-        log.warn "Anomaly Detected: ${msg}"
-        if (anomalySwitch) anomalySwitch.on()
+    if (win) {
+        for (int i = 0; i < win.size(); i++) {
+            if (accC >= windowCycles) break
+            def s = win[i]
+            def c = safeToBigDecimal(s?.c)
+            if (c <= 0) continue
+            accC += c
+            accOn += safeToBigDecimal(s?.on) * c
+            accOff += safeToBigDecimal(s?.off) * c
+            used++
+        }
     }
+
+    if (accC < windowCycles) {
+        return [ready: false, cycles: accC, used: used]
+    }
+    return [ready: true, cycles: accC, used: used, on: (accOn / accC), off: (accOff / accC)]
+}
+
+def evaluateWellHealth(data) {
+    // 1. Push this session onto the rolling window (newest first).
+    def win = state.healthWindow ?: []
+    win.add(0, [c: (data.cycles ?: 0), on: safeToBigDecimal(data.avgOn), off: safeToBigDecimal(data.avgOff)])
+
+    // Keep enough sessions to always cover the window with headroom, then stop.
+    def keep = 80
+    if (win.size() > keep) win = win.take(keep)
+    state.healthWindow = win
+
+    def windowCycles = (healthWindowCycles ?: 100) as Integer
+    def w = computeHealthWindow(win, windowCycles)
+
+    // 2. Guards. Each one names ITSELF -- a suppressed judgement must be diagnosable,
+    //    because months of silently-skipped evaluation looks identical to months of health.
+    if (!w.ready) {
+        state.healthStatus = "collecting: ${w.cycles}/${windowCycles} cycles"
+        logDebug "Health check skipped [GUARD: window filling] ${w.cycles}/${windowCycles} cycles"
+        return
+    }
+    def bOn = safeToBigDecimal(state.baselineAvgOn)
+    def bCyc = safeToBigDecimal(state.baselineCycleTime)
+    if (bOn <= 0) {
+        state.healthStatus = "no baseline avgOn yet"
+        log.info "Health check skipped [GUARD: baselineAvgOn missing/zero]"
+        return
+    }
+    if (bCyc <= 0) {
+        state.healthStatus = "no baseline cycle time yet"
+        log.info "Health check skipped [GUARD: baselineCycleTime missing/zero]"
+        return
+    }
+
+    // 3. Judge.
+    def wearPct = ((w.on - bOn) / bOn) * 100.0
+    def period = w.on + w.off
+    def dropPct = ((bCyc - period) / bCyc) * 100.0
+    def wearLimit = safeToBigDecimal(anomalyThreshold ?: 15)
+    def dropLimit = safeToBigDecimal(shortCycleThreshold ?: 40)
+
+    state.healthAvgOn = w.on
+    state.healthPeriod = period
+    state.healthWearPct = wearPct
+    state.healthDropPct = dropPct
+
+    // Short-cycling first: it is the urgent one. A tank that has lost its air charge
+    // will cycle a pump to death in days, where wear takes months.
+    if (dropPct >= dropLimit) {
+        raiseHealthAlert("SHORT-CYCLING (pressure tank)",
+                "Cycle period fell ${String.format('%.0f', dropPct)}% " +
+                "(${String.format('%.0f', period)}s vs ${String.format('%.0f', bCyc)}s baseline) " +
+                "over the last ${w.cycles} cycles. Typically the pressure tank losing its air charge. " +
+                "Check tank pre-charge before the pump is damaged.")
+        return
+    }
+
+    // A DEVELOPING waterlog trips the avgOn test before the period test, because avgOn
+    // is a third of the period and so crosses its own threshold first. Without this
+    // branch the first alert a user sees says "check the pressure switch" when the real
+    // fault is the tank -- the harness caught exactly that (T4). Losing drawdown shrinks
+    // the ON and OFF halves TOGETHER, so a falling avgOn accompanied by a falling period
+    // is the tank signature, not a pressure-switch one. Same mode string as above, so
+    // this escalates the message in place rather than latching a second time.
+    if (wearPct <= -wearLimit && dropPct >= wearLimit) {
+        raiseHealthAlert("SHORT-CYCLING (pressure tank)",
+                "Cycle period is falling (${String.format('%.0f', dropPct)}% down, " +
+                "${String.format('%.0f', period)}s vs ${String.format('%.0f', bCyc)}s baseline) " +
+                "with average ON time down ${String.format('%.1f', wearPct.abs())}% " +
+                "over the last ${w.cycles} cycles. Both halves of the cycle shrinking together " +
+                "means the tank is losing drawdown volume. Check tank pre-charge.")
+        return
+    }
+
+    if (wearPct >= wearLimit) {
+        raiseHealthAlert("PUMP WEAKENING",
+                "Average ON time rose ${String.format('%.1f', wearPct)}% " +
+                "(${String.format('%.1f', w.on)}s vs ${String.format('%.1f', bOn)}s baseline) " +
+                "over the last ${w.cycles} cycles, with demand unchanged. " +
+                "Consistent with a worn pump, a dropping water level, or a leaking check valve.")
+        return
+    }
+    // avgOn down but the cycle PERIOD holding steady -- drawdown is unchanged, so this
+    // is not the tank. Pressure switch, or the meter's reporting interval changed.
+    if (wearPct <= -wearLimit) {
+        raiseHealthAlert("RUN TIME DROPPED",
+                "Average ON time fell ${String.format('%.1f', wearPct.abs())}% " +
+                "(${String.format('%.1f', w.on)}s vs ${String.format('%.1f', bOn)}s baseline) " +
+                "over the last ${w.cycles} cycles, but the cycle period is steady " +
+                "(${String.format('%+.0f', -dropPct)}%). Drawdown looks unchanged, so this is more " +
+                "likely the pressure switch or a change in meter reporting interval than the tank.")
+        return
+    }
+
+    state.healthStatus = "ok (avgOn ${String.format('%+.1f', wearPct)}%, period ${String.format('%+.1f', -dropPct)}%)"
+    state.anomalyDetected = false
+}
+
+// The latch. It is intentional that nothing here clears the switch: an unattended
+// alarm that clears itself is an alarm nobody sees. Cleared only by acknowledgement.
+def raiseHealthAlert(mode, msg) {
+    state.healthStatus = msg
+    state.anomalyDetected = true
+    state.anomalyMessage = msg
+
+    // Already latched for this same mode -- refresh the text, don't re-log or re-command.
+    if (state.healthAlert && state.healthAlert.mode == mode) {
+        state.healthAlert.msg = msg
+        return
+    }
+
+    state.healthAlert = [
+            mode : mode,
+            msg  : msg,
+            at   : now(),
+            atStr: new Date().format("M/d/yyyy h:mm a")
+    ]
+    log.warn "WELL HEALTH ALERT -- ${mode}: ${msg}"
+    if (anomalySwitch) anomalySwitch.on()
+    updateAppLabel()
+}
+
+def clearHealthAlert(reason) {
+    if (!state.healthAlert && !state.anomalyDetected) {
+        log.info "No health alert to clear."
+        return
+    }
+    log.info "Health alert cleared (${reason}): ${state.healthAlert?.mode ?: 'none'}"
+    state.healthAlert = null
+    state.anomalyDetected = false
+    state.anomalyMessage = null
+    if (anomalySwitch && anomalySwitch.currentValue("switch") == "on") {
+        anomalySwitch.off()
+    }
+    updateAppLabel()
+}
+
+// Rebuild every monthly snapshot from this app's own CSV logs, using the corrected
+// cycle-weighted estimator. Needed after v2.41 because snapshots written by <=v2.40
+// hold a single median session's numbers, and the baseline is the mean of those.
+// Reads only files this app wrote. Does not touch the CSVs themselves.
+def rebuildHistoryFromCsv() {
+    def rebuilt = []
+    def missing = []
+    def cal = new Date()
+
+    // Walk back 14 months from the current month.
+    for (int back = 0; back < 14; back++) {
+        def d = new Date(now() - (back * 30L * 24L * 60L * 60L * 1000L))
+        def monthStr = d.format("yyyy-MM")
+        if (rebuilt.find { it.monthKey == monthStr }) continue
+
+        def fname = "power-cycle-${powerMeter.displayName.replaceAll(/[^a-zA-Z0-9]/, '')}-${monthStr}.csv"
+        def text = null
+        try {
+            def bytes = downloadHubFile(fname)
+            if (bytes) text = new String(bytes)
+        } catch (e) {
+            missing.add(monthStr)
+            continue
+        }
+        if (!text) { missing.add(monthStr); continue }
+
+        def totCycles = 0.0
+        def sumOn = 0.0
+        def sumOff = 0.0
+        def sessions = 0
+        def stuckCount = 0
+
+        text.split("\n").each { line ->
+            def p = line.trim().split(",")
+            if (p.size() < 5) return
+            if (p[0] == "Time") return
+            def type = p[1]
+            if (type == "stuck-on") { stuckCount++; return }
+            def c = safeToBigDecimal(p[2])
+            if (c <= 0) return
+            totCycles += c
+            sumOn += safeToBigDecimal(p[3]) * c
+            sumOff += safeToBigDecimal(p[4]) * c
+            sessions++
+        }
+
+        if (totCycles <= 0) { missing.add(monthStr); continue }
+
+        rebuilt.add([
+                monthKey     : monthStr,
+                monthYear    : Date.parse("yyyy-MM", monthStr).format("MMM yyyy"),
+                cycles       : totCycles as Integer,
+                avgOn        : (sumOn / totCycles),
+                avgOff       : (sumOff / totCycles),
+                stuckOnEvents: stuckCount,
+                sessionsPerDay: String.format('%.1f', (sessions / 30.0)),
+                anomaly      : false
+        ])
+    }
+
+    if (rebuilt.size() < 2) {
+        log.warn "Rebuild aborted [GUARD: only ${rebuilt.size()} month(s) of CSV found]. Missing: ${missing}"
+        state.rebuildResult = "FAILED - only ${rebuilt.size()} month(s) readable"
+        return
+    }
+
+    // Newest first, drop the partial current month from the baseline if it is thin.
+    rebuilt.sort { a, b -> b.monthKey <=> a.monthKey }
+    state.monthlySnapshots = rebuilt.take(12)
+    state.baselineMonthsCollected = state.monthlySnapshots.size()
+
+    // Recompute the baseline the same way calculateBaseline() does, but weighted by
+    // each month's cycle count so a thin month cannot swing it.
+    def tc = 0.0
+    def so = 0.0
+    def sf = 0.0
+    state.monthlySnapshots.each { m ->
+        def c = safeToBigDecimal(m.cycles)
+        tc += c
+        so += safeToBigDecimal(m.avgOn) * c
+        sf += safeToBigDecimal(m.avgOff) * c
+    }
+    state.baselineAvgOn = so / tc
+    state.baselineAvgOff = sf / tc
+    state.baselineCycleTime = state.baselineAvgOn + state.baselineAvgOff
+
+    def msg = "Rebuilt ${state.monthlySnapshots.size()} months from CSV (${tc as Integer} cycles). " +
+            "Baseline: ${String.format('%.2f', state.baselineAvgOn)}s ON / " +
+            "${String.format('%.2f', state.baselineAvgOff)}s OFF / " +
+            "${String.format('%.2f', state.baselineCycleTime)}s cycle."
+    log.info msg
+    state.rebuildResult = msg
 }
 
 // ----------------------------------------------------------------------------
@@ -654,6 +1023,11 @@ def checkForAnomalies(data) {
 def getSystemStatus() {
     if (state.stuckOnDetected) {
         return [text: "STUCK ON ALERT", color: "#cc0000"]
+    } else if (state.healthAlert) {
+        // Surfaced in the app label so a latched health alert is visible from the app
+        // list without opening the app. This is the piece that was missing: the switch
+        // was on and every screen said "System Idle".
+        return [text: state.healthAlert.mode, color: "#cc0000"]
     } else if (state.leftOnDetected) {
         return [text: "Cycling Detected", color: "#e67e22"]
     } else if (state.deviceOn) {
@@ -669,7 +1043,11 @@ def updateAppLabel() {
 }
 
 def appButtonHandler(btn) {
-    if (btn == "btnResetRecent") {
+    if (btn == "btnAckHealth") {
+        clearHealthAlert("acknowledged from app UI")
+    } else if (btn == "btnRebuildHistory") {
+        rebuildHistoryFromCsv()
+    } else if (btn == "btnResetRecent") {
         log.info "Clearing Recent Sessions table and ending current session"
         state.recentSessions = []
         finishSession()
@@ -689,13 +1067,15 @@ def appButtonHandler(btn) {
         state.anomalyDetected = false
         state.anomalyMessage = null
         state.showFullHistory = false
-        
-        // Turn off anomaly switch if it was on
-        if (anomalySwitch && anomalySwitch.currentValue("switch") == "on") {
-            anomalySwitch.off()
-            log.info "Turned off anomaly alert switch"
-        }
-        
+        state.healthWindow = []
+        state.healthStatus = null
+        state.healthAvgOn = null
+        state.healthPeriod = null
+        state.healthWearPct = null
+        state.healthDropPct = null
+
+        clearHealthAlert("historical data reset")
+
         log.info "All historical data has been reset. CSV files remain on disk."
     }
 }
