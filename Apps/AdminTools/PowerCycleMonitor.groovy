@@ -1,8 +1,22 @@
 /**
- * Power Cycle Monitor v2.41 (Smart Dashboard)
+ * Power Cycle Monitor v2.42 (Smart Dashboard)
  *
  * Monitor power meters to detect cycling patterns and stuck-on failures
  * with historical tracking and trend analysis.
+ *
+ * v2.42 Changes:
+ * - NEW: Notification support. A latched switch is durable state, but it is not an
+ *   event -- nothing tells you the moment it trips. Alerts can now also go to any
+ *   notification device (phone, email). Notifications fire once per DISTINCT alert,
+ *   on the new-latch path only, so a condition persisting for weeks notifies once
+ *   rather than every session. Switches are unchanged and still latch.
+ * - NEW: "Enable Stuck-ON Detection" toggle. Some loads are legitimately left running
+ *   for hours (a garage heater through winter), where a long continuous run is normal
+ *   rather than a fault. Off means no alert, no notification, and no stuck-on rows
+ *   polluting the CSV or the monthly counters. Defaults TRUE so existing installs,
+ *   where the setting is null, keep detecting exactly as before.
+ * - Notification failures are caught per device: a phone that has gone away must not
+ *   abort the alert path that has already set the state and the switch.
  *
  * v2.41 Changes — EQUIPMENT HEALTH DETECTION REWRITE:
  * - FIX: the anomaly switch was never turned off by any code path except the
@@ -81,7 +95,7 @@ preferences {
 }
 
 def mainPage() {
-    dynamicPage(name: "mainPage", title: "Power Cycle Monitor v2.40", install: true, uninstall: true) {
+    dynamicPage(name: "mainPage", title: "Power Cycle Monitor v2.42", install: true, uninstall: true) {
 
         // 1. Device to Monitor
         section(getFormat("header-green", "Device to Monitor")) {
@@ -99,8 +113,25 @@ def mainPage() {
 
         // 3. Stuck-ON Detection (Failure Monitor)
         section(getFormat("header-green", "Stuck-ON Detection (Failure Monitor)")) {
-            input "stuckOnTimeout", "number", title: "Alert if ON longer than (min)", required: true, defaultValue: 15
-            input "stuckOnAlertSwitch", "capability.switch", title: "Stuck-ON Switch (Optional)", required: false, description: "Turns ON when stuck detected"
+            // Default TRUE so existing installs (where this setting is null) keep detecting.
+            input "enableStuckOn", "bool", title: "Enable Stuck-ON Detection", defaultValue: true, submitOnChange: true
+            if (settings.enableStuckOn != false) {
+                input "stuckOnTimeout", "number", title: "Alert if ON longer than (min)", required: true, defaultValue: 15
+                input "stuckOnAlertSwitch", "capability.switch", title: "Stuck-ON Switch (Optional)", required: false, description: "Turns ON when stuck detected"
+            } else {
+                paragraph "<div style='background-color:#f0f0f0; padding:10px; border-radius:5px;'>Stuck-ON detection is <b>off</b>. No alert, no notification, and no <i>stuck-on</i> rows written to the CSV or counted in Monthly History. Appropriate for a load that is legitimately left running for long stretches (a heater through the winter), where a long continuous run is normal rather than a fault.</div>"
+            }
+        }
+
+        // 3b. Notifications
+        section(getFormat("header-green", "Notifications")) {
+            input "notifyDevice", "capability.notification", title: "Send alerts to", required: false, multiple: true,
+                    description: "Phones, email, or any notifier. Alert switches still latch independently."
+            if (settings.notifyDevice) {
+                input "notifyOnHealth", "bool", title: "Notify on equipment health alerts", defaultValue: true
+                input "notifyOnStuckOn", "bool", title: "Notify on Stuck-ON", defaultValue: true
+                paragraph "<small style='color:#666;'>One notification per distinct alert, not one per session &mdash; a latched alert that stays latched will not re-notify.</small>"
+            }
         }
 
         // 4. Current Session (always visible)
@@ -509,6 +540,12 @@ def checkForCyclingAlert() {
 }
 
 def checkStuckOn() {
+    // Off by explicit choice: no alert, no notification, and no stuck-on row logged.
+    // Guard names itself so a silent detector is never mistaken for a healthy one.
+    if (settings.enableStuckOn == false) {
+        logDebug "Stuck-ON check skipped [GUARD: detection disabled in settings]"
+        return
+    }
     if (!state.deviceOn || !state.continuousOnStart) return
 
     def onDurationMinutes = (now() - state.continuousOnStart) / 1000.0 / 60.0
@@ -518,6 +555,10 @@ def checkStuckOn() {
         state.stuckOnDetected = true
 
         if (stuckOnAlertSwitch) stuckOnAlertSwitch.on()
+        if (notifyOnStuckOn != false) {
+            sendNotify("${labelPrefix ?: powerMeter?.displayName}: STUCK ON for " +
+                    "${String.format('%.0f', onDurationMinutes)} minutes (limit ${stuckOnTimeout}).")
+        }
 
         if (enableHistoryTracking) {
             recordSessionData("stuck-on")
@@ -902,9 +943,29 @@ def raiseHealthAlert(mode, msg) {
             at   : now(),
             atStr: new Date().format("M/d/yyyy h:mm a")
     ]
-    log.warn "WELL HEALTH ALERT -- ${mode}: ${msg}"
+    log.warn "EQUIPMENT HEALTH ALERT -- ${mode}: ${msg}"
     if (anomalySwitch) anomalySwitch.on()
+
+    // Notification fires only here, on a NEW latch -- never on the refresh path above,
+    // so a condition that persists for weeks notifies once rather than every session.
+    if (notifyOnHealth != false) {
+        sendNotify("${labelPrefix ?: powerMeter?.displayName} -- ${mode}: ${msg}")
+    }
     updateAppLabel()
+}
+
+// Notify without letting a bad notifier take the app down with it. A notification
+// device is often a phone that has gone away; that must not abort the alert path
+// that has already set the state and the switch.
+def sendNotify(msg) {
+    if (!notifyDevice) return
+    notifyDevice.each { d ->
+        try {
+            d.deviceNotification(msg)
+        } catch (e) {
+            log.error "Notification to ${d?.displayName} failed: ${e.message}"
+        }
+    }
 }
 
 def clearHealthAlert(reason) {
