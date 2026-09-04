@@ -32,12 +32,21 @@
  *                        the cycle closing; now reconciled after the fact
  *                      - energyStart was taken at confirmation, not at the
  *                        first sample, undercounting kWh
+ *  v0.1.2  2026-09-04  Spin-down was never recorded (spinDownCount 0 on both
+ *                      captured cycles, one of which held 300+ W for 4.5 min).
+ *                      The record was gated on the single sample that closed
+ *                      the grace window being below spinEndWatts, but the
+ *                      post-spin drain swings from ~7 W to ~350 W, so that
+ *                      sample's value was effectively a coin flip - and on a
+ *                      miss the sustained period was discarded with no retry.
+ *                      The grace window alone now defines the end of the spin;
+ *                      spinEndWatts is retired. Adds spinHeldSec to the record.
  */
 
 import groovy.transform.Field
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.1"
+@Field static final String VERSION = "0.1.2"
 
 // Shared across all instances of this child app; keyed by app.id.
 // Lost on hub reboot or code save - that is what the state checkpoint is for.
@@ -86,8 +95,7 @@ def mainPage() {
                       "checked against real cycles before anything depends on it.</i>"
             input "spinWatts", "decimal", title: "Spin considered active above (watts)", defaultValue: 300, required: true
             input "spinSustainSec", "number", title: "...once sustained for at least (seconds)", defaultValue: 60, required: true
-            input "spinEndWatts", "decimal", title: "Spin-down recorded when it falls below (watts)", defaultValue: 50, required: true
-            input "spinGraceSec", "number", title: "...and has stayed below for at least (seconds)", defaultValue: 15, required: true
+            input "spinGraceSec", "number", title: "...and is over once it has stayed below that for (seconds)", defaultValue: 15, required: true
         }
 
         section("<b>Data</b>") {
@@ -207,6 +215,7 @@ private Map bufGet() {
             highLastMs    : null,
             spinDownMs    : null,
             spinDownCount : 0,
+            spinHeldSec   : null,
             energyStart   : null,
             energyLast    : null,
             eventCount    : 0
@@ -338,18 +347,24 @@ private void accumulate(Map b, Long ms, BigDecimal w) {
     // Sustained spin, then collapse => spin-down candidate.
     // Spin power oscillates across the threshold, so a single dip must not
     // reset the sustained timer - the spin is only over once power has stayed
-    // below the threshold for the grace period.
+    // below the threshold for the whole grace period. That grace window is
+    // the ONLY test for "the spin ended": the sample that happens to close
+    // the window is not required to be low itself, because the post-spin
+    // drain swings between single-digit and several-hundred watts and that
+    // one sample's value is effectively random.
     BigDecimal sw = (spinWatts ?: 300) as BigDecimal
-    BigDecimal se = (spinEndWatts ?: 50) as BigDecimal
     Long graceMs = ((spinGraceSec ?: 15) as Long) * 1000L
     if (w >= sw) {
         if (b.highSince == null) b.highSince = ms
         b.highLastMs = ms
     } else if (b.highSince != null && b.highLastMs != null && (ms - (b.highLastMs as Long)) >= graceMs) {
         Long held = (b.highLastMs as Long) - (b.highSince as Long)
-        if (held >= ((spinSustainSec ?: 60) as Long) * 1000L && w < se) {
+        if (held >= ((spinSustainSec ?: 60) as Long) * 1000L) {
+            // keep the LAST sustained high period - a later, longer spin
+            // supersedes an earlier one
             b.spinDownMs = b.highLastMs          // when the spin actually ended
             b.spinDownCount = (b.spinDownCount ?: 0) + 1
+            b.spinHeldSec = (int)(held / 1000L)
             logDebug "spin-down candidate #${b.spinDownCount} at ${isoOf(b.highLastMs)} after ${(int)(held/1000)}s above ${sw} W"
         }
         b.highSince = null
@@ -457,6 +472,7 @@ def endCycle() {
         bandSecs         : b.bands.collect { (int)(it / 1000L) },
         spinDownMs       : b.spinDownMs,
         spinDownCount    : b.spinDownCount ?: 0,
+        spinHeldSec      : b.spinHeldSec,
         spinLeadSec      : b.spinDownMs ? (int)((endMs - (b.spinDownMs as Long)) / 1000L) : null,
         possibleMergedRun: b.possibleMerged ?: false,
         mergeSplitMs     : b.mergeSplitMs,
