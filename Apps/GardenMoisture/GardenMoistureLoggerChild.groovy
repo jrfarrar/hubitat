@@ -47,6 +47,81 @@
  *      confidence until a soaking event re-confirms it.
  *
  *  v0.1.0  2026-08-31  Initial release.
+ *  v0.3.3  2026-09-04  The season switch is now a PAUSE, not a reset.
+ *
+ *                      J.R.'s question: why throw away what we learned about
+ *                      field capacity every spring, instead of keeping a rolling
+ *                      window and letting new observations displace the old?
+ *
+ *                      Answered off-hub rather than by argument. Fixing
+ *                      season_harness.py to be able to test it at all was the
+ *                      first finding: its two restart modes, 'clear' and
+ *                      'demote', BOTH wiped the daily pool - which is the only
+ *                      thing the shipped percentile FC method reads - so they
+ *                      were the same estimator and the existing comparison said
+ *                      nothing about the config actually running.
+ *
+ *                      With a real 'keep' mode and a cold-start measurement
+ *                      added, across 4 seasons x 12 seeds:
+ *                        - blind days at the start of each season: 19 -> 0
+ *                        - fires-too-late: FEWER when keeping, at 1x, 2x and 3x
+ *                          the modelled re-seat offset. The wipe's negative bias
+ *                          is what made it fire late.
+ *                        - cost: MAE up 0.3-3 points, high-side tail up to +16
+ *                          at 3x offsets - i.e. early alerts, not missed ones.
+ *
+ *                      The app already had every bound needed to do this:
+ *                      anchorWindowDays at 730 days exists precisely so
+ *                      observations survive across seasons, and the handler was
+ *                      wiping them anyway. The two contradicted each other.
+ *
+ *                      Retires state.seasonStartedMs as a gate (kept as a record),
+ *                      the 30-day guard, and the seasonDoubleTap failure class.
+ *                      See SEASON_WIPE_VS_KEEP.md.
+ *
+ *  v0.3.2  2026-09-04  Probe-out detection rebuilt on measured numbers.
+ *
+ *                      The probe was deliberately pulled and logged at 10 s
+ *                      resolution. Removal is a CLIFF, not a curve: soilAD went
+ *                      277 -> 59 in a single report cycle, ~105 s after the
+ *                      pull, and sat at 58-59 the whole time it was out. Dry in
+ *                      open air at pairing it read 47. So the out-of-ground
+ *                      band is AD 47-59, against a driest-soil-all-season of
+ *                      AD 228. One reading is enough; no rate rule, no
+ *                      multi-sample confirmation.
+ *
+ *                      1. Threshold is now a SETTING in soilAD units
+ *                         (outOfGroundAD, default 90) rather than a percentage.
+ *                         Percent is clamped to 0 below AD 67, so it cannot
+ *                         tell "out of the ground" from "very dry soil" - both
+ *                         read 0. AD can. Falls back to the old percentage test
+ *                         when soilAD is unavailable, so a sensor that does not
+ *                         report it still works.
+ *
+ *                      2. The confirm delay was 2 HOURS, hardcoded. Given a
+ *                         105 s cliff that is indefensible; it is now a setting
+ *                         (outGraceMin, default 10).
+ *
+ *                      3. trackLowestSurvived had no probe-out guard, unlike
+ *                         its two siblings, and the grace period did NOT cover
+ *                         it - it banks on the FIRST low sample, long before
+ *                         suspectOutOfGround latches. It is display-only, so
+ *                         this was cosmetic rather than dangerous, but a status
+ *                         page reading 0% is still a lie.
+ *
+ *                      4. Rows are TAGGED. The CSV note column has been empty
+ *                         on every row ever written; out-of-ground samples now
+ *                         say so, so the archive carries what the app knew.
+ *
+ *                      5. Learning is held for a period after the probe comes
+ *                         back (returnHoldMin, default 30). On reinsertion it
+ *                         read 48% against a pre-pull 59% and climbed for
+ *                         30+ min. NOTE: that figure is CONFOUNDED - rain
+ *                         stopped mid-test, so real drainage and insertion
+ *                         deficit are mixed and the true settling time is not
+ *                         known. 30 min is a placeholder pending a repeat in
+ *                         stable dry weather, not a measured value.
+ *
  *  v0.3.1  2026-09-02  Fix: rainEvent is not monotonic, and closeEvent
  *                      assumed it was.
  *
@@ -249,7 +324,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.3.1"
+@Field static final String VERSION = "0.3.3"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -307,7 +382,21 @@ def mainPage() {
             input "seasonSwitch", "capability.switch", title: "\"Garden season active\" switch (optional)",
                   required: false, multiple: false
             input "seasonAssumeActive", "bool", title: "If no switch is selected, assume the season is active", defaultValue: true
-            input "outOfGroundPct", "decimal", title: "Suspect the probe is out of the ground below this reading", defaultValue: 6, required: true
+            input "outOfGroundAD", "number", title: "Suspect the probe is out of the ground below this <b>soilAD</b> reading", defaultValue: 90, required: true
+            paragraph "<i>Measured 2026-09-04 by pulling the probe: in soil it read AD 277, out of " +
+                      "the ground 58-59, and dry in open air at pairing 47. The driest soil all " +
+                      "season was AD 228. The default of 90 sits between those with room on both " +
+                      "sides. AD is used rather than the percentage because the percentage clamps " +
+                      "to 0 below about AD 67, so it cannot tell a removed probe from very dry soil.</i>"
+            input "outOfGroundPct", "decimal", title: "Fallback: suspect removal below this <b>percentage</b> (used only if soilAD is unavailable)", defaultValue: 6, required: true
+            input "outGraceMin", "number", title: "...but only after the reading has stayed there this many minutes", defaultValue: 10, required: true
+            paragraph "<i>Removal shows up as a cliff within about 105 s - one sensor report - so a " +
+                      "long confirmation window buys nothing and leaves the probe unguarded " +
+                      "meanwhile. This was hardcoded at 2 hours before v0.3.2.</i>"
+            input "returnHoldMin", "number", title: "After the probe returns, wait this many minutes before learning again", defaultValue: 30, required: true
+            paragraph "<i>A reinserted probe reads low until soil contact re-establishes. The one " +
+                      "measurement of this is confounded (rain stopped mid-test, so drainage and " +
+                      "insertion deficit are mixed), so 30 is a placeholder, not a measured value.</i>"
         }
 
         section("<b>Sampling</b>") {
@@ -629,6 +718,7 @@ private void clearLearned() {
     state.remove("dayStartPct")
     state.remove("dayStartMs")
     state.remove("lowReadingSinceMs")
+    state.remove("learnHoldUntilMs")
     state.remove("staleRefPct")
     state.remove("staleRefAD")
     state.remove("lastChangeMs")
@@ -764,25 +854,46 @@ def seasonHandler(evt) {
     }
 
     if (evt.value == "on") {
-        // The probe has just gone back in the ground, almost certainly in a
-        // slightly different spot at a slightly different depth. Last season's
-        // anchors are a reasonable prior but must not be trusted as fact, so
-        // FC confidence is dropped until a real soaking re-confirms it.
-        Long started = state.seasonStartedMs as Long
-        if (started != null && (now() - started) < scaleMs(30L * 86400000L)) {
-            logInfo "season switched on again only ${daysSince(started)} day(s) after the last start - " +
-                    "keeping field-capacity observations rather than assuming the probe moved"
-            state.suspectOutOfGround = false
-            return
-        }
+        // v0.3.3: the season switch is a PAUSE, not a reset.
+        //
+        // This used to wipe fcObs, fcDaily and lowestSurvived, on the theory that
+        // a re-seated probe invalidates last season's scale. Measured off-hub over
+        // 4 synthetic seasons x 12 seeds (season_harness.py; write-up in
+        // SEASON_WIPE_VS_KEEP.md) the wipe was worse on both counts that matter:
+        //
+        //   - It cost 19 BLIND DAYS at the start of every season - the 20-day
+        //     minimum on the percentile pool - during which no threshold exists.
+        //   - It made the app fire LATE more often, not less. Wiping leaves a
+        //     strong negative bias (-3.6, -2.1 in two of three gardener profiles),
+        //     so it under-estimates the threshold. Keeping the history had FEWER
+        //     fires-too-late at every re-seat offset tested: 1x, 2x and 3x the
+        //     modelled +/-3.5 points.
+        //
+        // Nothing needs discarding here, because the bounds already exist and were
+        // always meant to do this job: anchorWindowDays (730 d) ages out genuinely
+        // stale observations, fcDaily caps at 800 entries and fcObs at 40 so new
+        // readings displace old ones, and FC is a MEDIAN of the top decile - so a
+        // re-seat offset drags the estimate gradually rather than lurching it.
+        //
+        // A probe moved to a genuinely different bed is a different event, and
+        // Clear Learned Data already exists for exactly that.
+        //
+        // Known cost: at large re-seat offsets the estimate runs high for the first
+        // few weeks, so expect some early "needs water" alerts. That is the safe
+        // direction - a false alert costs credibility, a missed one costs plants -
+        // but it is not free given this project exists to avoid notification
+        // fatigue. If it bites, shorten anchorWindowDays from 730 to ~400 to carry
+        // one winter instead of two.
+        //
+        // Removing the wipe also retires the old 30-day guard and the mis-tap
+        // failure it only half-covered: a stray double tap can no longer cost a
+        // season of anchors, and neither can a stray tap 31 days later.
         state.seasonStartedMs = now()
-        state.fcObs = []
-        state.fcDaily = []
         state.suspectOutOfGround = false
-        state.lowestSurvived = null
         saveAnchors()
-        logInfo "season started - field-capacity observations cleared, waiting for a soaking to re-anchor. " +
-                "Stress marks kept as a prior."
+        logInfo "season started - carrying ${(state.fcDaily ?: []).size()} daily level(s) and " +
+                "${(state.fcObs ?: []).size()} soaking observation(s) forward. Use Clear Learned " +
+                "Data instead if the probe moved to a different bed."
     } else {
         logInfo "season ended - learning suspended, sampling continues"
     }
@@ -837,7 +948,10 @@ def sampleTick() {
     checkStale()
     checkOutOfGround(pct)
     trackLowestSurvived(pct)
-    appendRow(ms, pct, null)
+    // Tag the row with what the app believed at the time. The note column has
+    // been empty on every row ever written, which is why an archive scan cannot
+    // tell a removed probe from a real reading without re-deriving it.
+    appendRow(ms, pct, outOfGroundNote())
     flushThrottled()
     backfillFollowUps()
 }
@@ -961,9 +1075,12 @@ private void checkRise(Long ms, BigDecimal pct) {
     // which then banks a stress observation at 0%. Seen on the real install; the
     // simulator could never produce it because the sim device always starts sane.
     BigDecimal lowPct = safeDec(lowest.pct)
-    if (lowPct != null && lowPct <= numSetting(outOfGroundPct, 6)) {
-        logDebug "ignoring a rise from ${lowPct} - baseline is at or below the probe-out level, " +
-                 "so this is the sensor coming online rather than water going in"
+    // Judge the BASELINE sample on its own recorded ad, not on the live reading -
+    // by now the probe may well be back in the soil and reading normally.
+    if (sampleOutOfGround(lowest.ad, lowPct)) {
+        logDebug "ignoring a rise from ${lowPct} (AD ${lowest.ad}) - baseline is at or below the " +
+                 "probe-out level, so this is the sensor coming online or the probe going back " +
+                 "in the ground rather than water going in"
         return
     }
     if (rise >= numSetting(riseThreshold, 4)) {
@@ -1258,6 +1375,9 @@ private Boolean canLearn() {
     if (freezing()) return false
     if (state.suspectOutOfGround) return false
     if (state.sensorStale) return false
+    // Set when the probe comes back from being out; see checkOutOfGround().
+    Long hold = state.learnHoldUntilMs as Long
+    if (hold != null && now() < hold) return false
     return true
 }
 
@@ -1318,34 +1438,95 @@ private void checkStale() {
     }
 }
 
-/** Scaled, but floored: at 5000x the raw 2 h grace becomes 1.44 s, so a single
- *  low reading would trip the probe-out guard and silently stop learning. */
+/** Scaled, but floored: at 5000x a 10 min grace becomes 0.12 s, so a single low
+ *  reading would trip the probe-out guard and silently stop learning. */
 private Long outGraceMs() {
-    Long g = scaleMs(7200000L)
+    Long g = scaleMs(intSetting(outGraceMin, 10) * 60000L)
     if (simActive() && g < 30000L) g = 30000L
     return g
 }
 
+/** Same flooring rationale as outGraceMs(). */
+private Long returnHoldMs() {
+    Long g = scaleMs(intSetting(returnHoldMin, 30) * 60000L)
+    if (simActive() && g < 30000L) g = 30000L
+    return g
+}
+
+/**
+ * True when the current sample does not look like it is in soil.
+ *
+ * Prefers soilAD. The percentage is clamped to 0 everywhere below about AD 67,
+ * so on that axis "removed" and "bone dry" are the same number and cannot be
+ * separated; on the AD axis they are ~170 counts apart. Measured 2026-09-04 by
+ * pulling the probe: out of the ground reads AD 47-59, while the driest soil
+ * all season was AD 228.
+ *
+ * Falls back to the percentage when soilAD is missing, so a sensor that does
+ * not publish it keeps the old behaviour rather than losing the guard entirely.
+ */
+private boolean sampleOutOfGround(def adRaw, BigDecimal pct) {
+    BigDecimal ad = safeDec(adRaw)
+    if (ad != null) return ad <= numSetting(outOfGroundAD, 90)
+    if (pct == null) return false
+    return pct <= numSetting(outOfGroundPct, 6)
+}
+
+/** The CURRENT sample. For a historical one - an event baseline, say - call
+ *  sampleOutOfGround() with that sample's own ad, not the live reading. */
+private boolean looksOutOfGround(BigDecimal pct) {
+    return sampleOutOfGround(state.lastAD, pct)
+}
+
+/**
+ * What to write in the CSV note column for this sample, or null for none.
+ *
+ * Deliberately distinguishes the suspected case from the confirmed one. A row
+ * that is below the threshold but inside the grace period is not yet acted on,
+ * and an archive that flattened those two together would misreport when
+ * learning actually stopped. No commas - this lands in a CSV field unquoted.
+ */
+private String outOfGroundNote() {
+    if (looksOutOfGround(safeDec(state.lastPct))) {
+        return state.suspectOutOfGround ? "probe-out" : "probe-out-unconfirmed"
+    }
+    Long hold = state.learnHoldUntilMs as Long
+    if (hold != null && now() < hold) return "probe-returned-settling"
+    return null
+}
+
 private void checkOutOfGround(BigDecimal pct) {
-    BigDecimal limit = numSetting(outOfGroundPct, 6)
-    if (pct <= limit) {
+    if (looksOutOfGround(pct)) {
         if (state.lowReadingSinceMs == null) state.lowReadingSinceMs = now()
         else if ((now() - (state.lowReadingSinceMs as Long)) > outGraceMs() && !state.suspectOutOfGround) {
             state.suspectOutOfGround = true
-            log.warn "${app.label}: reading has sat at or below ${limit}% for over 2 h - " +
+            log.warn "${app.label}: reading has sat at or below the probe-out level " +
+                     "(AD ${state.lastAD}, ${pct}%) for over ${intSetting(outGraceMin, 10)} min - " +
                      "probe may be out of the ground. Learning suspended until it recovers."
         }
     } else {
         state.lowReadingSinceMs = null
         if (state.suspectOutOfGround) {
             state.suspectOutOfGround = false
-            logInfo "reading recovered above ${limit}% - learning resumed"
+            // The probe is back, but a reinserted one reads low until soil
+            // contact re-establishes - measured at 48% against a pre-pull 59%,
+            // still climbing 30 min later. Learning off that dip would bank an
+            // artificially dry reading as a real observation.
+            state.learnHoldUntilMs = now() + returnHoldMs()
+            logInfo "reading recovered (AD ${state.lastAD}) - probe looks back in the ground. " +
+                    "Learning held ${intSetting(returnHoldMin, 30)} min while contact settles."
         }
     }
 }
 
 private void trackLowestSurvived(BigDecimal pct) {
     if (!canLearn()) return
+    // canLearn() alone is NOT enough here. suspectOutOfGround does not latch
+    // until the grace period expires, but this banks on the FIRST low sample -
+    // so without a direct test a single pull drops the record to 0 immediately,
+    // and it never recovers because the comparison is one-way. Display-only, so
+    // the cost is a status page that lies rather than a bad watering decision.
+    if (looksOutOfGround(pct)) return
     BigDecimal cur = safeDec(state.lowestSurvived)
     if (cur == null || pct < cur) state.lowestSurvived = pct
 }
@@ -1362,7 +1543,7 @@ private void addFcObservation(BigDecimal pct, Long ms) {
 private void recordImplicitStress(BigDecimal pct, Long ms) {
     if (pct == null || !canLearn()) return
     // Never anchor on a reading the probe-out guard would call "not in soil".
-    if (pct <= numSetting(outOfGroundPct, 6)) {
+    if (looksOutOfGround(pct)) {
         log.warn "${app.label}: refusing to bank ${pct} as a stress observation - at or below " +
                  "the probe-out level, so it is not a real watering baseline"
         return

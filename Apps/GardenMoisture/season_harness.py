@@ -71,6 +71,10 @@ class Estimator:
         self.fc_obs = []        # (day, pct, is_prior)
         self.stress_obs = []    # (day, pct)
         self.daily = []         # (day, settled pct) - percentile mode only
+        self.implicit_obs = []  # (day, moisture when she chose to water)
+        self.stress_mode = "explicit"
+        self.implicit_pct = 25  # percentile of watering-start readings
+        self.min_implicit = 4
 
     def add_fc(self, day, pct):
         self.fc_obs.append((day, pct, False))
@@ -87,10 +91,49 @@ class Estimator:
         if len(self.stress_obs) > 40:
             self.stress_obs.pop(0)
 
+    def add_implicit(self, day, pct):
+        """Moisture at the moment she CHOSE to water - an implicit stress signal.
+
+        Filtered when self.implicit_filter is on: only counts if the soil was
+        actually in the drier half of its own observed range. Preventative
+        watering on a wet garden is not evidence about dryness, and including it
+        drags the stress estimate up - which raises the threshold and makes the
+        app notify too early.
+        """
+        if not hasattr(self, "implicit_obs"):
+            self.implicit_obs = []
+        if getattr(self, "implicit_filter", False):
+            vals = [v for (_d, v) in self.daily]
+            if len(vals) >= 15:
+                mid = sorted(vals)[len(vals) // 2]
+                if pct >= mid:
+                    return
+        self.implicit_obs.append((day, pct))
+        if len(self.implicit_obs) > 60:
+            self.implicit_obs.pop(0)
+
     def season_restart(self, day):
         if self.restart == "clear":
             self.fc_obs = []
             self.daily = []
+        elif self.restart == "keep":
+            # J.R.'s proposal, 2026-09-04: the season switch is a PAUSE, not a
+            # reset. Nothing is discarded at the boundary.
+            #
+            # This mode exists because neither of the other two could test the
+            # idea. Under fc_mode='percentile', _fc_pool() reads ONLY self.daily
+            # - and 'clear' and 'demote' both wipe self.daily, so they are the
+            # same estimator and the comparison was vacuous. The shipped app has
+            # the same shape: a 730-day anchorWindowDays that is meant to carry
+            # observations across seasons, and a season handler that wipes them
+            # anyway.
+            #
+            # The bet is that the existing bounds are already enough: the 730-day
+            # window ages out genuinely stale data, the rolling caps displace old
+            # entries as new ones arrive, and FC is a MEDIAN of the top decile,
+            # so a re-seat offset drags the estimate gradually instead of
+            # lurching it.
+            pass
         else:  # demote
             self.fc_obs = [(d, p, True) for (d, p, _) in self.fc_obs]
             self.daily = []
@@ -114,7 +157,20 @@ class Estimator:
     def evaluate(self, today):
         cutoff = today - self.window
         fc_pool = self._fc_pool(today)
-        st_in = [p for (d, p) in self.stress_obs if d >= cutoff]
+        if getattr(self, "stress_mode", "explicit") == "implicit":
+            imp = [p for (d, p) in getattr(self, "implicit_obs", []) if d >= cutoff]
+            # Low percentile, not the median: some watering is preventative, so
+            # the LOWER tail is where she actually let it get dry. Erring low
+            # keeps the threshold low, which notifies late rather than early.
+            if len(imp) >= self.min_implicit:
+                srt = sorted(imp)
+                k = max(0, min(len(srt) - 1,
+                               int(round((self.implicit_pct / 100.0) * (len(srt) - 1)))))
+                st_in = [srt[k]]
+            else:
+                st_in = []
+        else:
+            st_in = [p for (d, p) in self.stress_obs if d >= cutoff]
 
         out = dict(fc=None, stress=None, fc_obs=len(fc_pool), stress_obs=len(st_in),
                    threshold=None, band=None, confidence="none", gate=None)
@@ -127,15 +183,32 @@ class Estimator:
         if len(fc_pool) < (self.min_fc_obs if self.fc_mode == "rise" else 1):
             out["gate"] = f"needs more soakings (have {len(fc_pool)})"
             return out
-        if len(st_in) < self.min_stress_obs:
-            out["gate"] = f"needs {self.min_stress_obs - len(st_in)} more stress mark(s)"
+        need_st = 1 if getattr(self, "stress_mode", "explicit") == "implicit" else self.min_stress_obs
+        if len(st_in) < need_st:
+            out["gate"] = "needs more watering observations" if need_st == 1 else \
+                          f"needs {self.min_stress_obs - len(st_in)} more stress mark(s)"
             return out
         if out["fc"] is None or out["stress"] is None or out["fc"] <= out["stress"]:
             out["gate"] = "anchors do not make sense yet"
             return out
 
         fc, st = out["fc"], out["stress"]
-        out["threshold"] = round(fc - (fc - st) * self.mad, 1)
+        thr = fc - (fc - st) * self.mad
+
+        # SAFETY CLAMP. The stress anchor is inferred from behaviour, so it can
+        # drift upward if watering becomes routine rather than reactive - and a
+        # too-high stress means a too-high threshold means notifying when the
+        # soil is not actually dry. Independently of the anchor, never let the
+        # threshold sit in the upper part of the soil's own observed range.
+        if getattr(self, "clamp", False):
+            vals = sorted(v for (_d, v) in self.daily if _d >= cutoff)
+            if len(vals) >= 20:
+                floor = vals[max(0, int(0.05 * (len(vals) - 1)))]
+                cap = fc - self.clamp_frac * (fc - floor)
+                if thr > cap:
+                    out["clamped"] = True
+                    thr = cap
+        out["threshold"] = round(thr, 1)
 
         score = 0
         if len(fc_pool) >= self.min_fc_obs + 2:
@@ -183,7 +256,8 @@ def gain_from_water(inches, current, true_fc):
     return min(effective * POINTS_PER_INCH, headroom * 0.92)
 
 
-def run_season(rng, est, day0, n_days, offset, attentiveness, mark_rate):
+def run_season(rng, est, day0, n_days, offset, attentiveness, mark_rate,
+               preventative=0.05, track=None):
     """
     attentiveness: probability she waters on a day the garden is near stress.
                    High = a diligent gardener whose soil rarely gets dry.
@@ -204,6 +278,14 @@ def run_season(rng, est, day0, n_days, offset, attentiveness, mark_rate):
         watered = 0.0
         if moisture < true_stress + 4 and rain == 0 and rng.random() < attentiveness:
             watered = rng.uniform(0.25, 0.55)
+            # This is what the app can see: the reading at the moment she
+            # decided to water. No button press involved.
+            est.add_implicit(day, round(moisture, 1))
+        # Preventative watering: she waters even though it is NOT dry. This is
+        # the noise the implicit signal has to survive.
+        elif rain == 0 and rng.random() < preventative:
+            watered = rng.uniform(0.2, 0.4)
+            est.add_implicit(day, round(moisture, 1))
 
         before = moisture
         moisture += gain_from_water(rain + watered, moisture, true_fc)
@@ -225,10 +307,52 @@ def run_season(rng, est, day0, n_days, offset, attentiveness, mark_rate):
                 est.add_stress(day, round(moisture, 1))
                 since_mark = 0
 
+        # Cold start: how many days into THIS season before the app can say
+        # anything at all? evaluate() is read-only, so this does not perturb the
+        # run. Measured per season because the whole point of the wipe-vs-keep
+        # question is what happens at the START of a spring, and evaluating only
+        # at season end cannot see it.
+        if track is not None:
+            if track.get("first") is None and est.evaluate(day)["threshold"] is not None:
+                track["first"] = i
+            # Early-season accuracy. This is the real objection to keeping priors:
+            # a threshold available on day 0 is worthless - or worse than
+            # worthless - if it is still on LAST year's scale after the probe was
+            # re-seated. Season-end MAE cannot see this, because by then new
+            # readings have displaced the old ones.
+            if i in (10, 30):
+                track.setdefault("snap", {})[i] = est.evaluate(day)
+
     return day0 + n_days, fc_events
 
 
-def trial(fc_mode, restart, attentiveness, mark_rate, seed, fc_min_rise=10.0):
+def trial(fc_mode, restart, attentiveness, mark_rate, seed, fc_min_rise=10.0,
+          stress_mode="explicit", implicit_pct=25, preventative=0.05):
+    rng = random.Random(seed)
+    est = Estimator(fc_mode=fc_mode, restart=restart, fc_min_rise=fc_min_rise)
+    est.stress_mode = stress_mode
+    est.implicit_pct = implicit_pct
+    day = 0
+    per_season = []
+    for n, offset in enumerate(SEASON_OFFSETS, start=1):
+        if n > 1:
+            day += WINTER_DAYS
+            est.season_restart(day)
+        day, fc_events = run_season(rng, est, day, SEASON_DAYS, offset,
+                                    attentiveness, mark_rate, preventative)
+        a = est.evaluate(day)
+        true_fc = TRUE_FC + offset
+        true_stress = TRUE_STRESS + offset
+        true_thr = true_fc - MAD * (true_fc - true_stress)
+        per_season.append(dict(season=n, a=a, true_thr=true_thr,
+                               true_stress=true_stress, fc_events=fc_events))
+    return per_season
+
+
+def trial_cold_start(fc_mode, restart, attentiveness, mark_rate, seed,
+                     fc_min_rise=10.0, preventative=0.05):
+    """Like trial(), but also records how many days into each season a threshold
+    first became available. None means it never did that season."""
     rng = random.Random(seed)
     est = Estimator(fc_mode=fc_mode, restart=restart, fc_min_rise=fc_min_rise)
     day = 0
@@ -237,15 +361,68 @@ def trial(fc_mode, restart, attentiveness, mark_rate, seed, fc_min_rise=10.0):
         if n > 1:
             day += WINTER_DAYS
             est.season_restart(day)
-        day, fc_events = run_season(rng, est, day, SEASON_DAYS, offset,
-                                    attentiveness, mark_rate)
+        track = {"first": None}
+        day, _ = run_season(rng, est, day, SEASON_DAYS, offset,
+                            attentiveness, mark_rate, preventative, track=track)
         a = est.evaluate(day)
         true_fc = TRUE_FC + offset
         true_stress = TRUE_STRESS + offset
-        true_thr = true_fc - MAD * (true_fc - true_stress)
-        per_season.append(dict(season=n, a=a, true_thr=true_thr,
-                               true_stress=true_stress, fc_events=fc_events))
+        per_season.append(dict(season=n, a=a,
+                               true_thr=true_fc - MAD * (true_fc - true_stress),
+                               true_stress=true_stress, first=track["first"],
+                               snap=track.get("snap", {})))
     return per_season
+
+
+def summarise_early(label, runs, dayk):
+    """Accuracy at day `dayk` of seasons 2-4 only - the re-seat exposure window."""
+    errs, late, have, total = [], 0, 0, 0
+    for per_season in runs:
+        for r in per_season:
+            if r["season"] == 1:
+                continue
+            total += 1
+            a = r["snap"].get(dayk)
+            if not a or a["threshold"] is None:
+                continue
+            have += 1
+            errs.append(a["threshold"] - r["true_thr"])
+            if (a["threshold"] - (a["band"] or 0)) <= r["true_stress"]:
+                late += 1
+    if errs:
+        mae = sum(abs(e) for e in errs) / len(errs)
+        bias = sum(errs) / len(errs)
+        worst = max(errs)
+        print(f"  {label:<40} day {dayk:>2}: usable {have:>2}/{total}  "
+              f"MAE {mae:4.1f}  bias {bias:+4.1f}  worst-high {worst:+4.1f}  too-late {late}")
+    else:
+        print(f"  {label:<40} day {dayk:>2}: usable  0/{total}  -- blind --")
+
+
+def summarise_cold_start(label, runs):
+    """Blind days at the start of each season, and accuracy once converged."""
+    firsts, errs, late, got, total = [], [], 0, 0, 0
+    s1, later = [], []
+    for per_season in runs:
+        for r in per_season:
+            total += 1
+            f = r["first"]
+            if f is not None:
+                firsts.append(f)
+                (s1 if r["season"] == 1 else later).append(f)
+            a = r["a"]
+            if a["threshold"] is not None:
+                got += 1
+                errs.append(a["threshold"] - r["true_thr"])
+                if (a["threshold"] - (a["band"] or 0)) <= r["true_stress"]:
+                    late += 1
+    med = statistics.median(firsts) if firsts else float("nan")
+    medl = statistics.median(later) if later else float("nan")
+    mae = sum(abs(e) for e in errs) / len(errs) if errs else float("nan")
+    bias = sum(errs) / len(errs) if errs else float("nan")
+    print(f"  {label:<40} blind days: all {med:5.1f}  seasons2-4 {medl:5.1f}   "
+          f"converged {got:>2}/{total}  MAE {mae:4.1f}  bias {bias:+4.1f}  too-late {late}")
+    return medl
 
 
 def summarise(label, runs):
@@ -334,6 +511,33 @@ def main():
                   f"conf {a['confidence']:<6} fires below {fire:5.1f} [{ok}]")
 
     print()
+    print("-" * 100)
+    print("C2. WIPE vs KEEP at the season boundary  (J.R.'s proposal, 2026-09-04)")
+    print("    'blind days' = days into a season before ANY threshold is available.")
+    print("    Seasons 2-4 is the number that matters: season 1 starts empty either way.")
+    print("-" * 100)
+    for att, mr, name in [(0.60, 0.45, "diligent gardener"),
+                          (0.25, 0.60, "lets it get dry"),
+                          (0.45, 0.20, "rarely marks")]:
+        for restart, tag in [("clear", "WIPE (shipped)"), ("keep", "KEEP (proposed)")]:
+            runs = [trial_cold_start("percentile", restart, att, mr, s) for s in seeds]
+            summarise_cold_start(f"{tag} / {name}", runs)
+        print()
+
+    print("-" * 100)
+    print("C3. THE OBJECTION: is an early threshold from last year's scale SAFE?")
+    print("    Seasons 2-4 only, sampled at day 10 and day 30, after a re-seat offset.")
+    print("    'too-late' is the one that matters: fire line at or below true stress.")
+    print("-" * 100)
+    for att, mr, name in [(0.60, 0.45, "diligent gardener"),
+                          (0.25, 0.60, "lets it get dry"),
+                          (0.45, 0.20, "rarely marks")]:
+        for restart, tag in [("clear", "WIPE (shipped)"), ("keep", "KEEP (proposed)")]:
+            runs = [trial_cold_start("percentile", restart, att, mr, s) for s in seeds]
+            for dk in (10, 30):
+                summarise_early(f"{tag} / {name}", runs, dk)
+        print()
+
     print("-" * 100)
     print("D. VERDICT on the config actually shipped in v0.1")
     print("   (percentile FC, 20-day minimum, daily pool cleared when the probe is re-seated)")
