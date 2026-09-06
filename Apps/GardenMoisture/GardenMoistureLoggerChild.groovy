@@ -324,7 +324,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.3.3"
+@Field static final String VERSION = "0.4.0"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -463,6 +463,39 @@ def mainPage() {
             input "confirmClear", "bool", title: "I understand this cannot be undone", defaultValue: false, submitOnChange: true
             if (confirmClear) input "btnClearLearned", "button", title: "Clear learned data now"
             if (state.lastClearIso) paragraph "<i>Last cleared: ${state.lastClearIso}</i>"
+        }
+
+        section("<b>Learned data - export / import</b>", hideable: true, hidden: true) {
+            paragraph "<i>Anchors take a season to learn. App <b>state</b> is destroyed by a " +
+                      "reinstall, a parent/child rewrite or a move to another hub - and the " +
+                      "automatic anchors file is keyed on this app's internal id, which CHANGES " +
+                      "on reinstall, so it cannot find itself afterwards. Give the export a name " +
+                      "you choose and it survives all three.</i>"
+            input "learnFile", "text", title: "Export file name (a name YOU choose, not the app id)",
+                  description: "blank = derived from this zone's name", required: false
+            input "placementLabel", "text",
+                  title: "Placement label - which bed, which probe, what depth",
+                  description: "e.g. Ky's garden, north bed, probe 8in mid-row", required: false
+            paragraph "<i>Placement is the part that matters. A table learned at one probe position " +
+                      "is not valid at another, and without a label an import silently carries the " +
+                      "wrong numbers forward.</i>"
+            input "learnPersist", "bool",
+                  title: "Keep the export file current automatically (recommended)", defaultValue: true
+            paragraph "<i>An export you have to remember to run does not help when the move was not " +
+                      "planned - a dead hub, a bad reinstall. Leaving this on means the file is " +
+                      "always current and moving is just copying it.</i>"
+            input "btnExportNow", "button", title: "Export learned data now"
+            if (state.learnExportIso) paragraph "<i>Last export: ${state.learnExportIso} -> ${state.learnExportFile ?: learnFileName()}</i>"
+            else paragraph "<i>Nothing exported yet. The export is skipped while there is nothing learned, so it cannot overwrite a good file with an empty one.</i>"
+            if (state.learnWriteError) paragraph "<b style='color:red'>Last export FAILED: ${state.learnWriteError}</b>"
+
+            paragraph "<hr><b>Import into this instance</b>"
+            input "seedFile", "text", title: "Import from this file name", required: false
+            input "seedNow", "bool", title: "Import now (one shot - clears itself)",
+                  defaultValue: false, submitOnChange: true
+            if (state.learnSeededFrom) paragraph "<i>Seeded from: ${state.learnSeededFrom}</i>"
+            paragraph "<i>⚠ Local hub backups do NOT include File Manager files - only cloud backup " +
+                      "does. Copy the export off the hub as well.</i>"
         }
 
         section("<b>Sensor health</b>") {
@@ -617,6 +650,10 @@ def updated() {
     unsubscribe()
     unschedule()
     initialize()
+    // One-shot import. Checked here rather than on a button so the file name
+    // typed alongside it is committed before the import runs. learnSeed()
+    // clears the flag itself, so a later Done cannot silently re-import.
+    if (seedNow == true) learnSeed()
 }
 
 def initialize() {
@@ -692,6 +729,7 @@ def initialize() {
 
 def appButtonHandler(String btn) {
     if (btn == "btnClearLearned") clearLearned()
+    if (btn == "btnExportNow") learnSave(true)
 }
 
 private void clearLearned() {
@@ -2069,6 +2107,246 @@ private void saveAnchors() {
         logDebug "anchors saved"
     } catch (ex) {
         log.warn "${app.label}: anchor save failed - ${ex.message}"
+    }
+    // Outside the try: an anchors write failure must not also skip the export.
+    learnSave()
+}
+
+/* ------------------------------------ learned data: export / import -- */
+
+/**
+ * J.R.'s framing, 2026-09-06: "it's an EXPORT right before moving the app."
+ * Correct as the user-facing action - but the file is kept current
+ * automatically as well, because the moves that lose data are the UNPLANNED
+ * ones: a dead hub, a botched reinstall, a parent/child rewrite done to fix
+ * something else. An export you have to remember does not cover those.
+ *
+ * Distinct from saveAnchors(), which stays as-is: that file is named
+ * garden_<app.id>_anchors.json, and app.id CHANGES on reinstall, so the new
+ * install looks for a file that does not exist and silently starts empty while
+ * a season of learning sits on disk under the old id. This one is named by the
+ * USER, so it survives a reinstall, a hub move, and a parent/child rewrite.
+ *
+ * Mirrors Bathroom Fan NextGen v2.3.0 (learnSave/learnSeed/placementLabel/
+ * seedFile/seedNow) deliberately - same dialect, so the two read together.
+ */
+private String learnFileName() {
+    String lf = (learnFile ?: "").trim()
+    // Fall back to the ZONE NAME, never app.id. Falling back to app.id would
+    // reintroduce the exact bug this feature exists to fix, silently, for any
+    // child created by the parent or pushed via saveOrUpdateJson without the
+    // page ever being opened (Hubitat commits defaultValue only on submit).
+    if (!lf) lf = "garden_learn_" + ((thisName ?: app.label ?: "zone").toString().toLowerCase())
+    lf = lf.replaceAll(/[^A-Za-z0-9_\-.]/, "_")
+    if (!lf.toLowerCase().endsWith(".json")) lf = lf + ".json"
+    // Must not collide with the app's own generated files.
+    if (lf == anchorFileName() || lf.startsWith(filePrefix())) lf = "export_" + lf
+    return lf
+}
+
+/** Everything the app has LEARNED, as opposed to raw samples. */
+private Map learnTables() {
+    return [
+        fcObs          : state.fcObs ?: [],
+        fcDaily        : state.fcDaily ?: [],
+        implicitObs    : state.implicitObs ?: [],
+        stressObs      : state.stressObs ?: [],
+        dryDays        : state.dryDays ?: [],
+        // The wetting-event archive: rain attribution, rainSource, follow-ups.
+        // Not regenerable except from the CSVs. Was missing.
+        events         : state.events ?: [],
+        fcstLog        : state.fcstLog ?: [],
+        lowestSurvived : state.lowestSurvived,
+        seasonStartedMs: state.seasonStartedMs,
+        rainDayKey     : state.rainDayKey,
+        rainDailyMax   : state.rainDailyMax,
+        rainRateMaxToday: state.rainRateMaxToday
+    ]
+}
+
+private Boolean nothingLearned() {
+    Map t = learnTables()
+    return !(t.fcObs || t.fcDaily || t.implicitObs || t.stressObs || t.dryDays ||
+             t.events || t.fcstLog || t.lowestSurvived != null)
+}
+
+private void learnSave(Boolean force = false) {
+    if (!force && learnPersist == false) return
+    // ---------------------------------------------------------------- #1 --
+    // THE important guard. Without it this feature destroys its own backup in
+    // precisely the window it exists for: after a reinstall, state is empty,
+    // learnFile resolves to the same name as the good file, and the first
+    // unattended dayRollover() overwrites a season of learning with []. The
+    // user never touched anything. Never write an empty payload.
+    if (nothingLearned()) {
+        logDebug "export skipped - nothing learned yet, refusing to overwrite ${learnFileName()}"
+        return
+    }
+    try {
+        // A few recent (AD, pct) pairs travel with the data. They are the only
+        // automatic way to detect a RECALIBRATION later: the percentage is
+        // capacitance remapped between the gateway's dry-air and submerged
+        // points, so if those change the same AD maps to a different pct and
+        // every stored percentage anchor is void.
+        List pairs = []
+        (state.recent ?: []).reverse().each { rr ->
+            if (pairs.size() < 5 && rr?.ad != null && rr?.pct != null) pairs << [ad: rr.ad, pct: rr.pct]
+        }
+        Map payload = [
+            provenance: [
+                app         : (app.label ?: "Garden Moisture Logger Child"),
+                appId       : app.id,
+                zone        : (thisName ?: ""),
+                placement   : (placementLabel ?: "UNSET - placement not recorded"),
+                soilDevice  : (soil?.displayName ?: "unknown"),
+                rainDevice  : (rainDev?.displayName ?: "none"),
+                version     : VERSION,
+                writtenIso  : isoOf(now()),
+                adPctPairs  : pairs,
+                // The tables are only interpretable against the settings that
+                // shaped them - the same observations under a different MAD or
+                // percentile give a different threshold.
+                settings    : [
+                    madFraction     : madFraction,
+                    clampFrac       : clampFrac,
+                    implicitPct     : implicitPct,
+                    anchorWindowDays: anchorWindowDays,
+                    minFcObs        : minFcObs,
+                    minImplicitObs  : minImplicitObs,
+                    sampleMin       : sampleMin
+                ],
+                counts      : [
+                    fcObs      : (state.fcObs ?: []).size(),
+                    fcDaily    : (state.fcDaily ?: []).size(),
+                    implicitObs: (state.implicitObs ?: []).size(),
+                    stressObs  : (state.stressObs ?: []).size(),
+                    dryDays    : (state.dryDays ?: []).size(),
+                    events     : (state.events ?: []).size(),
+                    fcstLog    : (state.fcstLog ?: []).size()
+                ]
+            ],
+            learn: learnTables()
+        ]
+        String fn = learnFileName()
+        uploadHubFile(fn, JsonOutput.toJson(payload).getBytes("UTF-8"))
+        state.learnExportIso  = isoOf(now())
+        state.learnExportFile = fn      // the name actually written, not a recomputed one
+        state.learnWriteError = null
+        logDebug "learned data exported to ${fn}"
+    } catch (ex) {
+        state.learnWriteError = ex.message
+        log.warn "${app.label}: could not export learned data - ${ex.message}"
+    }
+}
+
+/** One-shot import. Never automatic: silently inheriting another bed's numbers
+ *  is worse than starting empty. */
+private void learnSeed() {
+    try {
+        String sf = (seedFile ?: "").trim()
+        if (!sf) { log.warn "${app.label}: import requested but no file name given"; return }
+        byte[] raw = downloadHubFile(sf)
+        if (!raw) { log.warn "${app.label}: seed file ${sf} is missing or empty"; return }
+        Map parsed = new JsonSlurper().parseText(new String(raw, "UTF-8"))
+        Map tbl = parsed?.learn as Map
+        if (!tbl) { log.warn "${app.label}: ${sf} has no 'learn' section - nothing imported"; return }
+
+        // ------------------------------------------------------------ #3 --
+        // A valid-but-PARTIAL file must not blank the tables it omits.
+        // `tbl.fcObs ?: []` would replace a season of data with [] for any key
+        // the file happens to lack - a hand-edited file, an older version, a
+        // half-written upload. Require every list, and require the right type.
+        List required = ["fcObs","fcDaily","implicitObs","stressObs","dryDays","events","fcstLog"]
+        List missing = required.findAll { k -> !(tbl.containsKey(k)) }
+        if (missing) {
+            log.warn "${app.label}: REFUSING to import ${sf} - missing ${missing}. A partial file " +
+                     "would blank the tables it omits. Nothing changed."
+            return
+        }
+        List badType = required.findAll { k -> !(tbl[k] instanceof List) }
+        if (badType) {
+            log.warn "${app.label}: REFUSING to import ${sf} - ${badType} are not lists. Nothing changed."
+            return
+        }
+
+        Map prov = (parsed?.provenance ?: [:]) as Map
+        String mine = (placementLabel ?: "")
+        String theirs = (prov?.placement ?: "")
+        if (mine && theirs && mine != theirs) {
+            log.warn "${app.label}: SEED PLACEMENT MISMATCH - this instance is '${mine}' but the " +
+                     "data was learned at '${theirs}'. Imported anyway; treat these as a starting " +
+                     "guess, NOT as measurements of this probe in this hole."
+        } else if (!theirs) {
+            log.warn "${app.label}: seed file records no placement. Cannot tell whether these " +
+                     "numbers apply to this probe position."
+        }
+
+        // ------------------------------------------------------------ #4 --
+        // Calibration check. On a fresh install lastAD/lastPct are still null
+        // (the first sample is 5 s away), which is EXACTLY when imports happen -
+        // so say the check could not run rather than passing silently.
+        BigDecimal nowAD = safeDec(state.lastAD)
+        BigDecimal nowPct = safeDec(state.lastPct)
+        List oldPairs = (prov?.adPctPairs ?: []) as List
+        if (nowAD == null || nowPct == null) {
+            log.warn "${app.label}: no live reading yet, so the calibration check could NOT run. " +
+                     "If the probe was recalibrated since this file was written, every percentage " +
+                     "anchor in it is void. Re-check once a sample arrives."
+        } else if (oldPairs) {
+            BigDecimal bestGap = null
+            oldPairs.each { op ->
+                BigDecimal oad = safeDec(op?.ad); BigDecimal opct = safeDec(op?.pct)
+                if (oad != null && opct != null && (oad - nowAD).abs() <= 5) {
+                    BigDecimal gap = (opct - nowPct).abs()
+                    if (bestGap == null || gap < bestGap) bestGap = gap
+                }
+            }
+            if (bestGap != null && bestGap > 3) {
+                log.warn "${app.label}: CALIBRATION SHIFT SUSPECTED - a similar raw A/D reading " +
+                         "mapped to a percentage ${bestGap} points different when this data was " +
+                         "learned. Imported anyway, but if the probe was recalibrated these anchors " +
+                         "are void - Clear learned data and start over."
+            }
+        }
+
+        // Snapshot before overwriting, so a bad import is recoverable.
+        try {
+            if (!nothingLearned()) {
+                Map snap = [provenance: [note: "pre-import snapshot", writtenIso: isoOf(now())],
+                            learn: learnTables()]
+                uploadHubFile("preimport_" + learnFileName(),
+                              JsonOutput.toJson(snap).getBytes("UTF-8"))
+                log.info "${app.label}: existing data snapshotted to preimport_${learnFileName()}"
+            }
+        } catch (ex2) {
+            log.warn "${app.label}: pre-import snapshot failed (${ex2.message}) - importing anyway"
+        }
+
+        state.fcObs            = tbl.fcObs
+        state.fcDaily          = tbl.fcDaily
+        state.implicitObs      = tbl.implicitObs
+        state.stressObs        = tbl.stressObs
+        state.dryDays          = tbl.dryDays
+        state.events           = tbl.events
+        state.fcstLog          = tbl.fcstLog
+        state.lowestSurvived   = tbl.lowestSurvived
+        state.seasonStartedMs  = tbl.seasonStartedMs
+        state.rainDayKey       = tbl.rainDayKey
+        state.rainDailyMax     = tbl.rainDailyMax
+        state.rainRateMaxToday = tbl.rainRateMaxToday
+        state.learnSeededFrom = "${sf} (from ${prov?.app ?: 'unknown'}, placement " +
+                                "'${theirs ?: 'unrecorded'}', written ${prov?.writtenIso ?: 'unknown'})"
+        log.info "${app.label}: imported from ${sf} - ${state.fcObs.size()} FC obs, " +
+                 "${state.stressObs.size()} stress obs, ${state.fcDaily.size()} daily, " +
+                 "${state.events.size()} events, ${state.fcstLog.size()} forecast days. " +
+                 "${state.learnSeededFrom}"
+        saveAnchors()      // also re-stamps the export via learnSave()
+    } catch (ex) {
+        log.warn "${app.label}: import from ${seedFile} failed - ${ex.message}"
+    } finally {
+        // #7: cleared on EVERY path, including the blank-filename one, so a
+        // later unrelated Done cannot trigger an unrequested import.
+        app.updateSetting("seedNow", [type: "bool", value: false])
     }
 }
 
