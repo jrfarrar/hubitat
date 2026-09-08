@@ -324,7 +324,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.4.0"
+@Field static final String VERSION = "0.4.1"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -500,8 +500,21 @@ def mainPage() {
 
         section("<b>Sensor health</b>") {
             input "staleHours", "decimal",
-                  title: "Flag the sensor as stale if BOTH moisture and A/D are unchanged for this many hours",
+                  title: "Minimum quiet time before staleness is even considered (hours)",
                   defaultValue: 6, required: true
+            input "staleMaxHours", "decimal",
+                  title: "Absolute ceiling - always flag after this many hours of silence",
+                  defaultValue: 48, required: true
+            input "heartbeatDev", "capability.*",
+                  title: "Liveness reference (optional but recommended)",
+                  description: "any device on the SAME Ecowitt gateway whose value moves often - a WH31 temperature sibling is ideal",
+                  multiple: false, required: false
+            paragraph "<i>Without a liveness reference, a dead radio and a soil reading that simply " +
+                      "is not changing look identical from the hub. In dry weather this soil moves " +
+                      "about a point a DAY, so a fixed threshold reports a healthy probe as failed " +
+                      "every night - and a detector that cries wolf nightly trains you to ignore " +
+                      "the one time it is right. The window now adapts to how often this sensor " +
+                      "actually changes.</i>"
             paragraph "<i>Requires both to be frozen. Integer percent legitimately sits still for " +
                       "hours, but the raw A/D always jitters, so both being frozen means the sensor " +
                       "has stopped - not that the soil is stable. Learning is suspended while stale, " +
@@ -1433,6 +1446,17 @@ private void noteSensorActivity(BigDecimal pct, BigDecimal ad) {
     if (pct != null && safeDec(state.staleRefPct) != pct) changed = true
     if (ad  != null && safeDec(state.staleRefAD)  != ad)  changed = true
     if (changed) {
+        // Remember how far apart real changes actually are. In a dry spell the
+        // soil moves about a point a DAY, so a fixed 6-hour silence threshold
+        // cries wolf every night; the sensor is not dead, it simply has nothing
+        // new to say. This is what makes the window adaptive below.
+        Long prevChg = state.lastChangeMs as Long
+        if (prevChg != null && ms > prevChg) {
+            List gaps = (state.changeGaps ?: []) as List
+            gaps << (ms - prevChg)
+            while (gaps.size() > 10) gaps.remove(0)
+            state.changeGaps = gaps
+        }
         state.staleRefPct = pct
         state.staleRefAD  = ad
         state.lastChangeMs = ms
@@ -1444,27 +1468,102 @@ private void noteSensorActivity(BigDecimal pct, BigDecimal ad) {
     }
 }
 
+/**
+ * Is the sensor DEAD, or does it simply have nothing new to report?
+ *
+ * The original test was "no events for staleHours" against a fixed 6 h. That
+ * was calibrated while watching a rainstorm, when the value moved every few
+ * minutes. In a dry spell the soil changes about ONE POINT PER DAY, the Ecowitt
+ * driver only raises an event when a value changes, and so a perfectly healthy
+ * probe goes silent for 12+ hours every night. On 2026-09-08 it duly reported
+ * "no events at all for 6.01 h - check battery and RF" about a sensor that was
+ * fine. A detector that cries wolf nightly is worse than none: it trains the
+ * reader to ignore the one time it is right.
+ *
+ * Two changes:
+ *  1. The window ADAPTS to how often this sensor actually changes. If the last
+ *     ten changes averaged 20 h apart, six hours of quiet means nothing.
+ *     staleHours becomes a floor, staleMaxHours an absolute ceiling so a truly
+ *     dead probe is still caught.
+ *  2. An optional LIVENESS REFERENCE - any device that updates regardless of
+ *     soil moisture. Ecowitt sensors are broadcast-only and share one gateway,
+ *     so a WH31 temperature sibling is ideal: its value moves constantly, so
+ *     fresh events from it prove the gateway and the Hubitat path are alive.
+ *     That separates "the radio died" from "the number did not move", which
+ *     cannot otherwise be told apart from the hub - and matters here because
+ *     the WH51 sits at about -98 dBm, so real dropouts ARE plausible and must
+ *     not be lost among nightly false alarms.
+ */
+private Long medianChangeGap() {
+    List gaps = (state.changeGaps ?: []) as List
+    if (gaps.size() < 3) return null
+    List sorted = gaps.collect { it as Long }.sort()
+    return sorted[(int) (sorted.size() / 2)] as Long
+}
+
+/** Milliseconds since the liveness reference last did anything, or null. */
+private Long heartbeatAgeMs() {
+    if (!heartbeatDev) return null
+    try {
+        Date la = heartbeatDev.getLastActivity()
+        if (la == null) return null
+        return now() - la.getTime()
+    } catch (ex) {
+        logDebug "liveness reference gave no lastActivity - ${ex.message}"
+        return null
+    }
+}
+
 private void checkStale() {
     BigDecimal hrs = numSetting(staleHours, 6)
     if (hrs == null || hrs <= 0) return
-    Long win = scaleMs((long) (hrs.doubleValue() * 3600000.0d))
+    Long floorWin = scaleMs((long) (hrs.doubleValue() * 3600000.0d))
     // At high speed-ups this scales below the gap between scenarios (4.3 s at
     // 5000x), so the app flagged itself stale during every pause - and while
     // stale, canLearn() is false, so a follow-up firing in that gap silently
-    // skipped its field-capacity observation. Floor it above the gap but well
-    // under the 90 s that sensorSilent holds.
-    if (simActive() && win < 30000L) win = 30000L
+    // skipped its field-capacity observation.
+    if (simActive() && floorWin < 30000L) floorWin = 30000L
+
+    Long ceilWin = scaleMs((long) (numSetting(staleMaxHours, 48).doubleValue() * 3600000.0d))
+    if (simActive() && ceilWin < 90000L) ceilWin = 90000L
+
+    // Expect roughly three missed changes before worrying.
+    Long win = floorWin
+    Long med = medianChangeGap()
+    if (med != null) {
+        Long adaptive = med * 3L
+        if (adaptive > win) win = adaptive
+    }
+    if (win > ceilWin) win = ceilWin
+
     Long ms = now()
     Long lastEvt = state.lastEventMs as Long
     Long lastChg = state.lastChangeMs as Long
     String reason = null
+    Boolean quietOnly = false
 
     if (lastEvt != null && (ms - lastEvt) > win) {
-        reason = "no events at all for ${fmt2((ms - lastEvt) / 3600000.0d)} h - check battery and RF"
-    } else if (lastChg != null && (ms - lastChg) > win) {
+        Long hbAge = heartbeatAgeMs()
+        if (hbAge != null && hbAge < floorWin) {
+            // The gateway and the Hubitat path are demonstrably alive, so the
+            // probe is quiet rather than gone. Not a fault.
+            quietOnly = true
+        } else if (hbAge != null) {
+            reason = "no events for ${fmt2((ms - lastEvt) / 3600000.0d)} h AND the liveness " +
+                     "reference ${heartbeatDev.displayName} has also been silent for " +
+                     "${fmt2(hbAge / 3600000.0d)} h - the gateway or the Hubitat path is down, " +
+                     "not just this probe"
+        } else {
+            reason = "no events for ${fmt2((ms - lastEvt) / 3600000.0d)} h, against an expected " +
+                     "${med != null ? fmt2(med / 3600000.0d) + ' h' : 'unknown'} between changes " +
+                     "- check battery and RF. (No liveness reference set, so this cannot be " +
+                     "distinguished from a sensor that simply is not moving.)"
+        }
+    } else if (lastChg != null && (ms - lastChg) > ceilWin) {
         reason = "moisture and A/D both frozen for ${fmt2((ms - lastChg) / 3600000.0d)} h"
     }
 
+    state.sensorQuiet = quietOnly
     if (reason != null && !state.sensorStale) {
         state.sensorStale = true
         state.staleReason = reason
