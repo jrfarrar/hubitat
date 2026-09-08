@@ -324,7 +324,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.4.1"
+@Field static final String VERSION = "0.4.2"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -1533,6 +1533,17 @@ private void checkStale() {
     if (med != null) {
         Long adaptive = med * 3L
         if (adaptive > win) win = adaptive
+    } else {
+        // BOOTSTRAP. With fewer than three recorded changes there is no basis
+        // for ANY claim about this sensor's cadence - and at roughly one change
+        // per day it takes days to accumulate them. Falling back to the floor
+        // here would keep the false alarms running for exactly as long as it
+        // takes to learn they were false. Until the cadence is known, only the
+        // absolute ceiling applies: catch the sensor that is definitely gone,
+        // stay quiet about the one that might just be still.
+        win = ceilWin
+        logDebug "stale window: cadence not yet known (${(state.changeGaps ?: []).size()} of 3 " +
+                 "changes recorded), using the ${numSetting(staleMaxHours, 48)} h ceiling"
     }
     if (win > ceilWin) win = ceilWin
 
