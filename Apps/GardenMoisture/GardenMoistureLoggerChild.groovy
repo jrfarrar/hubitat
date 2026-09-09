@@ -324,7 +324,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.4.2"
+@Field static final String VERSION = "0.5.0"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -678,6 +678,11 @@ def initialize() {
     if (state.rows == null)      state.rows = []
     if (state.fcDaily == null)   state.fcDaily = []
     if (state.implicitObs == null) state.implicitObs = []
+    // Seed from the device rather than assuming false: the app can be reloaded
+    // in the middle of an outage.
+    try {
+        state.probeOrphaned = (soil?.currentValue("orphaned")?.toString() == "true")
+    } catch (ex) { logDebug "no orphaned attribute on ${soil?.displayName} - ${ex.message}" }
 
     // If state came back empty (reinstall, restore), the anchors file is the
     // only copy of several seasons of observation. Try it before running blind.
@@ -690,6 +695,12 @@ def initialize() {
     subscribe(soil, "humidity", soilHandler)
     subscribe(soil, "soilAD", adHandler)
     subscribe(soil, "battery", batteryHandler)
+    // The Ecowitt driver publishes this when the GATEWAY loses the sensor. It is
+    // an authoritative liveness signal - vastly better than inferring silence
+    // from an unchanging value, which is what checkStale() was reduced to doing.
+    // Verified 2026-09-09 to survive Hub Mesh: present on the .40 mirror, not
+    // just the native device on .38.
+    subscribe(soil, "orphaned", orphanHandler)
     // Only ever acted on while simActive(); harmless on a real WH51, which has
     // no such attribute and will never fire it.
     subscribe(soil, "simBoundary", simBoundaryHandler)
@@ -794,6 +805,55 @@ def uninstalled() {
 }
 
 /* -------------------------------------------------------------- handlers */
+
+/**
+ * The probe is orphaned - the gateway is no longer hearing it.
+ *
+ * Measured from TimescaleDB on 2026-09-09: 43 orphan cycles in four days,
+ * individual outages of 18 to 57 minutes, and 57 gaps over 20 minutes in the
+ * soilAD stream including stretches of 4.2 h, 3.7 h and 2.55 h. The WH51 sits
+ * at about -98 dBm, twenty-five dB worse than any other Ecowitt sensor here.
+ * These dropouts are real and frequent, not an artifact of a slow-changing
+ * value - an earlier diagnosis in this project got that ranking backwards.
+ *
+ * Why it matters beyond the warning: while orphaned, currentValue() keeps
+ * returning the LAST reading, so the sampler happily writes a frozen number
+ * into the CSV every 5 minutes as though it were a fresh measurement. A 4.2 h
+ * outage is ~50 rows of invented data that is indistinguishable from real
+ * data after the fact. That is this project's signature failure mode, so the
+ * rows are now marked at the time of writing.
+ */
+def orphanHandler(evt) {
+    Boolean orph = (evt?.value?.toString() == "true")
+    Long ms = now()
+    if (orph && !state.probeOrphaned) {
+        state.probeOrphaned  = true
+        state.orphanSinceMs  = ms
+        state.orphanCount    = ((state.orphanCount ?: 0) as Integer) + 1
+        log.warn "${app.label}: probe ORPHANED - the gateway has lost it. Learning suspended and " +
+                 "samples marked until it returns. (outage #${state.orphanCount})"
+    } else if (!orph && state.probeOrphaned) {
+        Long since = state.orphanSinceMs as Long
+        BigDecimal mins = (since != null) ? new BigDecimal(ms - since).divide(new BigDecimal(60000), 1, java.math.RoundingMode.HALF_UP) : null
+        state.probeOrphaned    = false
+        state.orphanSinceMs    = null
+        state.lastOrphanEndMs  = ms
+        if (mins != null) {
+            state.orphanMinutes = (safeDec(state.orphanMinutes) ?: new BigDecimal(0)) + mins
+        }
+        logInfo "probe back after ${mins ?: '?'} min orphaned - learning resumes"
+    }
+}
+
+/** True if an orphan outage overlapped [fromMs, now]. A rise measured across one
+ *  is not a rise: the reading was frozen, so the change is an artifact of the
+ *  sensor returning, not of water arriving. */
+private Boolean orphanSpanned(Long fromMs) {
+    if (fromMs == null) return false
+    if (state.probeOrphaned) return true
+    Long ended = state.lastOrphanEndMs as Long
+    return (ended != null && ended >= fromMs)
+}
 
 def soilHandler(evt) {
     BigDecimal pct = safeDec(evt.value)
@@ -1062,6 +1122,9 @@ private void appendRow(Long ms, BigDecimal pct, String note) {
         fcst48  : state.forecast?.rain48,
         season  : seasonActive() ? 1 : 0,
         frozen  : freezing() ? 1 : 0,
+        // 1 = the gateway had lost the probe when this row was written, so the
+        // reading is the last known value, not a fresh measurement.
+        orphan  : state.probeOrphaned ? 1 : 0,
         note    : note
     ]
     // Guard against a runaway event stream filling state on a bad day.
@@ -1234,9 +1297,17 @@ private void closeEvent(Long ms) {
         ratePerHr = magnitude.multiply(new BigDecimal(60)).divide(riseMin, 2, java.math.RoundingMode.HALF_UP)
     }
 
+    // A rise measured across an outage is not a rise - the reading was frozen,
+    // so the jump on recovery is the sensor catching up, not water arriving.
+    Boolean spanned = orphanSpanned(t0)
+    if (spanned) {
+        log.warn "${app.label}: this event spans a probe outage, so its magnitude and rate are not " +
+                 "trustworthy - excluded from the field-capacity and stress anchors."
+    }
     Map rec = [
         t0            : t0,
         closedMs      : ms,
+        spannedOrphan : spanned,
         startPct      : oe.startPct,
         startAD       : oe.startAD,
         peakPct       : oe.peakPct,
@@ -1372,8 +1443,17 @@ private void recordFollowUp(String id, String field) {
         // Only a large event that actually HELD its water tells us what this
         // soil holds against gravity. Late follow-ups are excluded because the
         // reading would not be a +24 h value at all.
-        if (canLearn() && !e.followUpLate && !shallow && safeDec(e.magnitude) >= minRise) {
+        if (canLearn() && !e.followUpLate && !e.spannedOrphan && !shallow &&
+            safeDec(e.magnitude) >= minRise) {
             addFcObservation(pct, e.t0 as Long)
+        } else if (e.spannedOrphan) {
+            logInfo "event ${isoOf(e.t0)} did NOT feed the field-capacity anchor - it spans a probe outage"
+        } else if (!canLearn()) {
+            // Name the guard. A silent rejection here is why ev1 (2026-09-02,
+            // magnitude 31, gain 15, not shallow, not late) banked nothing and
+            // the reason is now unknowable. "A guard that suppresses learning
+            // must log WHICH guard and why" - the rule already existed.
+            logInfo "event ${isoOf(e.t0)} did NOT feed the field-capacity anchor - ${blockReason()}"
         } else if (shallow) {
             logInfo "event ${isoOf(e.t0)} did NOT feed the field-capacity anchor - it drained away"
         }
@@ -1418,11 +1498,15 @@ private String blockReason() {
     if (freezing())               return "temperature ${state.lastTempF} F is below the freeze guard ${numSetting(freezeGuardF, 36)}"
     if (state.suspectOutOfGround) return "probe is flagged as possibly out of the ground"
     if (state.sensorStale)        return "sensor is flagged stale (${state.staleReason ?: 'no detail'})"
+    if (state.probeOrphaned)      return "probe is ORPHANED - the gateway is not hearing it (since ${isoOf(state.orphanSinceMs)})"
+    Long bh = state.learnHoldUntilMs as Long
+    if (bh != null && now() < bh) return "learning is held until ${isoOf(bh)} after the probe returned"
     return "no guard is set - this should not happen, please report it"
 }
 
 private Boolean canLearn() {
     if (!seasonActive()) return false
+    if (state.probeOrphaned) return false
     if (freezing()) return false
     if (state.suspectOutOfGround) return false
     if (state.sensorStale) return false
@@ -2142,11 +2226,11 @@ private void flush() {
         sb.append("# garden-moisture-logger v${VERSION} app=${app.label} device=${soil?.displayName}\n")
         sb.append("# day=${state.dayKey} sampleMin=${sampleMin ?: 5}\n")
         sb.append("# moisturePct is the Ecowitt 'humidity' attribute - remapped capacitance, NOT volumetric water content\n")
-        sb.append("epochMs,iso,moisturePct,soilAD,battery,rainRate,rainDaily,rainEvent,raining,outdoorTempF,et0Today,fcstRain48h,seasonActive,frozen,note\n")
+        sb.append("epochMs,iso,moisturePct,soilAD,battery,rainRate,rainDaily,rainEvent,raining,outdoorTempF,et0Today,fcstRain48h,seasonActive,frozen,probeOrphaned,note\n")
         rows.each { r ->
             sb.append("${r.ms},${isoOf(r.ms)},${nz(r.pct)},${nz(r.ad)},${nz(r.batt)},")
             sb.append("${nz(r.rate)},${nz(r.daily)},${nz(r.event)},${nz(r.raining)},${nz(r.tempF)},")
-            sb.append("${nz(r.et0)},${nz(r.fcst48)},${r.season},${r.frozen},${nz(r.note)}\n")
+            sb.append("${nz(r.et0)},${nz(r.fcst48)},${r.season},${r.frozen},${nz(r.orphan)},${nz(r.note)}\n")
         }
         uploadHubFile(fname, sb.toString().getBytes("UTF-8"))
         state.lastFile = fname
