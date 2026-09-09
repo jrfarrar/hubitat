@@ -324,7 +324,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.5.0"
+@Field static final String VERSION = "0.5.1"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -499,15 +499,17 @@ def mainPage() {
         }
 
         section("<b>Sensor health</b>") {
-            input "staleHours", "decimal",
-                  title: "Minimum quiet time before staleness is even considered (hours)",
-                  defaultValue: 6, required: true
+            paragraph "<i>Silence is no longer used to detect a missing probe. The driver's " +
+                      "<b>orphaned</b> attribute says so directly, and replaying real recorded " +
+                      "events showed the old adaptive window would still have fired 50 false " +
+                      "alarms. Only a STUCK sensor - one the gateway still hears, whose value " +
+                      "never moves - is detected here now.</i>"
             input "staleMaxHours", "decimal",
                   title: "Absolute ceiling - always flag after this many hours of silence",
                   defaultValue: 48, required: true
             input "heartbeatDev", "capability.*",
-                  title: "Liveness reference (optional but recommended)",
-                  description: "any device on the SAME Ecowitt gateway whose value moves often - a WH31 temperature sibling is ideal",
+                  title: "Liveness reference (no longer required - kept for drivers with no 'orphaned' attribute)",
+                  description: "unused when the soil device publishes 'orphaned', which the Ecowitt driver does",
                   multiple: false, required: false
             paragraph "<i>Without a liveness reference, a dead radio and a soil reading that simply " +
                       "is not changing look identical from the hub. In dry weather this soil moves " +
@@ -1530,17 +1532,12 @@ private void noteSensorActivity(BigDecimal pct, BigDecimal ad) {
     if (pct != null && safeDec(state.staleRefPct) != pct) changed = true
     if (ad  != null && safeDec(state.staleRefAD)  != ad)  changed = true
     if (changed) {
-        // Remember how far apart real changes actually are. In a dry spell the
-        // soil moves about a point a DAY, so a fixed 6-hour silence threshold
-        // cries wolf every night; the sensor is not dead, it simply has nothing
-        // new to say. This is what makes the window adaptive below.
-        Long prevChg = state.lastChangeMs as Long
-        if (prevChg != null && ms > prevChg) {
-            List gaps = (state.changeGaps ?: []) as List
-            gaps << (ms - prevChg)
-            while (gaps.size() > 10) gaps.remove(0)
-            state.changeGaps = gaps
-        }
+        // changeGaps used to be accumulated here to drive an adaptive silence
+        // window. That approach was deleted in v0.5.1 - see checkStale(). Dead
+        // state that still LOOKS meaningful is its own hazard: a stale
+        // fcSkipCount in this app's state once convinced a scheduled run that a
+        // drainage guard was running months after its code had been deleted.
+        state.remove("changeGaps")
         state.staleRefPct = pct
         state.staleRefAD  = ad
         state.lastChangeMs = ms
@@ -1578,95 +1575,50 @@ private void noteSensorActivity(BigDecimal pct, BigDecimal ad) {
  *     the WH51 sits at about -98 dBm, so real dropouts ARE plausible and must
  *     not be lost among nightly false alarms.
  */
-private Long medianChangeGap() {
-    List gaps = (state.changeGaps ?: []) as List
-    if (gaps.size() < 3) return null
-    List sorted = gaps.collect { it as Long }.sort()
-    return sorted[(int) (sorted.size() / 2)] as Long
-}
-
-/** Milliseconds since the liveness reference last did anything, or null. */
-private Long heartbeatAgeMs() {
-    if (!heartbeatDev) return null
-    try {
-        Date la = heartbeatDev.getLastActivity()
-        if (la == null) return null
-        return now() - la.getTime()
-    } catch (ex) {
-        logDebug "liveness reference gave no lastActivity - ${ex.message}"
-        return null
-    }
-}
-
+/**
+ * Is the sensor reporting but STUCK? That is all this does now.
+ *
+ * It used to also try to detect "the sensor is gone" by measuring silence, with
+ * an adaptive window derived from how often the value changes. Replaying four
+ * days of real recorded events through replay_harness.py showed that never
+ * worked: changeGaps keeps the last ten intervals, during rain those are about
+ * three minutes, so after any storm the median collapses and 3*median is
+ * trivial - dropping the window back to the 6 h floor exactly before the quiet
+ * night when the false alarms happen. Fifty would still have fired. Two
+ * versions of tuning did not fix the case it existed for.
+ *
+ * The reason it could not work is that silence is ambiguous: a dead radio and a
+ * soil reading that simply is not moving look identical from the hub. v0.5.0
+ * subscribes to the driver's `orphaned` attribute, which is the gateway stating
+ * the fact directly, so the inference is not merely unreliable - it is
+ * unnecessary. Deleted rather than tuned a third time.
+ *
+ * What remains is the case `orphaned` does NOT cover: the gateway still hears
+ * the sensor, events keep arriving, and the value never moves. A genuinely
+ * frozen probe.
+ */
 private void checkStale() {
-    BigDecimal hrs = numSetting(staleHours, 6)
-    if (hrs == null || hrs <= 0) return
-    Long floorWin = scaleMs((long) (hrs.doubleValue() * 3600000.0d))
-    // At high speed-ups this scales below the gap between scenarios (4.3 s at
-    // 5000x), so the app flagged itself stale during every pause - and while
-    // stale, canLearn() is false, so a follow-up firing in that gap silently
-    // skipped its field-capacity observation.
-    if (simActive() && floorWin < 30000L) floorWin = 30000L
-
-    Long ceilWin = scaleMs((long) (numSetting(staleMaxHours, 48).doubleValue() * 3600000.0d))
+    BigDecimal maxH = numSetting(staleMaxHours, 48)
+    if (maxH == null || maxH <= 0) return
+    Long ceilWin = scaleMs((long) (maxH.doubleValue() * 3600000.0d))
     if (simActive() && ceilWin < 90000L) ceilWin = 90000L
 
-    // Expect roughly three missed changes before worrying.
-    Long win = floorWin
-    Long med = medianChangeGap()
-    if (med != null) {
-        Long adaptive = med * 3L
-        if (adaptive > win) win = adaptive
-    } else {
-        // BOOTSTRAP. With fewer than three recorded changes there is no basis
-        // for ANY claim about this sensor's cadence - and at roughly one change
-        // per day it takes days to accumulate them. Falling back to the floor
-        // here would keep the false alarms running for exactly as long as it
-        // takes to learn they were false. Until the cadence is known, only the
-        // absolute ceiling applies: catch the sensor that is definitely gone,
-        // stay quiet about the one that might just be still.
-        win = ceilWin
-        logDebug "stale window: cadence not yet known (${(state.changeGaps ?: []).size()} of 3 " +
-                 "changes recorded), using the ${numSetting(staleMaxHours, 48)} h ceiling"
-    }
-    if (win > ceilWin) win = ceilWin
-
     Long ms = now()
-    Long lastEvt = state.lastEventMs as Long
     Long lastChg = state.lastChangeMs as Long
     String reason = null
-    Boolean quietOnly = false
-
-    if (lastEvt != null && (ms - lastEvt) > win) {
-        Long hbAge = heartbeatAgeMs()
-        if (hbAge != null && hbAge < floorWin) {
-            // The gateway and the Hubitat path are demonstrably alive, so the
-            // probe is quiet rather than gone. Not a fault.
-            quietOnly = true
-        } else if (hbAge != null) {
-            reason = "no events for ${fmt2((ms - lastEvt) / 3600000.0d)} h AND the liveness " +
-                     "reference ${heartbeatDev.displayName} has also been silent for " +
-                     "${fmt2(hbAge / 3600000.0d)} h - the gateway or the Hubitat path is down, " +
-                     "not just this probe"
-        } else {
-            reason = "no events for ${fmt2((ms - lastEvt) / 3600000.0d)} h, against an expected " +
-                     "${med != null ? fmt2(med / 3600000.0d) + ' h' : 'unknown'} between changes " +
-                     "- check battery and RF. (No liveness reference set, so this cannot be " +
-                     "distinguished from a sensor that simply is not moving.)"
-        }
-    } else if (lastChg != null && (ms - lastChg) > ceilWin) {
-        reason = "moisture and A/D both frozen for ${fmt2((ms - lastChg) / 3600000.0d)} h"
+    if (!state.probeOrphaned && lastChg != null && (ms - lastChg) > ceilWin) {
+        reason = "the gateway is still hearing the probe, but moisture and A/D have BOTH been " +
+                 "frozen for ${fmt2((ms - lastChg) / 3600000.0d)} h - a stuck sensor, not a lost one"
     }
 
-    state.sensorQuiet = quietOnly
     if (reason != null && !state.sensorStale) {
         state.sensorStale = true
         state.staleReason = reason
-        log.warn "${app.label}: sensor looks stale - ${reason}. Learning suspended."
+        log.warn "${app.label}: ${reason}. Learning suspended."
     } else if (reason == null && state.sensorStale) {
         state.sensorStale = false
         state.staleReason = null
-        logInfo "sensor no longer stale - learning resumed"
+        logInfo "sensor readings are moving again - learning resumed"
     }
 }
 
