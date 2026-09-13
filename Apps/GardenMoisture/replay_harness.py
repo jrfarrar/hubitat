@@ -98,7 +98,7 @@ def load_events(since):
          where coalesce(source,'') <> 'SEED'
            and ts >= %s
            and ( (hub=%s and device_id=%s and attr in ('soilAD','humidity','orphaned','battery'))
-              or (hub=%s and device_id=%s and attr in ('raining','rainRate','temperature')) )
+              or (hub=%s and device_id=%s and attr in ('raining','rainRate','rainDaily','rainEvent','temperature')) )
          order by ts
     """, (since, SOIL_HUB, SOIL_DEV, RAIN_HUB, RAIN_DEV))
     rows = cur.fetchall()
@@ -228,20 +228,22 @@ class GardenLogic:
         })
 
     def _check_stale(self, ts):
-        if self.last_event_ts is None:
+        """v0.5.1 behaviour: silence is NOT evidence any more.
+
+        The port previously modelled the adaptive silence window, and kept
+        reporting false alarms for code that has since been deleted from the
+        app - a port drifting from its subject is the standing risk of this
+        approach, and it showed up within four days. Only the case `orphaned`
+        cannot cover remains: the gateway still hears the probe, events keep
+        arriving, and the value never moves.
+        """
+        if self.orphaned or self.last_change is None:
             return
-        # v0.4.1/0.4.2: window adapts to how often this sensor really changes;
-        # below three recorded changes there is no basis, so only the ceiling.
-        if len(self.change_gaps) >= 3:
-            med = sorted(self.change_gaps)[len(self.change_gaps) // 2]
-            win = max(self.stale_hours * 3600, med * 3)
-        else:
-            win = self.stale_max_hours * 3600
-        win = min(win, self.stale_max_hours * 3600)
-        quiet = (ts - self.last_event_ts).total_seconds()
-        if quiet > win:
-            self.stale_periods.append({"at": ts, "quiet_h": round(quiet / 3600, 2),
-                                       "window_h": round(win / 3600, 2)})
+        if (ts - self.last_change).total_seconds() > self.stale_max_hours * 3600:
+            self.stale_periods.append({
+                "at": ts,
+                "quiet_h": round((ts - self.last_change).total_seconds() / 3600, 2),
+                "window_h": self.stale_max_hours})
 
     def sample(self, ts):
         """One sampleTick(). THE APP IS NOT PURELY EVENT-DRIVEN - it polls
@@ -287,6 +289,17 @@ class GardenLogic:
             self.temp_f = float(value)
             return
         if attr == "rainRate":
+            return
+        if attr == "rainDaily":
+            # Monotonic within a day, so it is the app's PRIMARY rain source.
+            # Omitting it meant the port reported rain=None while the app
+            # recorded 0.05 - the rain attribution path, historically the
+            # buggiest in this app, was going completely untested.
+            self.rain_daily = float(value)
+            return
+        if attr == "rainEvent":
+            # NOT monotonic - the WS90 resets it after a dry gap. Read for
+            # completeness; deliberately not used for attribution.
             return
 
         if attr in ("humidity", "soilAD"):
@@ -372,7 +385,7 @@ def report(g, rows, gaps):
             e["rain_inches"], e["rain_source"],
             "SPANS OUTAGE - excluded from anchors" if e["spanned_orphan"] else ""))
     print()
-    print("STALENESS would fire : %d times" % len(g.stale_periods))
+    print("STUCK-SENSOR alarms  : %d (v0.5.1 - silence alone no longer counts)" % len(g.stale_periods))
     for s in g.stale_periods[:5]:
         print("  %s quiet %.1f h against a %.1f h window" % (
             s["at"].strftime("%m-%d %H:%M"), s["quiet_h"], s["window_h"]))
