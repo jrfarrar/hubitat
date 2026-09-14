@@ -41,12 +41,37 @@
  *                      miss the sustained period was discarded with no retry.
  *                      The grace window alone now defines the end of the spin;
  *                      spinEndWatts is retired. Adds spinHeldSec to the record.
+ *  v0.2.0  2026-09-14  First action the app takes: a cycle-complete notification.
+ *                      Off by default; must be enabled explicitly.
+ *
+ *                      The spin-down PREDICTOR is dropped. Measured over 9 real
+ *                      cycles, spinLeadSec ran 4-77 s and three cycles ended
+ *                      straight out of the spin with no post-spin phase at all,
+ *                      so on those there is nothing to predict on. Spin fields
+ *                      are still recorded as diagnostics; nothing fires on them.
+ *
+ *                      Instead the alert fires on the END TRANSITION, on its own
+ *                      timer (notifyDelaySec, default 90 s) separate from the
+ *                      recording confirmation (offDelayMin, 3 min). The two
+ *                      tolerate error differently: a wrongly-closed RECORD is
+ *                      permanent, a wrongly-sent MESSAGE costs a glance at the
+ *                      machine. Longest mid-cycle dip across 9 cycles was 42 s,
+ *                      so 90 s is ~2x margin.
+ *
+ *                      Premature alerts are counted (falseAlerts) rather than
+ *                      assumed absent, so notifyDelaySec can be tuned on
+ *                      evidence. Record gains `notified` and `falseAlerts`.
+ *
+ *                      NOTE: this depends on configParam151 being low enough to
+ *                      report the final drop. At 151=10 W the smallest measured
+ *                      end drop (9.62 W) is invisible and the end is only caught
+ *                      by the 5-minute periodic backstop. 151=5 fixes that.
  */
 
 import groovy.transform.Field
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.1.2"
+@Field static final String VERSION = "0.2.0"
 
 // Shared across all instances of this child app; keyed by app.id.
 // Lost on hub reboot or code save - that is what the state checkpoint is for.
@@ -90,9 +115,35 @@ def mainPage() {
                       "the confirmation delay expires, so the recorded duration is the real run length.</i>"
         }
 
+        section("<b>Cycle-complete notification</b>") {
+            paragraph "<i>Fires on the END TRANSITION, sooner than the recording confirmation above. " +
+                      "The record still uses the full confirm delay; this is a faster, independent " +
+                      "alert so a waiting load can be swapped without the extra wait.</i>"
+            input "notifyEnable", "bool", title: "Send a notification when a cycle finishes", defaultValue: false, submitOnChange: true
+            if (notifyEnable) {
+                input "notifyDevices", "capability.notification", title: "Notify these devices",
+                      required: false, multiple: true
+                input "notifySwitch", "capability.switch", title: "...and/or turn this switch ON (optional)",
+                      required: false, multiple: false
+                input "notifyDelaySec", "number",
+                      title: "Confirm the end after this many seconds below the running threshold",
+                      defaultValue: 90, required: true
+                paragraph "<i>Longest mid-cycle dip measured across 9 real cycles was 42 s, so 90 s is " +
+                          "about 2x margin. Lower it and a long pause can fire a false 'done'; raise it " +
+                          "and you give the time back.</i>"
+                input "notifyMinMin", "decimal", title: "Only notify if the cycle ran at least this many minutes",
+                      defaultValue: 5, required: true
+                input "notifyText", "text", title: "Message",
+                      defaultValue: "Washing machine is done", required: true
+                input "notifyStats", "bool", title: "Append duration and kWh to the message", defaultValue: true
+            }
+        }
+
         section("<b>End-of-cycle signature</b>") {
-            paragraph "<i>Recorded only. Nothing fires on it - this is here so the heuristic can be " +
-                      "checked against real cycles before anything depends on it.</i>"
+            paragraph "<i>Recorded only - nothing fires on it. The spin-down predictor was evaluated " +
+                      "over 9 cycles and DROPPED: lead time ran 4-77 s and several cycles end straight " +
+                      "out of the spin with no post-spin phase at all, so there is nothing to predict on " +
+                      "those. Kept as diagnostics only.</i>"
             input "spinWatts", "decimal", title: "Spin considered active above (watts)", defaultValue: 300, required: true
             input "spinSustainSec", "number", title: "...once sustained for at least (seconds)", defaultValue: 60, required: true
             input "spinGraceSec", "number", title: "...and is over once it has stayed below that for (seconds)", defaultValue: 15, required: true
@@ -216,6 +267,7 @@ private Map bufGet() {
             spinDownMs    : null,
             spinDownCount : 0,
             spinHeldSec   : null,
+            falseAlerts   : 0,
             energyStart   : null,
             energyLast    : null,
             eventCount    : 0
@@ -254,6 +306,15 @@ def powerHandler(evt) {
                 b.dipCount = (b.dipCount ?: 0) + 1
                 b.belowSince = null
                 unschedule("endCycle")
+                unschedule("notifyDone")   // it was only a dip after all
+                // If the alert already went out and power came back, we told
+                // them too early. Count it - this is how notifyDelaySec gets
+                // validated against real cycles instead of assumed.
+                if (state.notified == true) {
+                    b.falseAlerts = (b.falseAlerts ?: 0) + 1
+                    state.notified = false
+                    log.warn "${app.label}: cycle-complete alert was premature - ran again after ${(int)(dip/1000)}s below"
+                }
             }
         } else if (b.pendingStartMs == null) {
             b.pendingStartMs = ms
@@ -265,6 +326,13 @@ def powerHandler(evt) {
             if (b.belowSince == null) {
                 b.belowSince = ms
                 runIn(delaySecs(offDelayMin, 180), "endCycle")
+                // Faster, independent alert timer. The RECORD still waits for
+                // offDelayMin; this only decides when to tell someone.
+                if (notifyEnable && state.notified != true) {
+                    Integer nd = (notifyDelaySec ?: 90) as Integer
+                    if (nd < 15) nd = 15
+                    runIn(nd, "notifyDone")
+                }
             }
         } else if (b.pendingStartMs != null) {
             b.pendingStartMs = null
@@ -432,8 +500,52 @@ def startCycle() {
         refOffMs    : null,
         relayOffMs  : null
     ]
+    state.notified = false
+    unschedule("notifyDone")
     runEvery1Minute("checkpoint")
     logInfo "cycle started ${isoOf(startMs)}"
+}
+
+/* -------------------------------------------------- cycle-complete alert */
+
+// Fires on the END TRANSITION, independently of endCycle(). endCycle() waits
+// offDelayMin because a wrongly-closed RECORD is permanent; this waits only
+// notifyDelaySec because a wrongly-sent MESSAGE costs a glance at the machine.
+// Any reading back above startWatts unschedules this, so it only fires if the
+// power stayed down for the whole window.
+def notifyDone() {
+    Map open = state.open
+    if (open == null) return                       // endCycle already closed it
+    if (!notifyEnable) return
+    if (state.notified == true) return             // already told them
+
+    Map b = bufPeek()
+    Long endMs = (b?.belowSince) ?: now()
+    BigDecimal mins = ((endMs - (open.startMs as Long)) / 60000.0d) as BigDecimal
+    BigDecimal floor = (notifyMinMin ?: 5) as BigDecimal
+    if (mins < floor) {
+        logInfo "cycle-complete alert suppressed: ran ${fmt2(mins)} min, floor is ${floor}"
+        return
+    }
+
+    String msg = (notifyText ?: "Washing machine is done")
+    if (notifyStats != false) {
+        BigDecimal kwh = null
+        BigDecimal eNow = safeDec(meter?.currentValue("energy"))
+        BigDecimal eStart = safeDec(open.energyStart)
+        if (eNow != null && eStart != null && eNow >= eStart) kwh = eNow - eStart
+        msg += " (${Math.round(mins.doubleValue())} min" + (kwh != null ? ", ${fmt2(kwh)} kWh" : "") + ")"
+    }
+
+    notifyDevices?.each { d ->
+        try { d.deviceNotification(msg) }
+        catch (ex) { log.warn "${app.label}: notify failed on ${d?.displayName}: ${ex.message}" }
+    }
+    try { notifySwitch?.on() }
+    catch (ex) { log.warn "${app.label}: notify switch failed: ${ex.message}" }
+
+    state.notified = true
+    logInfo "cycle-complete alert sent at ${isoOf(now())}: ${msg}"
 }
 
 def endCycle() {
@@ -443,6 +555,10 @@ def endCycle() {
 
     Long endMs = (b?.belowSince) ?: now()
     unschedule("checkpoint")
+    unschedule("notifyDone")
+    // Backstop: if notifyDelaySec was set longer than offDelayMin, the alert
+    // timer has not fired yet. Send it now rather than never.
+    if (notifyEnable && state.notified != true) notifyDone()
 
     if (b == null) { closeTruncated(); return }
 
@@ -473,6 +589,8 @@ def endCycle() {
         spinDownMs       : b.spinDownMs,
         spinDownCount    : b.spinDownCount ?: 0,
         spinHeldSec      : b.spinHeldSec,
+        notified         : (state.notified == true),
+        falseAlerts      : b.falseAlerts ?: 0,
         spinLeadSec      : b.spinDownMs ? (int)((endMs - (b.spinDownMs as Long)) / 1000L) : null,
         possibleMergedRun: b.possibleMerged ?: false,
         mergeSplitMs     : b.mergeSplitMs,
