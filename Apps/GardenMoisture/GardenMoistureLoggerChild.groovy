@@ -324,7 +324,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.5.1"
+@Field static final String VERSION = "0.6.0"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -465,6 +465,37 @@ def mainPage() {
             if (state.lastClearIso) paragraph "<i>Last cleared: ${state.lastClearIso}</i>"
         }
 
+        section("<b>Watering instruction - what the alert will TELL her to do</b>") {
+            paragraph "<i>A notification that says \"water the garden\" is a nudge. One that says " +
+                      "\"water until it reads 60%\" is an instruction. These numbers ride along in " +
+                      "the alert so she never has to remember them or ask.<br><br>" +
+                      "They are stored as OFFSETS FROM FIELD CAPACITY, not as fixed percentages, so " +
+                      "they follow the learned anchor instead of going stale when it moves. With FC " +
+                      "at 53 the defaults give stop 60, ceiling 65, skip-above 58 - which is exactly " +
+                      "what the first nine wetting events measured.</i>"
+            input "stopOffsetPts", "decimal",
+                  title: "STOP watering this many points above field capacity",
+                  defaultValue: 7, required: true
+            input "ceilOffsetPts", "decimal",
+                  title: "Never exceed this many points above field capacity",
+                  defaultValue: 12, required: true
+            input "skipAboveOffsetPts", "decimal",
+                  title: "Do not water at all if already this many points above field capacity",
+                  defaultValue: 5, required: true
+            input "doseInches", "decimal",
+                  title: "Equivalent dose, inches of water (for anyone who would rather not watch the meter)",
+                  defaultValue: 0.25, required: true
+            paragraph "<i>Evidence, 2026-09-21, nine events: every one settled at 53 % or above, " +
+                      "including the gentlest which peaked at 63-66 and settled 53-58. Nothing has " +
+                      "ever been observed peaking below 63, so the stop figure is a deliberate " +
+                      "extrapolation DOWNWARD - J.R.'s rule: <b>under-water rather than over-water, " +
+                      "because an overshoot drains away unmeasured while a shortfall is itself the " +
+                      "correction.</b> 0.33 in from 43 % settled at 54 (three high), hence 0.25 in. " +
+                      "Above the skip line water does nothing: 0.45 in applied at 61 % ended SEVEN " +
+                      "points LOWER a day later.</i>"
+            if (state.lastPct != null) paragraph "<b>Right now it would say:</b><br>${waterToText(anchors())}"
+        }
+
         section("<b>Learned data - export / import</b>", hideable: true, hidden: true) {
             paragraph "<i>Anchors take a season to learn. App <b>state</b> is destroyed by a " +
                       "reinstall, a parent/child rewrite or a move to another hub - and the " +
@@ -591,6 +622,8 @@ private String statusText() {
     sb.append("</table>")
 
     sb.append("<br><b>Would it notify right now?</b> <b>${wouldNotifyText(a)}</b><br>")
+    // The instruction half - what the alert will actually TELL her to do.
+    sb.append("<b>And it would say:</b> ${waterToText(a)}<br>")
     sb.append("<i>v${VERSION} never actually sends anything. This line is here so the logic can be " +
               "watched against reality for a season before it is trusted.</i><br>")
 
@@ -632,6 +665,48 @@ private String statusText() {
     sb.append("<br>Samples recorded today: <b>${(state.rows?.size()) ?: 0}</b>")
     if (state.lastFile) sb.append(" &nbsp; last file: <b>${state.lastFile}</b>")
     return sb.toString()
+}
+
+/**
+ * The actionable half of the alert: not "water the garden" but "water it to HERE".
+ *
+ * J.R., 2026-09-21: "the notification will at least state, water until 60% or
+ * .33 or something like that." A number in the message means she never has to
+ * remember it, ask, or go and look it up - and when the number changes, the
+ * message changes with it and nobody has to be told.
+ *
+ * Expressed as offsets from FIELD CAPACITY rather than as fixed percentages, so
+ * the instruction tracks the learned anchor. If FC is re-learned at 49 the whole
+ * set slides down with it. Falls back to the measured literals only while FC is
+ * still unknown, so the message is never silently wrong.
+ */
+private String waterToText(Map a) {
+    BigDecimal fc = safeDec(a?.fc)
+    BigDecimal stop, ceil, skip
+    String basis
+    if (fc != null) {
+        stop = fc + numSetting(stopOffsetPts, 7)
+        ceil = fc + numSetting(ceilOffsetPts, 12)
+        skip = fc + numSetting(skipAboveOffsetPts, 5)
+        basis = "from the learned field capacity ${fmt2(fc)}"
+    } else {
+        // No FC yet. These are the 2026-09-21 measured values, and saying so
+        // matters: a number with no basis should announce that it has none.
+        stop = new BigDecimal("60"); ceil = new BigDecimal("65"); skip = new BigDecimal("58")
+        basis = "provisional - field capacity not learned yet"
+    }
+    BigDecimal now = safeDec(state.lastPct)
+    if (now != null && now >= skip) {
+        return "Do NOT water - it is already at ${now}%, above the ${fmt2(skip)}% line. " +
+               "Water added above that drains straight out and does nothing."
+    }
+    BigDecimal dose = numSetting(doseInches, 0.25)
+    return "Water until the probe reads about <b>${fmt2(stop)}%</b>, then stop" +
+           (now != null ? " (it is at ${now}% now)" : "") +
+           ". Do not go past ${fmt2(ceil)}% - beyond that it drains out the bottom of the bed " +
+           "without helping. If you would rather not watch the meter, about <b>${dose} in</b> of " +
+           "water does the same job. Aim LOW: landing short is useful, overshooting teaches nothing. " +
+           "(${basis})"
 }
 
 private String wouldNotifyText(Map a) {
