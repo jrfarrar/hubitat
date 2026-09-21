@@ -324,7 +324,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.6.0"
+@Field static final String VERSION = "0.6.1"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -695,15 +695,22 @@ private String waterToText(Map a) {
         stop = new BigDecimal("60"); ceil = new BigDecimal("65"); skip = new BigDecimal("58")
         basis = "provisional - field capacity not learned yet"
     }
+    // Whole numbers. The probe reports integers, so "water until 60.00%" claims
+    // a precision that does not exist and reads like a lab instrument rather
+    // than an instruction to a person holding a hose.
+    String pStop = stop.setScale(0, java.math.RoundingMode.HALF_UP).toString()
+    String pCeil = ceil.setScale(0, java.math.RoundingMode.HALF_UP).toString()
+    String pSkip = skip.setScale(0, java.math.RoundingMode.HALF_UP).toString()
+
     BigDecimal now = safeDec(state.lastPct)
     if (now != null && now >= skip) {
-        return "Do NOT water - it is already at ${now}%, above the ${fmt2(skip)}% line. " +
+        return "Do NOT water - it is already at ${now}%, above the ${pSkip}% line. " +
                "Water added above that drains straight out and does nothing."
     }
     BigDecimal dose = numSetting(doseInches, 0.25)
-    return "Water until the probe reads about <b>${fmt2(stop)}%</b>, then stop" +
+    return "Water until the probe reads about <b>${pStop}%</b>, then stop" +
            (now != null ? " (it is at ${now}% now)" : "") +
-           ". Do not go past ${fmt2(ceil)}% - beyond that it drains out the bottom of the bed " +
+           ". Do not go past ${pCeil}% - beyond that it drains out the bottom of the bed " +
            "without helping. If you would rather not watch the meter, about <b>${dose} in</b> of " +
            "water does the same job. Aim LOW: landing short is useful, overshooting teaches nothing. " +
            "(${basis})"
