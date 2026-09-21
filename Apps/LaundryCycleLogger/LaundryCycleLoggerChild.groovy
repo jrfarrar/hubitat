@@ -66,12 +66,26 @@
  *                      report the final drop. At 151=10 W the smallest measured
  *                      end drop (9.62 W) is invisible and the end is only caught
  *                      by the 5-minute periodic backstop. 151=5 fixes that.
+ *  v0.2.1  2026-09-21  Deletes the orphaned `spinEndWatts` settings row left
+ *                      behind when that input was retired in v0.1.2. Nothing
+ *                      read it, but a stale row in statusJson reads as a live
+ *                      setting. Uses app.removeSetting() (InstalledApp object,
+ *                      documented) from initialize() and, once per version,
+ *                      from the first power event after a code save - never
+ *                      during a page submit, which is the one documented way
+ *                      removeSetting misbehaves. Failure is caught and cannot
+ *                      loop. No behaviour change.
  */
 
 import groovy.transform.Field
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.2.0"
+@Field static final String VERSION = "0.2.1"
+
+// Inputs removed from the page in earlier versions. Their stored rows are
+// deleted by retireSettings(). Append, never remove - a name that leaves this
+// list would stop being cleaned on a future reinstall-from-backup.
+@Field static final List RETIRED_SETTINGS = ["spinEndWatts"]   // retired in v0.1.2
 
 // Shared across all instances of this child app; keyed by app.id.
 // Lost on hub reboot or code save - that is what the state checkpoint is for.
@@ -226,7 +240,36 @@ def initialize() {
 
     if (state.open) runEvery1Minute("checkpoint")
 
+    retireSettings()
     logInfo "initialized v${VERSION} watching ${meter?.displayName}"
+}
+
+/* -------------------------------------------------- retired preferences */
+
+// Inputs removed from the page keep their stored rows forever unless deleted.
+// Harmless to the code, but a stale row in /installedapp/statusJson reads as
+// though the setting is still live - which is exactly how orphaned state has
+// misled analysis here before. Add a name to RETIRED_SETTINGS (top of file)
+// when an input is retired.
+//
+// Runs from initialize() and, once per version, from the first powerHandler
+// event after a code save - so it takes effect within one periodic power report
+// (configParam171, 5 min) without anyone having to open the page and press Done.
+// Never called during a page submit, so it cannot race a save of the same key.
+private void retireSettings() {
+    try {
+        RETIRED_SETTINGS.each { String n ->
+            if (settings[n] != null) {
+                app.removeSetting(n)
+                logInfo "removed retired setting '${n}'"
+            }
+        }
+    } catch (ex) {
+        log.warn "${app.label}: retiring old settings failed: ${ex.message}"
+    }
+    // Set regardless of outcome: this must never become a retry loop in the
+    // power handler's hot path.
+    state.settingsRetiredFor = VERSION
 }
 
 def uninstalled() {
@@ -287,6 +330,10 @@ def powerHandler(evt) {
 
     Long ms = evt.getDate()?.getTime() ?: now()
     state.lastEventSeen = ms
+
+    // A code save does not re-run initialize(), so retire old settings on the
+    // first event after an upgrade. One string compare per event thereafter.
+    if (state.settingsRetiredFor != VERSION) retireSettings()
 
     Map b = bufGet()
     BigDecimal thr = (startWatts ?: 10) as BigDecimal
