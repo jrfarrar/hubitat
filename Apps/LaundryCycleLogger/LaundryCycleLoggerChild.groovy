@@ -114,6 +114,13 @@ import java.text.SimpleDateFormat
     "idleWatts", "mergeGapSec", "refSwitch"              // retired in v0.3.0
 ]
 
+// State keys written by earlier versions and no longer read. Same reasoning as
+// RETIRED_SETTINGS: an orphaned key in statusJson reads like live state, and
+// that is exactly how analysis has been misled here before. `open` matters most
+// - v0.3.0 tracks an in-flight cycle in state.startMs, so a leftover `open`
+// would sit there looking like a cycle that never finished.
+@Field static final List RETIRED_STATE = ["open", "lastRefOnMs", "lastRefOffMs"]
+
 definition(
     name: "Laundry Cycle Logger Child",
     namespace: "jrfarrar",
@@ -288,7 +295,8 @@ def initialize() {
 
     runEvery10Minutes("healthCheck")
 
-    retireSettings()
+    retireOrphans()
+    state.settingsRetiredFor = VERSION
     logInfo "initialized v${VERSION} watching ${meter?.displayName}"
 }
 
@@ -308,7 +316,7 @@ def uninstalled() {
 // event after a code save - so it takes effect within one periodic power report
 // without anyone having to open the page and press Done. Never called during a
 // page submit, which is the one documented way removeSetting misbehaves.
-private void retireSettings() {
+private void retireOrphans() {
     try {
         RETIRED_SETTINGS.each { String n ->
             if (settings[n] != null) {
@@ -319,9 +327,37 @@ private void retireSettings() {
     } catch (ex) {
         log.warn "${app.label}: retiring old settings failed: ${ex.message}"
     }
-    // Set regardless of outcome: this must never become a retry loop in the
-    // power handler's hot path.
+    try {
+        RETIRED_STATE.each { String n ->
+            if (state.containsKey(n)) {
+                state.remove(n)
+                logInfo "removed retired state key '${n}'"
+            }
+        }
+    } catch (ex) {
+        log.warn "${app.label}: retiring old state failed: ${ex.message}"
+    }
+}
+
+// Saving code does NOT re-run initialize(), so immediately after an upgrade the
+// app is still running the PREVIOUS version's subscriptions and scheduled jobs.
+// For v0.3.0 that is not cosmetic: v0.2.1 subscribed to a reference switch whose
+// handler no longer exists, so every event on that device would throw, and
+// v0.2.1's `checkpoint` job would keep firing into a method that is gone. The
+// documented fix is a Done press, which needs a browser. Doing it here instead
+// means the upgrade completes on its own within one periodic power report.
+private void migrate() {
+    // FIRST, so the initialize() below cannot recurse back into here, and so a
+    // failure can never become a retry loop in the power handler's hot path.
     state.settingsRetiredFor = VERSION
+    try {
+        log.warn "${app.label}: upgrading to v${VERSION} - rebuilding subscriptions and jobs"
+        unsubscribe()
+        unschedule()
+        initialize()
+    } catch (ex) {
+        log.warn "${app.label}: migration failed: ${ex.message}"
+    }
 }
 
 /* -------------------------------------------------------------- handlers */
@@ -339,9 +375,9 @@ def powerHandler(evt) {
         state.remove("healthAlert")
     }
 
-    // A code save does not re-run initialize(), so retire old settings on the
-    // first event after an upgrade. One string compare per event thereafter.
-    if (state.settingsRetiredFor != VERSION) retireSettings()
+    // A code save does not re-run initialize(), so finish the upgrade on the
+    // first event after it. One string compare per event thereafter.
+    if (state.settingsRetiredFor != VERSION) migrate()
 
     Double thr = num(startWatts, 10.0d)
     boolean above = (w >= thr)
