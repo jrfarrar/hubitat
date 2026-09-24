@@ -3,99 +3,122 @@
  *
  *  Copyright 2026 J.R. Farrar
  *
- *  Observes one power-metered appliance and records each run:
- *    - a compact summary per cycle in app state (rolling window)
- *    - a downsampled power/energy profile written once per cycle to File Manager
+ *  ONE JOB: tell someone the washer has finished, and be honest when it can't.
  *
- *  DELIBERATELY PASSIVE. It subscribes, accumulates and records. It sends no
- *  device commands, fires no notifications and changes no settings, so it can
- *  run alongside an existing power-monitor app with no risk of interfering.
+ *  Everything here serves that. A per-cycle record is kept because it is the
+ *  only way to know whether the alert was RIGHT - falseAlerts, the end-transition
+ *  drop and the dip statistics are what tuned notifyDelaySec on evidence instead
+ *  of assumption, and they are cheap. What was removed in v0.3.0 was never read
+ *  by the detector: see the version history below.
  *
  *  Design notes:
- *    - In-flight accumulation lives in a @Field static map keyed by app id.
- *      Hubitat event handlers are separate executions, so ordinary locals do
- *      not survive between events, and putting ~1700 samples in state would
- *      re-serialize the whole map on every event.
- *    - The accumulator is checkpointed to state once a minute so a reboot
- *      costs at most a minute of a cycle, and any cycle left open is closed
- *      out and flagged truncated on the next initialize().
+ *    - In-flight accumulation lives in `state` as flat scalars. It used to live
+ *      in a @Field static map because the 30 s profile buckets meant ~1700
+ *      samples per cycle and state is re-serialized on every change. With the
+ *      buckets gone there are about fifteen numbers, so state is the better
+ *      home: it survives a hub reboot and a code save, which removes the
+ *      truncated-cycle failure mode entirely rather than merely reporting it.
+ *      Flat keys, not a nested map - mutating a map inside state does not
+ *      reliably persist without reassigning it.
  *    - Cycle start/end are recorded at the ACTUAL power transition, not when
  *      the confirmation delay expires, so durations are not inflated by the
  *      debounce.
+ *    - The alert and the record are deliberately on SEPARATE timers. A wrongly
+ *      closed record is permanent; a wrongly sent message costs a glance at the
+ *      machine. So the message is allowed to be faster and braver.
  *
  *  v0.1.0  2026-08-30  Initial release.
- *  v0.1.1  2026-08-31  Fixes found on the first captured cycle:
- *                      - bucket mean counted its first sample twice
- *                      - spin detection reset on any single dip below the
- *                        threshold, so the sustained timer never matured
- *                      - reference-switch "off" was lost to a race against
- *                        the cycle closing; now reconciled after the fact
- *                      - energyStart was taken at confirmation, not at the
- *                        first sample, undercounting kWh
- *  v0.1.2  2026-09-04  Spin-down was never recorded (spinDownCount 0 on both
- *                      captured cycles, one of which held 300+ W for 4.5 min).
- *                      The record was gated on the single sample that closed
- *                      the grace window being below spinEndWatts, but the
- *                      post-spin drain swings from ~7 W to ~350 W, so that
- *                      sample's value was effectively a coin flip - and on a
- *                      miss the sustained period was discarded with no retry.
- *                      The grace window alone now defines the end of the spin;
- *                      spinEndWatts is retired. Adds spinHeldSec to the record.
- *  v0.2.0  2026-09-14  First action the app takes: a cycle-complete notification.
- *                      Off by default; must be enabled explicitly.
+ *  v0.1.1  2026-08-31  Fixes found on the first captured cycle: bucket mean
+ *                      double-counted, spin timer reset on any dip, reference
+ *                      switch "off" lost to a race, energyStart taken late.
+ *  v0.1.2  2026-09-04  Spin-down was gated on the single sample that closed the
+ *                      grace window; post-spin drain swings 7-350 W so that was
+ *                      a coin flip. Grace window alone now ends the spin.
+ *  v0.2.0  2026-09-14  First action the app takes: a cycle-complete notification
+ *                      on the END TRANSITION, on its own timer (notifyDelaySec)
+ *                      separate from the recording confirmation (offDelayMin).
+ *                      The spin-down PREDICTOR was dropped - over 9 cycles the
+ *                      lead time ran 4-77 s and several cycles ended straight
+ *                      out of the spin, so there was nothing to predict on.
+ *                      Premature alerts counted in falseAlerts.
+ *  v0.2.1  2026-09-21  Deletes orphaned settings rows via app.removeSetting().
+ *  v0.3.0  2026-09-24  STRIPPED TO THE JOB, then proved unchanged.
  *
- *                      The spin-down PREDICTOR is dropped. Measured over 9 real
- *                      cycles, spinLeadSec ran 4-77 s and three cycles ended
- *                      straight out of the spin with no post-spin phase at all,
- *                      so on those there is nothing to predict on. Spin fields
- *                      are still recorded as diagnostics; nothing fires on them.
+ *                      Removed - none of it was ever read by the start, end or
+ *                      notify path, and all of it is still recoverable:
+ *                        - spin detection (spinWatts/spinSustainSec/
+ *                          spinGraceSec, spinDown*, spinHeldSec, spinLeadSec).
+ *                          The predictor died in v0.2.0; spinWatts was closed
+ *                          unsettleable on 2026-09-24 after four withdrawn
+ *                          readings. Diagnostics for a question nobody asks.
+ *                        - the 30 s profile CSVs and the File Manager plumbing
+ *                          (bucketSec, writeFiles, keepFiles). hubitat-tsdb now
+ *                          archives every raw event at full resolution, which is
+ *                          strictly better than a downsampled copy the hub has
+ *                          to prune.
+ *                        - the band histogram, the reference-switch comparison
+ *                          against app 2820 (settled - 2820 stamps laston late,
+ *                          this app is the source of truth) and the merged-run
+ *                          flag (derivable from TSDB after the fact).
  *
- *                      Instead the alert fires on the END TRANSITION, on its own
- *                      timer (notifyDelaySec, default 90 s) separate from the
- *                      recording confirmation (offDelayMin, 3 min). The two
- *                      tolerate error differently: a wrongly-closed RECORD is
- *                      permanent, a wrongly-sent MESSAGE costs a glance at the
- *                      machine. Longest mid-cycle dip across 9 cycles was 42 s,
- *                      so 90 s is ~2x margin.
+ *                      Added - health, because the failure that matters is the
+ *                      SILENT one. If the plug dies or the plateau drifts, the
+ *                      old app simply stopped alerting and said nothing:
+ *                        - dead-meter liveness. No power event for deadMeterMin
+ *                          (default 20 min = four missed periodic reports at
+ *                          configParam171=5) means the plug or the mesh is down
+ *                          and no alert will ever arrive. Reported ONCE to
+ *                          healthDevices, which is deliberately a different
+ *                          input from notifyDevices - the person who fixes the
+ *                          plug is not the person waiting on the laundry.
+ *                        - stuck-open cycle. Closed after maxCycleMin and
+ *                          flagged, instead of staying open forever.
+ *                        - endGapSec, the event gap across the end transition.
+ *                          Measured 1-11 s over 13 real cycles; a backstop-
+ *                          caught end (configParam151 too high to hear the final
+ *                          drop) shows as ~300. This monitors the assumption
+ *                          the whole prompt alert rests on.
+ *                        - phantom guard. All 13 real cycles peaked at 486 W or
+ *                          more, including the short drain/spin ones, so a cycle
+ *                          peaking under notifyMinPeakW (100 W) did not happen
+ *                          and gets no message. Standby was measured reaching
+ *                          9.99 W against a 10 W threshold - never for more than
+ *                          two consecutive readings, and only within an hour of
+ *                          real use, so onDelayMin already covers it. This is
+ *                          the belt to that braces.
+ *                        - re-arms its own timers in initialize(). Pressing Done
+ *                          mid-cycle used to unschedule endCycle and leave the
+ *                          cycle open indefinitely.
  *
- *                      Premature alerts are counted (falseAlerts) rather than
- *                      assumed absent, so notifyDelaySec can be tuned on
- *                      evidence. Record gains `notified` and `falseAlerts`.
- *
- *                      NOTE: this depends on configParam151 being low enough to
- *                      report the final drop. At 151=10 W the smallest measured
- *                      end drop (9.62 W) is invisible and the end is only caught
- *                      by the 5-minute periodic backstop. 151=5 fixes that.
- *  v0.2.1  2026-09-21  Deletes the orphaned `spinEndWatts` settings row left
- *                      behind when that input was retired in v0.1.2. Nothing
- *                      read it, but a stale row in statusJson reads as a live
- *                      setting. Uses app.removeSetting() (InstalledApp object,
- *                      documented) from initialize() and, once per version,
- *                      from the first power event after a code save - never
- *                      during a page submit, which is the one documented way
- *                      removeSetting misbehaves. Failure is caught and cannot
- *                      loop. No behaviour change.
+ *                      VALIDATED BEFORE DEPLOY, not after. harness.py replays
+ *                      23,425 real power events from hubitat-tsdb through both
+ *                      the v0.2.1 and v0.3.0 detectors: 13 of 13 cycles agree to
+ *                      the millisecond on start, end, notified, falseAlerts,
+ *                      dipCount and longestDipSec. The harness itself was first
+ *                      validated against the live app's own recorded output.
+ *                      v0.2.1 remains in git at 59f1501.
  */
 
 import groovy.transform.Field
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.2.1"
+@Field static final String VERSION = "0.3.0"
 
 // Inputs removed from the page in earlier versions. Their stored rows are
 // deleted by retireSettings(). Append, never remove - a name that leaves this
 // list would stop being cleaned on a future reinstall-from-backup.
-@Field static final List RETIRED_SETTINGS = ["spinEndWatts"]   // retired in v0.1.2
-
-// Shared across all instances of this child app; keyed by app.id.
-// Lost on hub reboot or code save - that is what the state checkpoint is for.
-@Field static java.util.concurrent.ConcurrentHashMap laundryBuffers = new java.util.concurrent.ConcurrentHashMap()
+@Field static final List RETIRED_SETTINGS = [
+    "spinEndWatts",                                     // retired in v0.1.2
+    "spinWatts", "spinSustainSec", "spinGraceSec",       // retired in v0.3.0
+    "bucketSec", "writeFiles", "keepFiles",              // retired in v0.3.0
+    "idleWatts", "mergeGapSec", "refSwitch"              // retired in v0.3.0
+]
 
 definition(
     name: "Laundry Cycle Logger Child",
     namespace: "jrfarrar",
     author: "J.R. Farrar",
-    description: "Records one appliance's power cycles. Child of Laundry Cycle Logger.",
+    description: "Tells you when one appliance has finished, and says so when it can't. Child of Laundry Cycle Logger.",
     category: "",
     parent: "jrfarrar:Laundry Cycle Logger",
     iconUrl: "",
@@ -117,8 +140,6 @@ def mainPage() {
             input "thisName", "text", title: "Name for this logger", submitOnChange: true, required: true
             if (thisName) app.updateLabel(thisName)
             input "meter", "capability.powerMeter", title: "Power meter device", required: true, multiple: false
-            input "refSwitch", "capability.switch", title: "Reference switch from your existing monitor (optional - logged for comparison)",
-                  required: false, multiple: false
         }
 
         section("<b>Cycle detection</b>") {
@@ -131,8 +152,9 @@ def mainPage() {
 
         section("<b>Cycle-complete notification</b>") {
             paragraph "<i>Fires on the END TRANSITION, sooner than the recording confirmation above. " +
-                      "The record still uses the full confirm delay; this is a faster, independent " +
-                      "alert so a waiting load can be swapped without the extra wait.</i>"
+                      "The record still waits the full confirm delay; this is a faster, independent " +
+                      "alert, because a wrongly-closed record is permanent but a wrongly-sent message " +
+                      "only costs a glance at the machine.</i>"
             input "notifyEnable", "bool", title: "Send a notification when a cycle finishes", defaultValue: false, submitOnChange: true
             if (notifyEnable) {
                 input "notifyDevices", "capability.notification", title: "Notify these devices",
@@ -142,34 +164,38 @@ def mainPage() {
                 input "notifyDelaySec", "number",
                       title: "Confirm the end after this many seconds below the running threshold",
                       defaultValue: 90, required: true
-                paragraph "<i>Longest mid-cycle dip measured across 9 real cycles was 42 s, so 90 s is " +
-                          "about 2x margin. Lower it and a long pause can fire a false 'done'; raise it " +
-                          "and you give the time back.</i>"
+                paragraph "<i>Longest mid-cycle dip measured across 13 replayed cycles is 48 s, so 90 s " +
+                          "is about 1.9x margin. Lower it and a long pause can fire a false 'done'; " +
+                          "raise it and you give the time back. Premature fires are counted in " +
+                          "falseAlerts on the record, so this is tuned on evidence.</i>"
                 input "notifyMinMin", "decimal", title: "Only notify if the cycle ran at least this many minutes",
                       defaultValue: 5, required: true
+                input "notifyMinPeakW", "decimal", title: "...and only if it peaked above this many watts",
+                      defaultValue: 100, required: true
+                paragraph "<i>Phantom guard. All 13 real cycles peaked at 486 W or more, including the " +
+                          "short drain/spin ones, so anything under 100 W was not a wash and earns no " +
+                          "message.</i>"
                 input "notifyText", "text", title: "Message",
                       defaultValue: "Washing machine is done", required: true
                 input "notifyStats", "bool", title: "Append duration and kWh to the message", defaultValue: true
             }
         }
 
-        section("<b>End-of-cycle signature</b>") {
-            paragraph "<i>Recorded only - nothing fires on it. The spin-down predictor was evaluated " +
-                      "over 9 cycles and DROPPED: lead time ran 4-77 s and several cycles end straight " +
-                      "out of the spin with no post-spin phase at all, so there is nothing to predict on " +
-                      "those. Kept as diagnostics only.</i>"
-            input "spinWatts", "decimal", title: "Spin considered active above (watts)", defaultValue: 300, required: true
-            input "spinSustainSec", "number", title: "...once sustained for at least (seconds)", defaultValue: 60, required: true
-            input "spinGraceSec", "number", title: "...and is over once it has stayed below that for (seconds)", defaultValue: 15, required: true
+        section("<b>Health</b>") {
+            paragraph "<i>The failure that matters is the silent one: if the plug dies, the app simply " +
+                      "stops alerting. These go to you, not to whoever is waiting on the laundry.</i>"
+            input "healthDevices", "capability.notification", title: "Send health warnings to these devices",
+                  required: false, multiple: true
+            input "deadMeterMin", "number", title: "Warn if no power report arrives for this many minutes",
+                  defaultValue: 20, required: true
+            input "maxCycleMin", "number", title: "Close a cycle still open after this many minutes",
+                  defaultValue: 240, required: true
         }
 
         section("<b>Data</b>") {
-            input "bucketSec", "number", title: "Profile bucket size (seconds)", defaultValue: 30, required: true
-            input "writeFiles", "bool", title: "Write a profile CSV per cycle to File Manager", defaultValue: true
-            input "keepFiles", "number", title: "Keep this many profile files", defaultValue: 30, required: true
             input "keepCycles", "number", title: "Keep this many cycle summaries in state", defaultValue: 30, required: true
-            input "idleWatts", "decimal", title: "Treat below this as fully idle (watts)", defaultValue: 2, required: true
-            input "mergeGapSec", "number", title: "Flag a possible merged run after idle for (seconds)", defaultValue: 90, required: true
+            paragraph "<i>Full-resolution event history lives in hubitat-tsdb, so this app no longer " +
+                      "writes profile CSVs to File Manager.</i>"
         }
 
         section("<b>Status</b>") {
@@ -186,24 +212,34 @@ def mainPage() {
 private String statusText() {
     StringBuilder sb = new StringBuilder()
     sb.append("Version ${VERSION}<br>")
-    sb.append("Cycle in progress: <b>${state.open ? 'yes, since ' + isoOf(state.open.startMs) : 'no'}</b><br>")
-    sb.append("Last meter event: <b>${state.lastEventSeen ? isoOf(state.lastEventSeen) : 'none yet'}</b><br>")
+    sb.append("Cycle in progress: <b>${state.startMs ? 'yes, since ' + isoOf(state.startMs) : 'no'}</b><br>")
+    sb.append("Last meter event: <b>${state.lastEventSeen ? isoOf(state.lastEventSeen) : 'none yet'}</b>")
+    if (state.lastEventSeen) {
+        Long age = (long)((now() - (state.lastEventSeen as Long)) / 60000L)
+        sb.append(" <i>(${age} min ago)</i>")
+    }
+    sb.append("<br>")
+    if (state.healthAlert) sb.append("<b style='color:#b00'>HEALTH: ${state.healthAlert}</b><br>")
     sb.append("Cycles recorded: <b>${state.cycles?.size() ?: 0}</b><br>")
     if (state.cycles) {
         sb.append("<br><table style='width:100%'><tr>" +
                   "<th align='left'>start</th><th align='right'>min</th><th align='right'>kWh</th>" +
-                  "<th align='right'>peak W</th><th align='right'>end W</th><th align='right'>max dip s</th><th>flags</th></tr>")
+                  "<th align='right'>peak W</th><th align='right'>end drop W</th>" +
+                  "<th align='right'>max dip s</th><th align='right'>gap s</th><th>flags</th></tr>")
         state.cycles.reverse().take(10).each { c ->
             List flags = []
+            if (c.notified) flags << "notified"
+            if (c.falseAlerts) flags << "false x${c.falseAlerts}"
+            if (c.stuck) flags << "STUCK"
+            if (c.phantom) flags << "PHANTOM"
             if (c.truncated) flags << "truncated"
-            if (c.possibleMergedRun) flags << "merged?"
-            if (c.spinDownMs) flags << "spin-down"
             sb.append("<tr><td>${isoOf(c.startMs)}</td>" +
                       "<td align='right'>${c.durationMin}</td>" +
-                      "<td align='right'>${c.kWh}</td>" +
+                      "<td align='right'>${c.kWh ?: '-'}</td>" +
                       "<td align='right'>${c.peakW}</td>" +
-                      "<td align='right'>${c.endTransitionW ?: '-'}</td>" +
+                      "<td align='right'>${c.endTransitionDrop ?: '-'}</td>" +
                       "<td align='right'>${c.longestDipSec ?: 0}</td>" +
+                      "<td align='right'>${c.endGapSec == null ? '-' : c.endGapSec}</td>" +
                       "<td>${flags.join(', ')}</td></tr>")
         }
         sb.append("</table>")
@@ -227,21 +263,37 @@ def updated() {
 def initialize() {
     if (state.cycles == null) state.cycles = []
 
-    // A cycle left open by a reboot or a code save can no longer be completed:
-    // the in-memory buckets are gone. Close it from the checkpoint and flag it.
-    if (state.open && bufPeek()?.lastMs == null) {
-        closeTruncated()
-    }
-
     subscribe(meter, "power", powerHandler)
     subscribe(meter, "energy", energyHandler)
     subscribe(meter, "switch", switchHandler)
-    if (refSwitch) subscribe(refSwitch, "switch", refSwitchHandler)
 
-    if (state.open) runEvery1Minute("checkpoint")
+    // Pressing Done mid-cycle runs updated(), which unschedules everything. In
+    // v0.2.1 that left the cycle open indefinitely: the end timer was gone and
+    // nothing re-armed it. Re-arm from the state we still hold.
+    if (state.startMs) {
+        Long elapsed = now() - (state.startMs as Long)
+        Long remain = (maxCycleMin ?: 240) as Long
+        remain = remain * 60000L - elapsed
+        runIn(remain > 60000L ? (int)(remain / 1000L) : 60, "stuckCycle")
+        if (state.belowSince) {
+            Integer left = (int)(delaySecs(offDelayMin, 180) - (now() - (state.belowSince as Long)) / 1000L)
+            runIn(left > 15 ? left : 15, "endCycle")
+            if (notifyEnable && state.notified != true) {
+                Integer nl = (int)(notifyDelay() - (now() - (state.belowSince as Long)) / 1000L)
+                runIn(nl > 15 ? nl : 15, "notifyDone")
+            }
+        }
+        logInfo "re-armed timers for the cycle open since ${isoOf(state.startMs)}"
+    }
+
+    runEvery10Minutes("healthCheck")
 
     retireSettings()
     logInfo "initialized v${VERSION} watching ${meter?.displayName}"
+}
+
+def uninstalled() {
+    logInfo "removed"
 }
 
 /* -------------------------------------------------- retired preferences */
@@ -254,8 +306,8 @@ def initialize() {
 //
 // Runs from initialize() and, once per version, from the first powerHandler
 // event after a code save - so it takes effect within one periodic power report
-// (configParam171, 5 min) without anyone having to open the page and press Done.
-// Never called during a page submit, so it cannot race a save of the same key.
+// without anyone having to open the page and press Done. Never called during a
+// page submit, which is the one documented way removeSetting misbehaves.
 private void retireSettings() {
     try {
         RETIRED_SETTINGS.each { String n ->
@@ -272,284 +324,153 @@ private void retireSettings() {
     state.settingsRetiredFor = VERSION
 }
 
-def uninstalled() {
-    laundryBuffers.remove(bufKey())
-    logInfo "removed"
-}
-
-/* ---------------------------------------------------------------- buffer */
-
-private String bufKey() { return "app-${app.id}" }
-
-private Map bufPeek() { return laundryBuffers.get(bufKey()) }
-
-private Map bufGet() {
-    Map b = laundryBuffers.get(bufKey())
-    if (b == null) {
-        b = [
-            pendingStartMs: null,
-            buckets       : [],
-            cur           : null,
-            lastMs        : null,
-            lastW         : null,
-            peakW         : 0.0,
-            sumW          : 0.0,
-            nSamples      : 0,
-            bands         : [0L, 0L, 0L, 0L, 0L],   // <10, 10-100, 100-300, 300-600, 600+
-            belowSince    : null,
-            longestDipMs  : 0L,
-            dipCount      : 0,
-            idleSince     : null,
-            possibleMerged: false,
-            mergeSplitMs  : null,
-            lastAboveW    : null,
-            endTransW     : null,
-            endTransDelta : null,
-            highSince     : null,
-            highLastMs    : null,
-            spinDownMs    : null,
-            spinDownCount : 0,
-            spinHeldSec   : null,
-            falseAlerts   : 0,
-            energyStart   : null,
-            energyLast    : null,
-            eventCount    : 0
-        ]
-        laundryBuffers.put(bufKey(), b)
-    }
-    return b
-}
-
-private void bufClear() { laundryBuffers.remove(bufKey()) }
-
 /* -------------------------------------------------------------- handlers */
 
 def powerHandler(evt) {
-    BigDecimal w
-    try { w = new BigDecimal(evt.value) } catch (ex) { return }
+    Double w
+    try { w = Double.parseDouble(evt.value) } catch (ex) { return }
 
     Long ms = evt.getDate()?.getTime() ?: now()
     state.lastEventSeen = ms
+
+    // The meter is reporting again - clear a standing liveness warning.
+    if (state.healthAlert) {
+        logInfo "meter is reporting again (was: ${state.healthAlert})"
+        state.remove("healthAlert")
+    }
 
     // A code save does not re-run initialize(), so retire old settings on the
     // first event after an upgrade. One string compare per event thereafter.
     if (state.settingsRetiredFor != VERSION) retireSettings()
 
-    Map b = bufGet()
-    BigDecimal thr = (startWatts ?: 10) as BigDecimal
+    Double thr = num(startWatts, 10.0d)
     boolean above = (w >= thr)
 
-    // Accumulate from the moment a start becomes possible, so the first
-    // onDelay minutes are not lost, and keep accumulating through the tail.
-    if (state.open || b.pendingStartMs != null) {
-        accumulate(b, ms, w)
+    // Accumulate from the moment a start becomes POSSIBLE, so the onDelayMin
+    // minutes before confirmation are not lost, and keep accumulating through
+    // the tail. This is tested BEFORE pendingStartMs is set below, which means
+    // the first candidate sample is not counted in `events`. That is an
+    // off-by-one inherited from v0.2.1 and kept on purpose: `events` has 17
+    // cycles of history behind it and shifting its meaning by one would make
+    // the new records incomparable with the old for no gain. peakW is
+    // unaffected - the first sample over the threshold is never a wash's peak.
+    if (state.startMs || state.pendingStartMs) {
+        state.events = (state.events ?: 0) + 1
+        if (w > num(state.peakW, 0.0d)) state.peakW = w
+        state.sumW = num(state.sumW, 0.0d) + w
+        state.nSamples = (state.nSamples ?: 0) + 1
+        // Baseline the meter at the first sample of the run, not when the start
+        // is confirmed three minutes later, or the first minutes are lost.
+        if (state.energyStart == null) {
+            state.energyStart = state.energyLast ?: dec(meter?.currentValue("energy"))
+        }
+    } else if (!above && w > num(state.idleMaxW, 0.0d)) {
+        // Health gauge: how close STANDBY creeps to the running threshold.
+        // The "!above" test matters. Without it this catches the first running
+        // sample of each start candidate - measured 51 to 942 W - and tells you
+        // nothing about the plateau. Measured properly it reads 0.1 to 8.2 W
+        // against a 10 W bar.
+        state.idleMaxW = w
+    }
+
+    // End-of-cycle transition: the last reading at or above threshold, the drop
+    // from it, and (via lastAboveMs) the event gap across it. That gap is the
+    // health check on configParam151 still being low enough that the hub HEARS
+    // the final drop instead of waiting for the 5-minute periodic report.
+    if (above) {
+        state.lastAboveW = w
+        state.lastAboveMs = ms
+    } else if (state.lastAboveW != null) {
+        state.endTransW = state.lastAboveW
+        state.endTransDelta = num(state.lastAboveW, 0.0d) - w
+        state.remove("lastAboveW")
     }
 
     if (above) {
-        if (state.open) {
-            if (b.belowSince != null) {
-                Long dip = ms - b.belowSince
-                if (dip > b.longestDipMs) b.longestDipMs = dip
-                b.dipCount = (b.dipCount ?: 0) + 1
-                b.belowSince = null
+        if (state.startMs) {
+            if (state.belowSince != null) {
+                Long dip = ms - (state.belowSince as Long)
+                if (dip > lng(state.longestDipMs, 0L)) state.longestDipMs = dip
+                state.dipCount = (state.dipCount ?: 0) + 1
+                state.remove("belowSince")
                 unschedule("endCycle")
-                unschedule("notifyDone")   // it was only a dip after all
+                unschedule("notifyDone")     // it was only a dip after all
                 // If the alert already went out and power came back, we told
                 // them too early. Count it - this is how notifyDelaySec gets
                 // validated against real cycles instead of assumed.
                 if (state.notified == true) {
-                    b.falseAlerts = (b.falseAlerts ?: 0) + 1
+                    state.falseAlerts = (state.falseAlerts ?: 0) + 1
                     state.notified = false
-                    log.warn "${app.label}: cycle-complete alert was premature - ran again after ${(int)(dip/1000)}s below"
+                    log.warn "${app.label}: cycle-complete alert was premature - ran again after ${(int)(dip / 1000L)}s below"
                 }
             }
-        } else if (b.pendingStartMs == null) {
-            b.pendingStartMs = ms
+        } else if (!state.pendingStartMs) {
+            resetRun()
+            state.pendingStartMs = ms
             runIn(delaySecs(onDelayMin, 180), "startCycle")
             logDebug "possible start at ${isoOf(ms)} (${w} W)"
         }
     } else {
-        if (state.open) {
-            if (b.belowSince == null) {
-                b.belowSince = ms
+        if (state.startMs) {
+            if (state.belowSince == null) {
+                state.belowSince = ms
                 runIn(delaySecs(offDelayMin, 180), "endCycle")
                 // Faster, independent alert timer. The RECORD still waits for
                 // offDelayMin; this only decides when to tell someone.
-                if (notifyEnable && state.notified != true) {
-                    Integer nd = (notifyDelaySec ?: 90) as Integer
-                    if (nd < 15) nd = 15
-                    runIn(nd, "notifyDone")
-                }
+                if (notifyEnable && state.notified != true) runIn(notifyDelay(), "notifyDone")
             }
-        } else if (b.pendingStartMs != null) {
-            b.pendingStartMs = null
+        } else if (state.pendingStartMs) {
+            state.remove("pendingStartMs")
             unschedule("startCycle")
-            bufClear()
             logDebug "start candidate cancelled"
         }
     }
 }
 
 def energyHandler(evt) {
-    BigDecimal e = safeDec(evt.value)
+    BigDecimal e = dec(evt.value)
     if (e == null) return
     state.lastEventSeen = evt.getDate()?.getTime() ?: now()
-    // Do not create a buffer just for an idle energy report.
-    Map b = bufPeek()
-    if (b != null) b.energyLast = e
+    state.energyLast = e
 }
 
 def switchHandler(evt) {
     logDebug "meter switch ${evt.value}"
     // Relay turned off at the wall is not a cycle end; note it on the record.
-    if (state.open && evt.value == "off") {
-        Map o = state.open
-        o.relayOffMs = evt.getDate()?.getTime() ?: now()
-        state.open = o
+    if (state.startMs && evt.value == "off") {
+        state.relayOffMs = evt.getDate()?.getTime() ?: now()
     }
-}
-
-def refSwitchHandler(evt) {
-    // The incumbent monitor's own view, recorded so the two can be compared.
-    // Recorded unconditionally: both apps use the same confirmation delay, so
-    // its "off" lands within milliseconds of endCycle() clearing state.open
-    // and would otherwise be lost to the race.
-    Long ms = evt.getDate()?.getTime() ?: now()
-    if (evt.value == "on") {
-        state.lastRefOnMs = ms
-    } else if (evt.value == "off") {
-        state.lastRefOffMs = ms
-    }
-    if (state.open) {
-        Map o = state.open
-        if (evt.value == "on" && o.refOnMs == null) {
-            o.refOnMs = ms
-        } else if (evt.value == "off") {
-            o.refOffMs = ms
-        }
-        state.open = o
-    }
-    logDebug "reference switch ${evt.value}"
-}
-
-/* ------------------------------------------------------------ accumulate */
-
-private void accumulate(Map b, Long ms, BigDecimal w) {
-    b.eventCount = (b.eventCount ?: 0) + 1
-
-    // Baseline the meter at the first sample of the run, not when the start
-    // is confirmed three minutes later, or the first minutes are lost.
-    if (b.energyStart == null) b.energyStart = (b.energyLast ?: safeDec(meter?.currentValue("energy")))
-
-    // time-weighted band histogram, attributed to the value we were holding
-    if (b.lastMs != null && b.lastW != null) {
-        Long dt = ms - b.lastMs
-        if (dt > 0 && dt < 600000L) {
-            b.bands[bandOf(b.lastW)] += dt
-        }
-    }
-
-    // end-of-cycle transition: the last reading at or above threshold, and the drop from it
-    BigDecimal thr = (startWatts ?: 10) as BigDecimal
-    if (w >= thr) {
-        b.lastAboveW = w
-    } else if (b.lastAboveW != null) {
-        b.endTransW = b.lastAboveW
-        b.endTransDelta = b.lastAboveW - w
-        b.lastAboveW = null
-    }
-
-    // Sustained spin, then collapse => spin-down candidate.
-    // Spin power oscillates across the threshold, so a single dip must not
-    // reset the sustained timer - the spin is only over once power has stayed
-    // below the threshold for the whole grace period. That grace window is
-    // the ONLY test for "the spin ended": the sample that happens to close
-    // the window is not required to be low itself, because the post-spin
-    // drain swings between single-digit and several-hundred watts and that
-    // one sample's value is effectively random.
-    BigDecimal sw = (spinWatts ?: 300) as BigDecimal
-    Long graceMs = ((spinGraceSec ?: 15) as Long) * 1000L
-    if (w >= sw) {
-        if (b.highSince == null) b.highSince = ms
-        b.highLastMs = ms
-    } else if (b.highSince != null && b.highLastMs != null && (ms - (b.highLastMs as Long)) >= graceMs) {
-        Long held = (b.highLastMs as Long) - (b.highSince as Long)
-        if (held >= ((spinSustainSec ?: 60) as Long) * 1000L) {
-            // keep the LAST sustained high period - a later, longer spin
-            // supersedes an earlier one
-            b.spinDownMs = b.highLastMs          // when the spin actually ended
-            b.spinDownCount = (b.spinDownCount ?: 0) + 1
-            b.spinHeldSec = (int)(held / 1000L)
-            logDebug "spin-down candidate #${b.spinDownCount} at ${isoOf(b.highLastMs)} after ${(int)(held/1000)}s above ${sw} W"
-        }
-        b.highSince = null
-        b.highLastMs = null
-    }
-
-    // fully-idle stretch inside a run => possible merged back-to-back loads
-    BigDecimal idle = (idleWatts ?: 2) as BigDecimal
-    if (w < idle) {
-        if (b.idleSince == null) b.idleSince = ms
-    } else {
-        if (b.idleSince != null) {
-            Long gap = ms - b.idleSince
-            if (gap >= ((mergeGapSec ?: 90) as Long) * 1000L) {
-                b.possibleMerged = true
-                if (b.mergeSplitMs == null) b.mergeSplitMs = b.idleSince
-            }
-            b.idleSince = null
-        }
-    }
-
-    // running stats
-    if (w > (b.peakW as BigDecimal)) b.peakW = w
-    b.sumW = (b.sumW as BigDecimal) + w
-    b.nSamples = (b.nSamples ?: 0) + 1
-
-    // downsampled profile bucket
-    Long span = ((bucketSec ?: 30) as Long) * 1000L
-    Long bStart = (ms.intdiv(span)) * span
-    Map cur = b.cur
-    if (cur == null || cur.ms != bStart) {
-        if (cur != null) b.buckets << cur
-        cur = [ms: bStart, min: w, max: w, sum: 0.0, n: 0, kwh: b.energyLast]
-        b.cur = cur
-    }
-    if (w < (cur.min as BigDecimal)) cur.min = w
-    if (w > (cur.max as BigDecimal)) cur.max = w
-    cur.sum = (cur.sum as BigDecimal) + w
-    cur.n = (cur.n ?: 0) + 1
-    cur.kwh = b.energyLast
-
-    b.lastMs = ms
-    b.lastW = w
-}
-
-private int bandOf(BigDecimal w) {
-    if (w < 10) return 0
-    if (w < 100) return 1
-    if (w < 300) return 2
-    if (w < 600) return 3
-    return 4
 }
 
 /* ------------------------------------------------------- cycle lifecycle */
 
-def startCycle() {
-    Map b = bufGet()
-    Long startMs = b.pendingStartMs ?: now()
-    b.pendingStartMs = null
+// Reset when a start CANDIDATE opens, not when it is confirmed - see the
+// accumulation comment in powerHandler. idleMaxW is deliberately NOT reset
+// here: it is the standby gauge for the idle period preceding this run and
+// belongs in that run's record. It is cleared once the record is written.
+private void resetRun() {
+    state.longestDipMs = 0L
+    state.dipCount = 0
+    state.falseAlerts = 0
+    state.peakW = 0.0d
+    state.sumW = 0.0d
+    state.nSamples = 0
+    state.events = 0
+    state.remove("energyStart")
+    state.remove("relayOffMs")
+    state.remove("endTransW")
+    state.remove("endTransDelta")
+}
 
-    state.open = [
-        startMs     : startMs,
-        energyStart : safeDec(meter?.currentValue("energy")),
-        refOnMs     : null,
-        refOffMs    : null,
-        relayOffMs  : null
-    ]
+def startCycle() {
+    Long startMs = (state.pendingStartMs ?: now()) as Long
+    state.remove("pendingStartMs")
+    state.startMs = startMs
     state.notified = false
+    if (state.energyStart == null) state.energyStart = dec(meter?.currentValue("energy"))
     unschedule("notifyDone")
-    runEvery1Minute("checkpoint")
+    // Nothing else closes a cycle if the end transition is never heard.
+    runIn(((maxCycleMin ?: 240) as Integer) * 60, "stuckCycle")
     logInfo "cycle started ${isoOf(startMs)}"
 }
 
@@ -561,27 +482,34 @@ def startCycle() {
 // Any reading back above startWatts unschedules this, so it only fires if the
 // power stayed down for the whole window.
 def notifyDone() {
-    Map open = state.open
-    if (open == null) return                       // endCycle already closed it
+    if (!state.startMs) return                      // endCycle already closed it
     if (!notifyEnable) return
-    if (state.notified == true) return             // already told them
+    if (state.notified == true) return              // already told them
 
-    Map b = bufPeek()
-    Long endMs = (b?.belowSince) ?: now()
-    BigDecimal mins = ((endMs - (open.startMs as Long)) / 60000.0d) as BigDecimal
-    BigDecimal floor = (notifyMinMin ?: 5) as BigDecimal
+    Long endMs = (state.belowSince ?: now()) as Long
+    Double mins = (endMs - (state.startMs as Long)) / 60000.0d
+    Double floor = num(notifyMinMin, 5.0d)
     if (mins < floor) {
-        logInfo "cycle-complete alert suppressed: ran ${fmt2(mins)} min, floor is ${floor}"
+        logInfo "cycle-complete alert suppressed: ran ${fmt2(mins)} min, floor is ${fmt2(floor)}"
+        return
+    }
+
+    // Phantom guard. If standby power ever drifts above startWatts the app
+    // would open cycles on nothing and announce a wash that never happened.
+    // All 13 replayed cycles peaked at 486 W or more, including the short
+    // drain/spin ones, so a 100 W floor clears the lowest real wash by ~4.9x.
+    Double peak = num(state.peakW, 0.0d)
+    Double peakFloor = num(notifyMinPeakW, 100.0d)
+    if (peak < peakFloor) {
+        log.warn "${app.label}: cycle-complete alert suppressed - peaked at only ${fmt2(peak)} W " +
+                 "(floor ${fmt2(peakFloor)} W). That was not a wash; check the running threshold."
         return
     }
 
     String msg = (notifyText ?: "Washing machine is done")
     if (notifyStats != false) {
-        BigDecimal kwh = null
-        BigDecimal eNow = safeDec(meter?.currentValue("energy"))
-        BigDecimal eStart = safeDec(open.energyStart)
-        if (eNow != null && eStart != null && eNow >= eStart) kwh = eNow - eStart
-        msg += " (${Math.round(mins.doubleValue())} min" + (kwh != null ? ", ${fmt2(kwh)} kWh" : "") + ")"
+        BigDecimal kwh = kWhSoFar()
+        msg += " (${Math.round(mins)} min" + (kwh != null ? ", ${fmt4(kwh)} kWh" : "") + ")"
     }
 
     notifyDevices?.each { d ->
@@ -596,107 +524,79 @@ def notifyDone() {
 }
 
 def endCycle() {
-    Map b = bufPeek()
-    Map open = state.open
-    if (open == null) { unschedule("checkpoint"); return }
-
-    Long endMs = (b?.belowSince) ?: now()
-    unschedule("checkpoint")
+    if (!state.startMs) return
     unschedule("notifyDone")
-    // Backstop: if notifyDelaySec was set longer than offDelayMin, the alert
+    // Backstop: if notifyDelaySec was set longer than offDelayMin the alert
     // timer has not fired yet. Send it now rather than never.
     if (notifyEnable && state.notified != true) notifyDone()
+    closeRun(false)
+}
 
-    if (b == null) { closeTruncated(); return }
+// The cycle never ended as far as the app could tell. Close it rather than
+// leave it open forever - an open cycle blocks every future start.
+def stuckCycle() {
+    if (!state.startMs) return
+    if (state.belowSince == null) state.belowSince = now()
+    log.warn "${app.label}: cycle open since ${isoOf(state.startMs)} exceeded ${maxCycleMin ?: 240} min - closing it as stuck"
+    healthNotify("laundry cycle stuck open since ${isoOf(state.startMs)} - closed automatically")
+    closeRun(true)
+}
 
-    // close the final bucket
-    if (b.cur != null) { b.buckets << b.cur; b.cur = null }
+private void closeRun(boolean stuck) {
+    Long endMs = (state.belowSince ?: now()) as Long
+    Long startMs = state.startMs as Long
+    unschedule("endCycle")
+    unschedule("notifyDone")
+    unschedule("stuckCycle")
 
-    BigDecimal energyEnd = safeDec(meter?.currentValue("energy"))
-    BigDecimal kWh = null
-    if (energyEnd != null && open.energyStart != null) {
-        kWh = energyEnd - (open.energyStart as BigDecimal)
-        if (kWh < 0) kWh = null   // meter was reset mid-cycle
+    Integer gapSec = null
+    if (state.lastAboveMs != null && state.belowSince != null) {
+        gapSec = (int)(((state.belowSince as Long) - (state.lastAboveMs as Long)) / 1000L)
     }
 
-    Long durMs = endMs - (open.startMs as Long)
+    Double peak = num(state.peakW, 0.0d)
+    Integer n = (state.nSamples ?: 0) as Integer
     Map rec = [
-        startMs          : open.startMs,
+        startMs          : startMs,
         endMs            : endMs,
-        durationMin      : fmt2(durMs / 60000.0d),
-        peakW            : fmt2(b.peakW),
-        meanW            : b.nSamples ? fmt2((b.sumW as Number).doubleValue() / (b.nSamples as int)) : null,
-        kWh              : kWh == null ? null : fmt4(kWh),
-        events           : b.eventCount,
-        endTransitionW   : b.endTransW == null ? null : fmt2(b.endTransW),
-        endTransitionDrop: b.endTransDelta == null ? null : fmt2(b.endTransDelta),
-        longestDipSec    : (int)((b.longestDipMs ?: 0L) / 1000L),
-        dipCount         : b.dipCount ?: 0,
-        bandSecs         : b.bands.collect { (int)(it / 1000L) },
-        spinDownMs       : b.spinDownMs,
-        spinDownCount    : b.spinDownCount ?: 0,
-        spinHeldSec      : b.spinHeldSec,
+        durationMin      : fmt2((endMs - startMs) / 60000.0d),
+        peakW            : fmt2(peak),
+        meanW            : n ? fmt2(num(state.sumW, 0.0d) / n) : null,
+        kWh              : fmt4(kWhSoFar()),
+        events           : state.events ?: 0,
+        endTransitionW   : fmt2(state.endTransW),
+        endTransitionDrop: fmt2(state.endTransDelta),
+        endGapSec        : gapSec,
+        longestDipSec    : (int)(lng(state.longestDipMs, 0L) / 1000L),
+        dipCount         : state.dipCount ?: 0,
+        idleMaxW         : fmt2(state.idleMaxW),
         notified         : (state.notified == true),
-        falseAlerts      : b.falseAlerts ?: 0,
-        spinLeadSec      : b.spinDownMs ? (int)((endMs - (b.spinDownMs as Long)) / 1000L) : null,
-        possibleMergedRun: b.possibleMerged ?: false,
-        mergeSplitMs     : b.mergeSplitMs,
-        refOnMs          : open.refOnMs ?: state.lastRefOnMs,
-        refOffMs         : open.refOffMs,
-        refLagSec        : open.refOffMs ? (int)(((open.refOffMs as Long) - endMs) / 1000L) : null,
-        relayOffMs       : open.relayOffMs,
-        truncated        : false,
-        profile          : null
+        falseAlerts      : state.falseAlerts ?: 0,
+        phantom          : peak < num(notifyMinPeakW, 100.0d),
+        stuck            : stuck,
+        relayOffMs       : state.relayOffMs,
+        version          : VERSION
     ]
-
-    if (writeFiles != false) {
-        rec.profile = writeProfile(open, endMs, b.buckets)
-    }
-
     pushCycle(rec)
-    state.remove("open")
-    bufClear()
 
-    // The incumbent's switch may flip a moment after we close; catch it.
-    if (rec.refOffMs == null && refSwitch) runIn(360, "reconcileRef")
+    // Clear the run. idleMaxW resets here, with its value now safely on the
+    // record, so it measures the NEXT idle period.
+    ["startMs", "belowSince", "notified", "longestDipMs", "dipCount", "falseAlerts",
+     "peakW", "sumW", "nSamples", "events", "energyStart", "relayOffMs",
+     "lastAboveW", "lastAboveMs", "endTransW", "endTransDelta"].each { state.remove(it) }
+    state.idleMaxW = 0.0d
+
+    // endGapSec is the one health number that only a real cycle can produce,
+    // so judge it here rather than on a timer.
+    if (gapSec != null && gapSec > 120) {
+        log.warn "${app.label}: the end of this cycle was not reported as a transition - " +
+                 "${gapSec}s gap, so it was caught by the periodic report. configParam151 " +
+                 "may be too high to hear the final drop, which makes the alert late."
+    }
 
     logInfo "cycle ended ${isoOf(endMs)} - ${rec.durationMin} min, peak ${rec.peakW} W, " +
-            "${rec.kWh ?: '?'} kWh, ${rec.events} events" +
-            (rec.spinLeadSec != null ? ", spin-down ${rec.spinLeadSec}s before end" : "") +
-            (rec.possibleMergedRun ? " [POSSIBLE MERGED RUN]" : "")
-}
-
-def reconcileRef() {
-    List c = state.cycles ?: []
-    if (!c) return
-    Map last = c[-1]
-    if (last.refOffMs != null || last.endMs == null) return
-    Long ro = state.lastRefOffMs as Long
-    Long end = last.endMs as Long
-    if (ro != null && ro >= (last.startMs as Long) && ro <= end + 900000L) {
-        last.refOffMs = ro
-        last.refLagSec = (int)((ro - end) / 1000L)
-        c[-1] = last
-        state.cycles = c
-        logInfo "reference switch off reconciled - incumbent lagged ${last.refLagSec}s"
-    }
-}
-
-private void closeTruncated() {
-    Map open = state.open
-    if (open == null) return
-    Map rec = [
-        startMs    : open.startMs,
-        endMs      : state.lastEventSeen ?: now(),
-        durationMin: null,
-        truncated  : true,
-        note       : "closed by initialize(); in-flight buffer was lost"
-    ]
-    pushCycle(rec)
-    state.remove("open")
-    bufClear()
-    unschedule("checkpoint")
-    log.warn "${app.label}: cycle started ${isoOf(open.startMs)} closed as truncated"
+            "${rec.kWh ?: '?'} kWh, ${rec.events} events, end gap ${gapSec == null ? '?' : gapSec}s" +
+            (stuck ? " [STUCK]" : "") + (rec.phantom ? " [PHANTOM]" : "")
 }
 
 private void pushCycle(Map rec) {
@@ -707,86 +607,82 @@ private void pushCycle(Map rec) {
     state.cycles = c
 }
 
-def checkpoint() {
-    Map b = bufPeek()
-    if (b == null || state.open == null) return
-    Map o = state.open
-    o.cp = [
-        atMs         : now(),
-        peakW        : fmt2(b.peakW),
-        events       : b.eventCount,
-        buckets      : (b.buckets?.size() ?: 0),
-        longestDipSec: (int)((b.longestDipMs ?: 0L) / 1000L)
-    ]
-    state.open = o
-}
+/* ------------------------------------------------------------- health -- */
 
-/* ------------------------------------------------------------ file output */
+// The failure this app cannot afford is the SILENT one. If the plug dies or the
+// mesh drops it, nothing is wrong with the code - no alert simply never
+// arrives, and nobody learns that until a load sits wet. Reported to
+// healthDevices, deliberately a different input from notifyDevices: the person
+// who fixes a plug is not the person waiting on the laundry.
+def healthCheck() {
+    if (state.lastEventSeen == null) return
 
-private String writeProfile(Map open, Long endMs, List buckets) {
-    try {
-        String fname = fileNameFor(open.startMs as Long)
-        StringBuilder sb = new StringBuilder()
-        sb.append("# laundry-cycle-logger v${VERSION} app=${app.label} device=${meter?.displayName}\n")
-        sb.append("# start=${isoOf(open.startMs)} end=${isoOf(endMs)} bucketSec=${bucketSec ?: 30}\n")
-        sb.append("epochMs,iso,meanW,minW,maxW,kWh\n")
-        buckets.each { bk ->
-            Double mean = bk.n ? ((bk.sum as Number).doubleValue() / (bk.n as int)) : 0.0d
-            sb.append("${bk.ms},${isoOf(bk.ms)},${fmt2(mean)},${fmt2(bk.min)},${fmt2(bk.max)},")
-            sb.append(bk.kwh == null ? "" : fmt4(bk.kwh))
-            sb.append("\n")
-        }
-        uploadHubFile(fname, sb.toString().getBytes("UTF-8"))
-        pruneFiles()
-        logInfo "wrote ${fname} (${buckets.size()} rows)"
-        return fname
-    } catch (ex) {
-        log.warn "${app.label}: profile write failed - ${ex.message}"
-        return null
+    Integer deadMin = (deadMeterMin ?: 20) as Integer
+    Long ageMin = (long)((now() - (state.lastEventSeen as Long)) / 60000L)
+    if (ageMin >= deadMin && state.healthAlert == null) {
+        String m = "no power report from ${meter?.displayName} for ${ageMin} min " +
+                   "(expected every 5) - the cycle-complete alert cannot fire"
+        state.healthAlert = m
+        log.warn "${app.label}: ${m}"
+        healthNotify("${app.label}: ${m}")
+    }
+
+    // Standby creeping up to the running threshold would make the app believe
+    // the washer is permanently running - it would never alert again. Measured
+    // standby peaks at 8.2 W against a 10 W bar, so this is quiet today; warn
+    // once per new high so a real drift is not lost in repetition.
+    Double thr = num(startWatts, 10.0d)
+    Double idle = num(state.idleMaxW, 0.0d)
+    if (idle >= thr && idle > num(state.plateauWarnedW, 0.0d)) {
+        state.plateauWarnedW = idle
+        String m = "standby power reached ${fmt2(idle)} W, at or above the ${fmt2(thr)} W " +
+                   "running threshold - raise the threshold or cycles will be detected on nothing"
+        log.warn "${app.label}: ${m}"
+        healthNotify("${app.label}: ${m}")
     }
 }
 
-private String filePrefix() {
-    String slug = (app.label ?: "laundry").toLowerCase().replaceAll("[^a-z0-9]+", "_").replaceAll("^_|_\$", "")
-    return "laundry_${slug}_"
-}
-
-private String fileNameFor(Long ms) {
-    SimpleDateFormat f = new SimpleDateFormat("yyyy-MM-dd_HHmm")
-    if (location?.timeZone) f.setTimeZone(location.timeZone)
-    return "${filePrefix()}${f.format(new Date(ms))}.csv"
-}
-
-private void pruneFiles() {
-    try {
-        Integer keep = (keepFiles ?: 30) as Integer
-        String prefix = filePrefix()
-        List names = []
-        getHubFiles()?.each { f ->
-            String n = (f instanceof Map) ? (f.name ?: f.fileName ?: f.get("name")) : "${f}"
-            if (n && n.startsWith(prefix)) names << n
-        }
-        names = names.sort()
-        while (names.size() > keep) {
-            String victim = names.remove(0)
-            deleteHubFile(victim)
-            logDebug "pruned ${victim}"
-        }
-    } catch (ex) {
-        log.warn "${app.label}: prune failed - ${ex.message}"
+private void healthNotify(String msg) {
+    healthDevices?.each { d ->
+        try { d.deviceNotification(msg) }
+        catch (ex) { log.warn "${app.label}: health notify failed on ${d?.displayName}: ${ex.message}" }
     }
 }
 
 /* ----------------------------------------------------------------- utils */
 
+// kWh consumed since the baseline taken at the first sample of the run.
+private BigDecimal kWhSoFar() {
+    BigDecimal eNow = dec(state.energyLast) ?: dec(meter?.currentValue("energy"))
+    BigDecimal eStart = dec(state.energyStart)
+    if (eNow == null || eStart == null) return null
+    BigDecimal k = eNow - eStart
+    return k < 0 ? null : k        // meter was reset mid-cycle
+}
+
+private Integer notifyDelay() {
+    Integer nd = (notifyDelaySec ?: 90) as Integer
+    return nd < 15 ? 15 : nd
+}
+
 private Integer delaySecs(def minutes, Integer fallback) {
     try {
-        Integer s = (int) Math.round(((minutes ?: 3) as BigDecimal).doubleValue() * 60.0d)
+        Integer s = (int) Math.round(num(minutes, 3.0d) * 60.0d)
         return s > 0 ? s : fallback
     } catch (ex) { return fallback }
 }
 
-private BigDecimal safeDec(def v) {
+private Double num(def v, Double dflt) {
+    if (v == null) return dflt
+    try { return ((v as Number).doubleValue()) } catch (ex) { return dflt }
+}
+
+private Long lng(def v, Long dflt) {
+    if (v == null) return dflt
+    try { return ((v as Number).longValue()) } catch (ex) { return dflt }
+}
+
+private BigDecimal dec(def v) {
     if (v == null) return null
     try { return new BigDecimal(v.toString()) } catch (ex) { return null }
 }
