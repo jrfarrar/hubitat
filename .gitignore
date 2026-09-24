@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+# Derived replay data - re-export with Hubitat\LaundryCycleLogger\_scratch\tsdb_pull.py
+Apps/LaundryCycleLogger/tsdb_power.csv
