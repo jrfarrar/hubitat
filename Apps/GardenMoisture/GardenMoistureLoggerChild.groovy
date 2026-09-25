@@ -324,7 +324,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.6.1"
+@Field static final String VERSION = "0.7.0"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -469,22 +469,27 @@ def mainPage() {
             paragraph "<i>A notification that says \"water the garden\" is a nudge. One that says " +
                       "\"water until it reads 60%\" is an instruction. These numbers ride along in " +
                       "the alert so she never has to remember them or ask.<br><br>" +
-                      "They are stored as OFFSETS FROM FIELD CAPACITY, not as fixed percentages, so " +
-                      "they follow the learned anchor instead of going stale when it moves. With FC " +
-                      "at 53 the defaults give stop 60, ceiling 65, skip-above 58 - which is exactly " +
-                      "what the first nine wetting events measured.</i>"
-            input "stopOffsetPts", "decimal",
-                  title: "STOP watering this many points above field capacity",
-                  defaultValue: 7, required: true
-            input "ceilOffsetPts", "decimal",
-                  title: "Never exceed this many points above field capacity",
-                  defaultValue: 12, required: true
+                      "The skip-above line and the settle target are stored as OFFSETS FROM FIELD " +
+                      "CAPACITY, not fixed percentages, so they follow the learned anchor instead of " +
+                      "going stale when it moves.<br><br>" +
+                      "⚠ The stop/ceiling percentages that were here in v0.6 are GONE - they told " +
+                      "her to water to a meter reading that cannot be watered to. See the note " +
+                      "below.</i>"
             input "skipAboveOffsetPts", "decimal",
                   title: "Do not water at all if already this many points above field capacity",
                   defaultValue: 5, required: true
             input "doseInches", "decimal",
-                  title: "Equivalent dose, inches of water (for anyone who would rather not watch the meter)",
+                  title: "Dose, inches of water - the PRIMARY instruction",
                   defaultValue: 0.25, required: true
+            input "bedSqFt", "decimal",
+                  title: "Bed area in square feet (blank = the alert quotes inches instead of gallons)",
+                  required: false
+            paragraph "<i>⚠ The dose leads and the meter does NOT, since 2026-09-25. The probe lags " +
+                      "the hose by about <b>15 minutes</b> (event opened 12:34:48, peaked 12:48:45) " +
+                      "and the app samples every 5 min on top of that, so a target reading cannot be " +
+                      "watered to - you overshoot chasing a number that is still climbing. J.R.: " +
+                      "<i>\"it was also hard to water to 60 since there is no way to kind of monitor " +
+                      "it while you're watering.\"</i> The meter is now a NEXT-MORNING check.</i>"
             paragraph "<i>Evidence, 2026-09-21, nine events: every one settled at 53 % or above, " +
                       "including the gentlest which peaked at 63-66 and settled 53-58. Nothing has " +
                       "ever been observed peaking below 63, so the stop figure is a deliberate " +
@@ -535,6 +540,20 @@ def mainPage() {
                       "events showed the old adaptive window would still have fired 50 false " +
                       "alarms. Only a STUCK sensor - one the gateway still hears, whose value " +
                       "never moves - is detected here now.</i>"
+            input "drainLookbackH", "decimal",
+                  title: "Drainage guard: look back this many hours when deciding if the soil is still falling",
+                  defaultValue: 3, required: true
+            input "drainMaxDropPts", "decimal",
+                  title: "...and skip the daily field-capacity reading if it fell more than this many points",
+                  defaultValue: 1, required: true
+            paragraph "<i>Keeps still-draining readings out of the field-capacity pool. FC is the TOP " +
+                      "DECILE of daily readings, so without this the estimator preferentially picks " +
+                      "the midnights that caught the soil still wet - measured 2026-09-25 as about " +
+                      "<b>four points of inflation</b> (learned 56 vs 51-53 measured directly).<br>" +
+                      "A state check, not a clock: gravity drainage runs at ~25 points per HOUR " +
+                      "(76-&gt;59 % in 40 min, 09-02), evaporation at ~0.03 points per hour " +
+                      "(44-&gt;42 % over three days, 09-22..24). The defaults sit in the gap between " +
+                      "two regimes three orders of magnitude apart, so their exact value cannot matter.</i>"
             input "staleMaxHours", "decimal",
                   title: "Absolute ceiling - always flag after this many hours of silence",
                   defaultValue: 48, required: true
@@ -682,38 +701,51 @@ private String statusText() {
  */
 private String waterToText(Map a) {
     BigDecimal fc = safeDec(a?.fc)
-    BigDecimal stop, ceil, skip
+    BigDecimal skip, settle
     String basis
     if (fc != null) {
-        stop = fc + numSetting(stopOffsetPts, 7)
-        ceil = fc + numSetting(ceilOffsetPts, 12)
-        skip = fc + numSetting(skipAboveOffsetPts, 5)
-        basis = "from the learned field capacity ${fmt2(fc)}"
+        skip   = fc + numSetting(skipAboveOffsetPts, 5)
+        settle = fc
+        basis  = "target from the learned field capacity ${fmt2(fc)}"
     } else {
-        // No FC yet. These are the 2026-09-21 measured values, and saying so
-        // matters: a number with no basis should announce that it has none.
-        stop = new BigDecimal("60"); ceil = new BigDecimal("65"); skip = new BigDecimal("58")
+        skip = new BigDecimal("58"); settle = new BigDecimal("52")
         basis = "provisional - field capacity not learned yet"
     }
-    // Whole numbers. The probe reports integers, so "water until 60.00%" claims
-    // a precision that does not exist and reads like a lab instrument rather
-    // than an instruction to a person holding a hose.
-    String pStop = stop.setScale(0, java.math.RoundingMode.HALF_UP).toString()
-    String pCeil = ceil.setScale(0, java.math.RoundingMode.HALF_UP).toString()
-    String pSkip = skip.setScale(0, java.math.RoundingMode.HALF_UP).toString()
+    String pSkip   = skip.setScale(0, java.math.RoundingMode.HALF_UP).toString()
+    String pSettle = settle.setScale(0, java.math.RoundingMode.HALF_UP).toString()
 
     BigDecimal now = safeDec(state.lastPct)
     if (now != null && now >= skip) {
         return "Do NOT water - it is already at ${now}%, above the ${pSkip}% line. " +
                "Water added above that drains straight out and does nothing."
     }
+
+    // DOSE FIRST, METER SECOND. Reversed in v0.7.0 after J.R. tried to water to
+    // a meter reading on 2026-09-25: "it was also hard to water to 60 since
+    // there is no way to kind of monitor it while you're watering... it was a
+    // little bit slow to respond."
+    //
+    // He is right and the lag is measured: the event opened at 12:34:48 and did
+    // not peak until 12:48:45 - FOURTEEN MINUTES - and the app only samples
+    // every 5 min on top of that. By the time the display reaches a target the
+    // soil is already well past it and still climbing. A meter that lags the
+    // hose by a quarter of an hour cannot be steered by, so telling someone to
+    // "water until it reads 63" is an instruction that cannot be followed.
     BigDecimal dose = numSetting(doseInches, 0.25)
-    return "Water until the probe reads about <b>${pStop}%</b>, then stop" +
-           (now != null ? " (it is at ${now}% now)" : "") +
-           ". Do not go past ${pCeil}% - beyond that it drains out the bottom of the bed " +
-           "without helping. If you would rather not watch the meter, about <b>${dose} in</b> of " +
-           "water does the same job. Aim LOW: landing short is useful, overshooting teaches nothing. " +
-           "(${basis})"
+    BigDecimal area = numSetting(bedSqFt, 0)
+    String amount = "about <b>${dose} in</b> of water"
+    if (area != null && area > 0) {
+        BigDecimal gal = area.multiply(dose).multiply(new BigDecimal("0.623"))
+        amount = "about <b>${gal.setScale(1, java.math.RoundingMode.HALF_UP)} gallons</b> " +
+                 "(${dose} in over ${area} sq ft)"
+    }
+    return "Give it ${amount}, then stop. <b>Do not try to watch the probe while you water</b> - " +
+           "it lags the hose by about 15 minutes, so it will still be climbing long after you stop " +
+           "and you will overshoot chasing it. " +
+           (now != null ? "It is at ${now}% now. " : "") +
+           "<b>Check it tomorrow morning instead: it should settle near ${pSettle}%.</b> " +
+           "Lower than that, give a bit more next time; higher, give less. Aim LOW - landing short " +
+           "is a measurement, overshooting drains away and teaches nothing. (${basis})"
 }
 
 private String wouldNotifyText(Map a) {
@@ -2038,14 +2070,84 @@ private void computeDryDown() {
  * The rise-based observations are still recorded - they are directly meaningful
  * and worth reading - but they are now the fallback, not the main source.
  */
+/** The reading from roughly N hours ago, out of today's sample rows, or null. */
+private BigDecimal pctHoursAgo(BigDecimal hrs) {
+    if (hrs == null) return null
+    Long target = now() - (long) (hrs.doubleValue() * 3600000.0d)
+    Map best = null
+    (state.rows ?: []).each { r ->
+        Long rm = r?.ms as Long
+        if (rm != null && rm <= target) best = r      // rows are in time order
+    }
+    return (best == null) ? null : safeDec(best.pct)
+}
+
+/**
+ * Should today's reading be kept out of the field-capacity pool?
+ *
+ * WHY THIS EXISTS. FC is the TOP DECILE of fcDaily, so the estimator
+ * deliberately selects the highest daily readings - which are exactly the
+ * midnights that happened to fall while the soil was still draining after rain.
+ * Predicted 2026-09-02, deliberately left unfixed pending data, and measured on
+ * 2026-09-25 when the gate finally opened: the learned FC came out at **56**
+ * against **51-52** measured directly (a 4.5 h flat hold on 09-02) and **53**
+ * from the event-based follow-up estimator. About four points of inflation,
+ * which propagates into the threshold and into the watering instruction.
+ *
+ * WHY IT IS A STATE CHECK, NOT A CLOCK. J.R.'s call, 2026-09-02: drainage rate
+ * depends on how far above field capacity the soil starts, so no fixed "hours
+ * since rain" is right - and an earlier lost version of this guard used an
+ * invented 12 h, whose own author worried it would STARVE the pool. Ask the
+ * soil instead: is it still falling fast?
+ *
+ * The two regimes are separated by about three orders of magnitude, measured:
+ *   gravity drainage   76 -> 59 % in ~40 min on 09-02     ~25 points/HOUR
+ *   evapotranspiration 44 -> 42 % over three days 09-22..24  ~0.03 points/hour
+ * Any cut between them works. That is the point of quoting both numbers: the
+ * constants below are not tuned, they sit in a gap so wide that their exact
+ * value cannot matter. If a future reading ever falls BETWEEN these regimes,
+ * that is new physics and worth looking at rather than re-tuning.
+ */
+private String drainageBlock() {
+    if ((state.lastRaining ?: "false") == "true") return "raining"
+    if (state.openEvent != null) return "a wetting event is still open"
+    BigDecimal lookH = numSetting(drainLookbackH, 3)
+    BigDecimal then = pctHoursAgo(lookH)
+    BigDecimal nowPct = safeDec(state.lastPct)
+    if (then != null && nowPct != null) {
+        BigDecimal drop = then - nowPct
+        if (drop > numSetting(drainMaxDropPts, 1)) {
+            return "still draining - down ${drop} points in ${lookH} h " +
+                   "(gravity runs at points per hour, evaporation at points per day)"
+        }
+    }
+    return null
+}
+
 private void recordDailyLevel() {
-    if (!canLearn()) return
+    if (!canLearn()) {
+        // Name the guard. A silent skip here is how a season of missing
+        // observations becomes undiagnosable.
+        logInfo "daily field-capacity reading NOT banked - ${blockReason()}"
+        return
+    }
     BigDecimal pct = safeDec(state.lastPct)
     if (pct == null) return
+
+    String block = drainageBlock()
+    if (block != null) {
+        state.fcSkipCount = ((state.fcSkipCount ?: 0) as Integer) + 1
+        state.lastDailySkip = [ms: now(), pct: pct, why: block]
+        logInfo "daily field-capacity reading ${pct} NOT banked - ${block} " +
+                "(skipped ${state.fcSkipCount} so far)"
+        return
+    }
+
     List dl = state.fcDaily ?: []
     dl << [ms: now(), pct: pct]
     while (dl.size() > 800) dl.remove(0)
     state.fcDaily = dl
+    state.lastDailyBank = [ms: now(), pct: pct]
 }
 
 /* ------------------------------------------------------------ forecast -- */
