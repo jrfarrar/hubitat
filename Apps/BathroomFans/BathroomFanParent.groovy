@@ -1,6 +1,9 @@
 /**
- *  Bathroom Fans  -  parent container for "Bathroom Fan" children
+ *  Bathroom Fan Parent  -  parent container for "Bathroom Fan Child" children
  *
+ *  v1.1.0  2026-09-25  definition renamed "Bathroom Fans" -> "Bathroom Fan Parent" and the child
+ *                      "Bathroom Fan" -> "Bathroom Fan Child" (J.R.: the two names side by side on the
+ *                      Apps code page were confusing). Instance labels unchanged.
  *  v1.0.0  2026-09-24
  *
  *  THIS PARENT OWNS NOTHING. J.R., 2026-09-24: "I don't think the parent should be anything more
@@ -21,10 +24,10 @@
  */
 
 definition(
-    name: "Bathroom Fans",
+    name: "Bathroom Fan Parent",
     namespace: "jrfarrar",
     author: "J.R. Farrar",
-    description: "Container for one Bathroom Fan child per bathroom. Owns nothing.",
+    description: "Container for one Bathroom Fan Child per bathroom. Owns nothing.",
     category: "Convenience",
     iconUrl: "", iconX2Url: "",
     importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/BathroomFans/BathroomFanParent.groovy",
@@ -35,7 +38,7 @@ preferences {
     page(name: "mainPage")
 }
 
-String APP_VERSION() { return "1.0.0" }
+String APP_VERSION() { return "1.1.0" }
 
 def mainPage() {
     dynamicPage(name: "mainPage", title: "", install: true, uninstall: true) {
@@ -46,7 +49,7 @@ def mainPage() {
                   submitOnChange: true, required: true, defaultValue: "Bathroom Fans"
         }
         section("<b>Bathrooms</b>") {
-            app(name: "rooms", appName: "Bathroom Fan", namespace: "jrfarrar",
+            app(name: "rooms", appName: "Bathroom Fan Child", namespace: "jrfarrar",
                 title: "<b>Add a bathroom</b>", multiple: true)
         }
         section("<b>Status</b>") {

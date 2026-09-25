@@ -20,10 +20,10 @@ out = src
 EDITS = [
     # --- definition -------------------------------------------------------------------------
     ('name: "Bathroom Fan NextGen",\n    namespace: "jrfarrar",',
-     'name: "Bathroom Fan",\n    namespace: "jrfarrar",\n    parent: "jrfarrar:Bathroom Fans",'),
+     'name: "Bathroom Fan Child",\n    namespace: "jrfarrar",\n    parent: "jrfarrar:Bathroom Fan Parent",'),
     ('description: "Delayed-max humidity trigger, dew-point drying, learns seasonal run length.",',
-     'description: "One bathroom: excess-over-house trigger with local confirmation, bounded turn-off target, run log. Child of Bathroom Fans.",'),
-    ('String APP_VERSION() { return "2.8.2" }', 'String APP_VERSION() { return "3.0.0" }'),
+     'description: "One bathroom: excess-over-house trigger with local confirmation, bounded turn-off target, run log. Child of Bathroom Fan Parent.",'),
+    ('String APP_VERSION() { return "2.8.2" }', 'String APP_VERSION() { return "3.0.1" }'),
     ('importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/BathroomFans/BathroomFanNG.groovy",',
      'importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/BathroomFans/BathroomFanChild.groovy",'),
     # --- input defaults -> production values ---------------------------------------------------
@@ -71,18 +71,21 @@ for old, new in EDITS:
 
 # Header note, right after the definition block's closing paren.
 HDR = '''
-/*  v3.0.0  2026-09-24 - CHILD OF "Bathroom Fans"
+/*  v3.0.1  2026-09-25 - definition renamed "Bathroom Fan" -> "Bathroom Fan Child", parent
+ *                       "Bathroom Fans" -> "Bathroom Fan Parent" (J.R.: names were confusing on the
+ *                       Apps code page). No logic change. Instance labels unchanged.
+ *  v3.0.0  2026-09-24 - CHILD OF the Bathroom Fan Parent
  *
  *  This file is DERIVED from BathroomFanNG.groovy by make_child.py. Do not hand-edit the core here;
  *  edit the standalone, re-run make_child.py, and the script asserts the CORE DECISION LOGIC block
  *  is byte-identical. Three differences from the standalone, and no others:
- *    1. `parent: "jrfarrar:Bathroom Fans"` and the definition name "Bathroom Fan".
+ *    1. `parent: "jrfarrar:Bathroom Fan Parent"` and the definition name "Bathroom Fan Child".
  *    2. The defaults ARE the production values measured into the master bathroom over 37 runs
  *       (riseThreshold 2.5 excess, fanOnDelay 0, dryMarginF 3.5, excessFloorF 3.5, dryMaxMin 90,
  *       maxRunMin 95, manual mode 2 / 20 min, sensorStaleMin 75, shadowMode off). A fresh child
  *       therefore needs only: its sensor, its fan, the house reference, the outdoor sensors, a name,
  *       and (for a migrated room) learnFile + seedFile.
- *    3. Version 3.0.0.
+ *    3. Version 3.0.x.
  *  The parent owns NOTHING (J.R., 2026-09-24): every sensor, reference and setting lives here.
  */
 '''
