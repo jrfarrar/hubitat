@@ -97,12 +97,46 @@
  *                      dipCount and longestDipSec. The harness itself was first
  *                      validated against the live app's own recorded output.
  *                      v0.2.1 remains in git at 59f1501.
+ *  v0.3.1  2026-09-25  The optional switch now mirrors RUNNING, not DONE: on
+ *                      when a cycle is confirmed, off when it finishes.
+ *
+ *                      This is not a preference, it is what the rest of the
+ *                      house already expects. The switch here is device 394
+ *                      vSwitch-Washing Machine, which app 2820 drove for years
+ *                      as an is-it-running flag, and app 2232 "LNDRY-Washing
+ *                      machine speak done" subscribes to its switch.OFF and
+ *                      announces over six speakers. Disabling 2820 left nothing
+ *                      driving 394, so the announcement had quietly stopped.
+ *                      This restores it - and about 3 minutes earlier, because
+ *                      2820 stamped its transitions late.
+ *
+ *                      Consequences that shaped the code:
+ *                        - Every OFF edge SPEAKS. So the switch is written only
+ *                          on a real change (current value is read first): a
+ *                          repeated off() would announce the wash twice.
+ *                        - The switch is turned off BEFORE, and independently
+ *                          of, the guards that decide whether a MESSAGE is worth
+ *                          sending. A switch stuck on because notifyMinMin or
+ *                          the phantom guard suppressed a message would be a
+ *                          worse failure than one unnecessary announcement.
+ *                        - closeRun() turns it off again as a backstop, so no
+ *                          path can leave it on.
+ *                        - A dip that recovers turns it back ON; 2232 listens
+ *                          to switch.off only, so that edge is silent.
+ *                        - The timer that decides "done" is now scheduled when
+ *                          EITHER notifications or the switch are configured,
+ *                          so the switch no longer depends on notifyEnable.
+ *
+ *                      Replayed over the same 23,425 events: 13 on edges, 13 off
+ *                      edges, one pair per cycle, none spurious, never left on.
+ *                      The modelled ON edges land within ~2 s of app 2820's real
+ *                      ones in device 394's own history.
  */
 
 import groovy.transform.Field
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.3.0"
+@Field static final String VERSION = "0.3.1"
 
 // Inputs removed from the page in earlier versions. Their stored rows are
 // deleted by retireSettings(). Append, never remove - a name that leaves this
@@ -166,8 +200,6 @@ def mainPage() {
             if (notifyEnable) {
                 input "notifyDevices", "capability.notification", title: "Notify these devices",
                       required: false, multiple: true
-                input "notifySwitch", "capability.switch", title: "...and/or turn this switch ON (optional)",
-                      required: false, multiple: false
                 input "notifyDelaySec", "number",
                       title: "Confirm the end after this many seconds below the running threshold",
                       defaultValue: 90, required: true
@@ -186,6 +218,20 @@ def mainPage() {
                       defaultValue: "Washing machine is done", required: true
                 input "notifyStats", "bool", title: "Append duration and kWh to the message", defaultValue: true
             }
+        }
+
+        section("<b>Running switch</b>") {
+            paragraph "<i>Turned ON when a cycle is confirmed and OFF when it finishes, so the switch " +
+                      "answers \"is the washer running?\". Independent of the notification above — it " +
+                      "works with notifications off. <b>Anything you have listening to this switch's " +
+                      "OFF event will fire when the wash ends</b>, which is how the spoken announcement " +
+                      "is wired here. The switch is written only when it actually changes, so a rule " +
+                      "triggered on the off edge cannot fire twice for one wash.</i>"
+            input "notifySwitch", "capability.switch", title: "Switch to hold ON while the washer is running",
+                  required: false, multiple: false
+            paragraph "<i>Note the setting is still named <tt>notifySwitch</tt> from when it meant " +
+                      "\"turn on when done\" (v0.3.0 and earlier). Renaming it would drop your device " +
+                      "selection, which is not worth it.</i>"
         }
 
         section("<b>Health</b>") {
@@ -226,6 +272,9 @@ private String statusText() {
         sb.append(" <i>(${age} min ago)</i>")
     }
     sb.append("<br>")
+    if (notifySwitch) {
+        sb.append("Running switch: <b>${notifySwitch.displayName} is ${notifySwitch.currentValue('switch')}</b><br>")
+    }
     if (state.healthAlert) sb.append("<b style='color:#b00'>HEALTH: ${state.healthAlert}</b><br>")
     sb.append("Cycles recorded: <b>${state.cycles?.size() ?: 0}</b><br>")
     if (state.cycles) {
@@ -278,6 +327,8 @@ def initialize() {
     // v0.2.1 that left the cycle open indefinitely: the end timer was gone and
     // nothing re-armed it. Re-arm from the state we still hold.
     if (state.startMs) {
+        // Resync the switch to reality after a reboot or a Done press.
+        runningSwitch(true)
         Long elapsed = now() - (state.startMs as Long)
         Long remain = (maxCycleMin ?: 240) as Long
         remain = remain * 60000L - elapsed
@@ -285,7 +336,7 @@ def initialize() {
         if (state.belowSince) {
             Integer left = (int)(delaySecs(offDelayMin, 180) - (now() - (state.belowSince as Long)) / 1000L)
             runIn(left > 15 ? left : 15, "endCycle")
-            if (notifyEnable && state.notified != true) {
+            if ((notifyEnable || notifySwitch) && state.notified != true) {
                 Integer nl = (int)(notifyDelay() - (now() - (state.belowSince as Long)) / 1000L)
                 runIn(nl > 15 ? nl : 15, "notifyDone")
             }
@@ -431,6 +482,9 @@ def powerHandler(evt) {
                 state.remove("belowSince")
                 unschedule("endCycle")
                 unschedule("notifyDone")     // it was only a dip after all
+                // Still running after all. Anything listening to this switch
+                // reacts to the OFF edge, so turning it back on is silent.
+                runningSwitch(true)
                 // If the alert already went out and power came back, we told
                 // them too early. Count it - this is how notifyDelaySec gets
                 // validated against real cycles instead of assumed.
@@ -451,9 +505,13 @@ def powerHandler(evt) {
             if (state.belowSince == null) {
                 state.belowSince = ms
                 runIn(delaySecs(offDelayMin, 180), "endCycle")
-                // Faster, independent alert timer. The RECORD still waits for
-                // offDelayMin; this only decides when to tell someone.
-                if (notifyEnable && state.notified != true) runIn(notifyDelay(), "notifyDone")
+                // Faster, independent "the run is over" timer. The RECORD still
+                // waits for offDelayMin; this decides when to tell someone AND
+                // when to drop the running switch. Scheduled if EITHER is
+                // configured, so the switch does not depend on notifyEnable.
+                if ((notifyEnable || notifySwitch) && state.notified != true) {
+                    runIn(notifyDelay(), "notifyDone")
+                }
             }
         } else if (state.pendingStartMs) {
             state.remove("pendingStartMs")
@@ -504,6 +562,7 @@ def startCycle() {
     state.startMs = startMs
     state.notified = false
     if (state.energyStart == null) state.energyStart = dec(meter?.currentValue("energy"))
+    runningSwitch(true)
     unschedule("notifyDone")
     // Nothing else closes a cycle if the end transition is never heard.
     runIn(((maxCycleMin ?: 240) as Integer) * 60, "stuckCycle")
@@ -519,6 +578,13 @@ def startCycle() {
 // power stayed down for the whole window.
 def notifyDone() {
     if (!state.startMs) return                      // endCycle already closed it
+
+    // The switch mirrors the MACHINE, so it comes off as soon as the run is
+    // deemed over - before, and independent of, the guards below that decide
+    // whether a MESSAGE is worth sending. A switch left on because a message
+    // was suppressed would be a worse failure than one extra announcement.
+    runningSwitch(false)
+
     if (!notifyEnable) return
     if (state.notified == true) return              // already told them
 
@@ -552,9 +618,8 @@ def notifyDone() {
         try { d.deviceNotification(msg) }
         catch (ex) { log.warn "${app.label}: notify failed on ${d?.displayName}: ${ex.message}" }
     }
-    try { notifySwitch?.on() }
-    catch (ex) { log.warn "${app.label}: notify switch failed: ${ex.message}" }
-
+    // (v0.3.0 and earlier turned notifySwitch ON here. It now means "running",
+    //  and was turned OFF at the top of this method.)
     state.notified = true
     logInfo "cycle-complete alert sent at ${isoOf(now())}: ${msg}"
 }
@@ -581,6 +646,7 @@ def stuckCycle() {
 private void closeRun(boolean stuck) {
     Long endMs = (state.belowSince ?: now()) as Long
     Long startMs = state.startMs as Long
+    runningSwitch(false)      // backstop - no path may leave the switch on
     unschedule("endCycle")
     unschedule("notifyDone")
     unschedule("stuckCycle")
@@ -675,6 +741,26 @@ def healthCheck() {
                    "running threshold - raise the threshold or cycles will be detected on nothing"
         log.warn "${app.label}: ${m}"
         healthNotify("${app.label}: ${m}")
+    }
+}
+
+// The switch answers "is the washer running?". Something in the house is
+// listening to its OFF edge and speaking, so this reads the current value first
+// and writes only on a real change - calling off() on an already-off switch
+// would announce the same wash twice.
+private void runningSwitch(boolean on) {
+    if (notifySwitch == null) return
+    try {
+        String cur = notifySwitch.currentValue("switch")
+        if (on && cur != "on") {
+            notifySwitch.on()
+            logInfo "running switch ON (${notifySwitch.displayName})"
+        } else if (!on && cur != "off") {
+            notifySwitch.off()
+            logInfo "running switch OFF (${notifySwitch.displayName})"
+        }
+    } catch (ex) {
+        log.warn "${app.label}: running switch failed: ${ex.message}"
     }
 }
 

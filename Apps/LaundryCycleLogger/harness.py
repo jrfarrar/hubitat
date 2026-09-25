@@ -221,6 +221,20 @@ class DetectorV030:
         self.cycles = []
         self.notifications = []
         self.now = 0
+        # v0.3.1: the switch mirrors RUNNING, not done. Device 394
+        # vSwitch-Washing Machine is what app 2232 "LNDRY-Washing machine speak
+        # done" listens to, and it subscribes to switch.OFF - so the off edge is
+        # what speaks in the house. Modelled here to prove the trace never ends
+        # stuck on and never toggles spuriously.
+        self.sw = 'off'
+        self.sw_trace = []
+
+    def _switch(self, on, ms, why):
+        want = 'on' if on else 'off'
+        if self.sw == want:
+            return          # idempotent: a repeat off() would speak twice
+        self.sw = want
+        self.sw_trace.append((ms, want, why))
 
     def _reset_run(self):
         """Called when a start CANDIDATE opens, not when it is confirmed.
@@ -242,10 +256,18 @@ class DetectorV030:
         self.open = {'startMs': self.pendingStartMs or ms}
         self.pendingStartMs = None
         self.notified = False
+        self._switch(True, ms, 'cycle confirmed')
         self.s.run_in(self.maxCycleMin * 60, 'stuckCycle', ms)
 
     def notifyDone(self, ms):
-        if self.open is None or not self.notifyEnable or self.notified:
+        if self.open is None:
+            return
+        # The switch mirrors the MACHINE, so it comes off whenever the run is
+        # deemed over - before, and independent of, the guards that decide
+        # whether a MESSAGE is worth sending. A switch left on because a
+        # message was suppressed would be a worse failure than a spurious one.
+        self._switch(False, ms, 'done')
+        if not self.notifyEnable or self.notified:
             return
         end = self.belowSince or ms
         mins = (end - self.open['startMs']) / 60000.0
@@ -277,6 +299,7 @@ class DetectorV030:
 
     def _close(self, ms, stuck):
         end = self.belowSince or ms
+        self._switch(False, ms, 'record closed')   # backstop: never leave it on
         self.s.cancel('endCycle')
         self.s.cancel('notifyDone')
         self.s.cancel('stuckCycle')
@@ -342,6 +365,9 @@ class DetectorV030:
                     self.belowSince = None
                     self.s.cancel('endCycle')
                     self.s.cancel('notifyDone')
+                    # Still running after all - put the switch back on. 2232
+                    # listens to switch.off only, so this edge stays silent.
+                    self._switch(True, ms, 'dip recovered')
                     if self.notified:
                         self.falseAlerts += 1
                         self.notified = False
