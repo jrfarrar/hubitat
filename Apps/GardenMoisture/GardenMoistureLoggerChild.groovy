@@ -324,7 +324,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.8.0"
+@Field static final String VERSION = "0.8.1"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -2193,12 +2193,25 @@ private BigDecimal pctHoursAgo(BigDecimal hrs) {
  * event, disturbance arrives out of nowhere. So the test is a sustained fall
  * with NO preceding rise - categorical, not a tuned number.
  *
- * Why it must stop learning rather than just log: a disturbance is a physical
- * RECALIBRATION. Anchors are stored as percentages, so the FC 51-53 learned
- * before 16:42 does not describe the same instrument afterwards - exactly the
- * hazard already recorded for changing the gateway's calibration constants.
- * Resuming blindly would drag the anchors onto the new scale without anyone
- * deciding to. Hence: flag, suspend, and wait for a human.
+ * ⚠ CORRECTED 2026-09-28, same day, by J.R.'s own earlier experiment. An
+ * initial version of this note claimed a disturbance simply IS a recalibration.
+ * That is too strong. The deliberate pull-and-reinsert on 09-04 went AD 272 ->
+ * (pulled) -> 276 -> 271 within a few hours: straight back to where it started.
+ * Re-seating the probe in this bed does NOT move the scale, exactly as J.R.
+ * said - "the same makeup and put in there together", so one patch of this soil
+ * reads like any other.
+ *
+ * So the thing worth flagging is not movement, it is a step change that does
+ * NOT RECOVER. 09-04 recovered in hours; 09-27 stepped to 211 and stayed for
+ * days. The difference is almost certainly soil REMOVED rather than the probe
+ * moved - pulling a plant beside it takes root mass out and leaves a void that
+ * does not close, so there is less soil against the blades.
+ *
+ * Hence flag, suspend, and ask - but the honest question put to the user is
+ * "did it recover after you firmed the soil back?", not "did it move?". A
+ * recovery means contact and the anchors are fine; a persistent step means the
+ * soil around the probe genuinely changed and the percentages no longer
+ * describe the same thing.
  */
 private void checkDisturbance(Long ms) {
     if (state.probeDisturbed) return
