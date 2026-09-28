@@ -324,7 +324,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.7.0"
+@Field static final String VERSION = "0.8.0"
 
 definition(
     name: "Garden Moisture Logger Child",
@@ -454,6 +454,45 @@ def mainPage() {
 
         section("<b>Status</b>") {
             paragraph statusText()
+        }
+
+        if (state.probeDisturbed) {
+            section("<b style='color:red'>⚠ PROBE DISTURBANCE SUSPECTED - a decision is needed</b>") {
+                paragraph "<b>${state.disturbIso}: soilAD fell from ${state.disturbFrom} to " +
+                          "${state.disturbTo}</b> with no wetting event before it, and stayed there.<br><br>" +
+                          "<i>Learning is suspended until you choose. This is not a nag - anchors are " +
+                          "stored as PERCENTAGES, so if the probe really moved, the field capacity and " +
+                          "stress point learned before this moment describe a different instrument. " +
+                          "Carrying on would quietly drag them onto the new scale.<br><br>" +
+                          "Sampling and the CSV have continued throughout either way.</i>"
+                input "btnDisturbMoved", "button",
+                      title: "It moved - clear the learned anchors and start over"
+                input "btnDisturbFalse", "button",
+                      title: "False alarm - it did not move, resume learning"
+            }
+        }
+
+        section("<b>Probe disturbance detection</b>", hideable: true, hidden: true) {
+            paragraph "<i>Catches someone moving the probe, which v0.3.2's probe-out detector cannot: " +
+                      "on 2026-09-27 soilAD fell 245 -&gt; 207 as plants were pulled around it and " +
+                      "settled there for days - never close to the probe-out threshold of 90, because " +
+                      "the probe never left the ground.<br><br>" +
+                      "⚠ <b>Speed alone cannot detect this.</b> Straight after the 09-25 watering the " +
+                      "AD fell 25 counts in THREE minutes as the bed drained - faster than the " +
+                      "disturbance managed at its worst. Unlike the drainage guard there is no gap " +
+                      "between the regimes. The discriminator is CONTEXT: drainage always follows a " +
+                      "wetting event, disturbance arrives out of nowhere. That is what the quiet " +
+                      "window below is for, and it is categorical rather than tuned.</i>"
+            input "disturbDropAD", "decimal",
+                  title: "Flag if soilAD falls more than this many counts",
+                  defaultValue: 25, required: true
+            input "disturbWindowMin", "number",
+                  title: "...within this many minutes",
+                  defaultValue: 30, required: true
+            input "disturbQuietH", "decimal",
+                  title: "...and only if no wetting event or rain in the previous this many hours",
+                  defaultValue: 6, required: true
+            if (state.lastDisturbDecision) paragraph "<i>Last decision: ${state.lastDisturbDecision}</i>"
         }
 
         section("<b>Maintenance</b>", hideable: true, hidden: true) {
@@ -870,6 +909,24 @@ def initialize() {
 def appButtonHandler(String btn) {
     if (btn == "btnClearLearned") clearLearned()
     if (btn == "btnExportNow") learnSave(true)
+    if (btn == "btnDisturbMoved") {
+        // The anchors are percentages on a scale that no longer exists. Keep the
+        // raw record - CSVs and events are untouched - but the derived numbers go.
+        String note = "probe moved ${state.disturbIso} (soilAD ${state.disturbFrom} -> ${state.disturbTo}) " +
+                      "- anchors cleared ${isoOf(now())}"
+        log.warn "${app.label}: ${note}"
+        clearLearned()
+        state.probeDisturbed = false
+        state.lastDisturbDecision = note
+    }
+    if (btn == "btnDisturbFalse") {
+        // Distinct name: Groovy refuses a method that declares the same local
+        // twice, and this handler already has one called `note` above.
+        String keptNote = "flagged ${state.disturbIso} but judged a false alarm ${isoOf(now())} - anchors kept"
+        logInfo keptNote
+        state.probeDisturbed = false
+        state.lastDisturbDecision = keptNote
+    }
 }
 
 private void clearLearned() {
@@ -1174,6 +1231,7 @@ def sampleTick() {
     checkRise(ms, pct)
     checkStale()
     checkOutOfGround(pct)
+    checkDisturbance(ms)
     trackLowestSurvived(pct)
     // Tag the row with what the app believed at the time. The note column has
     // been empty on every row ever written, which is why an archive scan cannot
@@ -1615,6 +1673,7 @@ private String blockReason() {
     if (state.suspectOutOfGround) return "probe is flagged as possibly out of the ground"
     if (state.sensorStale)        return "sensor is flagged stale (${state.staleReason ?: 'no detail'})"
     if (state.probeOrphaned)      return "probe is ORPHANED - the gateway is not hearing it (since ${isoOf(state.orphanSinceMs)})"
+    if (state.probeDisturbed)     return "probe DISTURBANCE suspected ${state.disturbIso} (soilAD ${state.disturbFrom} -> ${state.disturbTo}) - awaiting a decision in the app"
     Long bh = state.learnHoldUntilMs as Long
     if (bh != null && now() < bh) return "learning is held until ${isoOf(bh)} after the probe returned"
     return "no guard is set - this should not happen, please report it"
@@ -1623,6 +1682,7 @@ private String blockReason() {
 private Boolean canLearn() {
     if (!seasonActive()) return false
     if (state.probeOrphaned) return false
+    if (state.probeDisturbed) return false
     if (freezing()) return false
     if (state.suspectOutOfGround) return false
     if (state.sensorStale) return false
@@ -2108,6 +2168,79 @@ private BigDecimal pctHoursAgo(BigDecimal hrs) {
  * value cannot matter. If a future reading ever falls BETWEEN these regimes,
  * that is new physics and worth looking at rather than re-tuning.
  */
+/**
+ * Did someone move the probe?
+ *
+ * J.R., 2026-09-28: "I think when my wife was cleaning out plants yesterday she
+ * pulled the probe out for a bit. I wonder if the logic should contain
+ * something that if the data drops sharply and quickly to record it as a
+ * pulled probe."
+ *
+ * Right idea, but the measured event was NOT a pull-out. 09-27, AD 245 -> 207
+ * over fifteen minutes, then flat at 211-212 for days. It never went below 207,
+ * against a probe-out threshold of 90 and the 59 that the deliberate removal
+ * test recorded. The probe stayed in the ground; the SOIL AROUND IT changed as
+ * plants were pulled. v0.3.2's absolute threshold correctly did nothing,
+ * because nothing it was built for happened.
+ *
+ * ⚠ AND A RATE RULE ALONE CANNOT WORK. Immediately after the 09-25 watering the
+ * AD fell 25 counts in THREE MINUTES (324 -> 299) as the bed drained - faster
+ * than this disturbance managed at its worst (18 counts in six). Sorting them
+ * by speed would flag every normal drain-down. Unlike the drainage guard there
+ * is no comfortable gap here; the regimes overlap.
+ *
+ * What separates them is CONTEXT, not rate: drainage always follows a wetting
+ * event, disturbance arrives out of nowhere. So the test is a sustained fall
+ * with NO preceding rise - categorical, not a tuned number.
+ *
+ * Why it must stop learning rather than just log: a disturbance is a physical
+ * RECALIBRATION. Anchors are stored as percentages, so the FC 51-53 learned
+ * before 16:42 does not describe the same instrument afterwards - exactly the
+ * hazard already recorded for changing the gateway's calibration constants.
+ * Resuming blindly would drag the anchors onto the new scale without anyone
+ * deciding to. Hence: flag, suspend, and wait for a human.
+ */
+private void checkDisturbance(Long ms) {
+    if (state.probeDisturbed) return
+    BigDecimal nowAD = safeDec(state.lastAD)
+    if (nowAD == null) return
+    if ((state.lastRaining ?: "false") == "true") return
+    if (state.openEvent != null) return
+
+    // Any recent wetting means a fall is drainage, not disturbance.
+    Long quiet = (long) (numSetting(disturbQuietH, 6).doubleValue() * 3600000.0d)
+    Long lastRise = state.lastRainRiseMs as Long
+    if (lastRise != null && (ms - lastRise) < quiet) return
+    List ev = state.events ?: []
+    if (ev) {
+        Long lastPeak = ev[-1]?.peakMs as Long
+        if (lastPeak != null && (ms - lastPeak) < quiet) return
+    }
+
+    Integer win = intSetting(disturbWindowMin, 30)
+    Long cutoff = ms - (win * 60000L)
+    BigDecimal maxAD = null
+    (state.recent ?: []).each { r ->
+        Long rm = r?.ms as Long
+        BigDecimal a = safeDec(r?.ad)
+        if (rm != null && a != null && rm >= cutoff && (maxAD == null || a > maxAD)) maxAD = a
+    }
+    if (maxAD == null) return
+    BigDecimal drop = maxAD - nowAD
+    if (drop < numSetting(disturbDropAD, 25)) return
+
+    state.probeDisturbed = true
+    state.disturbIso  = isoOf(ms)
+    state.disturbFrom = maxAD
+    state.disturbTo   = nowAD
+    noteRow("probe-disturbed")
+    log.warn "${app.label}: PROBE DISTURBANCE SUSPECTED - soilAD fell ${drop} counts " +
+             "(${maxAD} -> ${nowAD}) in under ${win} min with no wetting event before it. " +
+             "Learning is SUSPENDED. Anchors are stored as percentages, so if the probe really " +
+             "moved they describe a different instrument now. Decide in the app: 'it moved' " +
+             "(clear the anchors) or 'false alarm' (resume)."
+}
+
 private String drainageBlock() {
     if ((state.lastRaining ?: "false") == "true") return "raining"
     if (state.openEvent != null) return "a wetting event is still open"
