@@ -131,12 +131,58 @@
  *                      edges, one pair per cycle, none spurious, never left on.
  *                      The modelled ON edges land within ~2 s of app 2820's real
  *                      ones in device 394's own history.
+ *  v0.3.2  2026-09-28  A start CANDIDATE is no longer killed by ONE sub-threshold
+ *                      sample. It must now stay below startWatts for
+ *                      startCancelSec (60 s), on a timer, exactly as the END of a
+ *                      cycle must stay below for offDelayMin.
+ *
+ *                      This fixes a defect inherited from v0.1.0 and carried
+ *                      through every version since: the end path had TWO
+ *                      debounces while the start path had NONE. Dip-tolerant
+ *                      after a start, dip-intolerant before one - which
+ *                      contradicts this app's own standing rule, "gate detectors
+ *                      on a sustained condition over a window, never on one
+ *                      sample".
+ *
+ *                      Found by the 2026-09-27 scheduled check-in, which caught a
+ *                      wash recorded 29 minutes late. Verified against
+ *                      hubitat-tsdb: the machine started at 18:57:50 and the app
+ *                      logged 19:27:10 because 74 candidates were killed one
+ *                      sample at a time by the 7-10 W band arriving every ~11 s
+ *                      WHILE THE MACHINE WAS RUNNING.
+ *
+ *                      The 2026-09-24 analysis characterised that band and
+ *                      cleared it as harmless - correctly, but only for the case
+ *                      it considered, a phantom band causing a FALSE start, which
+ *                      onDelayMin does cover. It missed the mirror case: the same
+ *                      band cancelling a TRUE start. A wrong belief rather than
+ *                      wrong logic, which is why the harness could not catch it -
+ *                      every version shared the behaviour, so a version-to-version
+ *                      comparison showed no difference.
+ *
+ *                      IT WAS NOT AN EDGE CASE. Replayed over 32,028 events,
+ *                      ALL 17 cycles in the window started early by 3 to 29
+ *                      minutes (515 candidates aborted in total). Durations and
+ *                      kWh were understated on every record, and SIX cycles never
+ *                      saw their own peak - 2026-09-23 22:38 recorded 499.96 W
+ *                      when the wash actually reached 1093.96 W.
+ *
+ *                      Proved before deploy, both directions:
+ *                        - the fix moves STARTS only, EARLIER only; no end moves,
+ *                          and no cycle is invented or lost across 23 days.
+ *                        - the window it recovers is real load, not idle: means
+ *                          of 52-270 W with hundreds of readings above 100 W in
+ *                          every one of the 17 cases. It is not bridging standby.
+ *                        - the longest continuous sub-threshold stretch it has to
+ *                          survive is 11.2 s, so 60 s carries 5.4x margin.
+ *                      A genuine one-off blip is still rejected: the cancel timer
+ *                      fires at 60 s, well before the 3-minute confirmation.
  */
 
 import groovy.transform.Field
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.3.1"
+@Field static final String VERSION = "0.3.2"
 
 // Inputs removed from the page in earlier versions. Their stored rows are
 // deleted by retireSettings(). Append, never remove - a name that leaves this
@@ -187,8 +233,17 @@ def mainPage() {
             input "startWatts", "decimal", title: "Consider it running above this many watts", defaultValue: 10, required: true
             input "onDelayMin", "decimal", title: "Confirm a start after this many minutes above", defaultValue: 3, required: true
             input "offDelayMin", "decimal", title: "Confirm an end after this many minutes below", defaultValue: 3, required: true
+            input "startCancelSec", "number",
+                  title: "Abandon a start only after this many seconds back below the threshold",
+                  defaultValue: 60, required: true
             paragraph "<i>Start and end are timestamped at the actual power transition, not when " +
                       "the confirmation delay expires, so the recorded duration is the real run length.</i>"
+            paragraph "<i>The abandon delay matters more than it looks. Without it a single dip " +
+                      "below the threshold killed a pending start, and a real wash oscillates across " +
+                      "10 W while filling — which made <b>every</b> cycle up to v0.3.1 record 3 to 29 " +
+                      "minutes late. The longest continuous dip measured before a confirmed start is " +
+                      "11 s, so 60 s carries about 5x margin. A genuine one-off blip is still " +
+                      "rejected, because this fires well before the start confirmation above.</i>"
         }
 
         section("<b>Cycle-complete notification</b>") {
@@ -342,6 +397,13 @@ def initialize() {
             }
         }
         logInfo "re-armed timers for the cycle open since ${isoOf(state.startMs)}"
+    } else if (state.pendingStartMs) {
+        // A start candidate cannot survive updated(): its confirm and abandon
+        // timers were just unscheduled. Drop it rather than leave a candidate
+        // that can never confirm and can never be abandoned.
+        state.remove("pendingStartMs")
+        state.remove("cancelSince")
+        logDebug "dropped a pending start candidate on re-initialise"
     }
 
     runEvery10Minutes("healthCheck")
@@ -499,6 +561,16 @@ def powerHandler(evt) {
             state.pendingStartMs = ms
             runIn(delaySecs(onDelayMin, 180), "startCycle")
             logDebug "possible start at ${isoOf(ms)} (${w} W)"
+        } else if (state.cancelSince != null) {
+            // Back above the threshold before the abandon window expired. The
+            // machine is running and that was a trough, not the end of a blip.
+            // Keeping the candidate here is the whole fix: a filling washer
+            // crosses 10 W repeatedly, and cancelling on one sample below cost
+            // every cycle up to v0.3.1 between 3 and 29 minutes of its start.
+            Long dipMs = ms - (state.cancelSince as Long)
+            state.remove("cancelSince")
+            unschedule("cancelStart")
+            logDebug "start candidate survived a ${(int)(dipMs / 1000L)}s dip"
         }
     } else {
         if (state.startMs) {
@@ -513,10 +585,12 @@ def powerHandler(evt) {
                     runIn(notifyDelay(), "notifyDone")
                 }
             }
-        } else if (state.pendingStartMs) {
-            state.remove("pendingStartMs")
-            unschedule("startCycle")
-            logDebug "start candidate cancelled"
+        } else if (state.pendingStartMs && state.cancelSince == null) {
+            // Do NOT abandon the candidate on this one sample. Open the abandon
+            // window instead - symmetric with belowSince/endCycle above. This
+            // is the v0.3.2 fix; see the version history.
+            state.cancelSince = ms
+            runIn(cancelDelay(), "cancelStart")
         }
     }
 }
@@ -554,11 +628,26 @@ private void resetRun() {
     state.remove("relayOffMs")
     state.remove("endTransW")
     state.remove("endTransDelta")
+    state.remove("cancelSince")
+}
+
+// The candidate stayed below the threshold for the whole abandon window, so it
+// really was a blip rather than a wash starting. Symmetric with endCycle().
+// Fires at startCancelSec, comfortably before the onDelayMin confirmation, so a
+// one-off blip still never becomes a cycle.
+def cancelStart() {
+    if (state.startMs || !state.pendingStartMs) return
+    logDebug "start candidate abandoned after ${cancelDelay()}s below threshold"
+    state.remove("pendingStartMs")
+    state.remove("cancelSince")
+    unschedule("startCycle")
 }
 
 def startCycle() {
     Long startMs = (state.pendingStartMs ?: now()) as Long
     state.remove("pendingStartMs")
+    state.remove("cancelSince")
+    unschedule("cancelStart")
     state.startMs = startMs
     state.notified = false
     if (state.energyStart == null) state.energyStart = dec(meter?.currentValue("energy"))
@@ -785,6 +874,17 @@ private BigDecimal kWhSoFar() {
 private Integer notifyDelay() {
     Integer nd = (notifyDelaySec ?: 90) as Integer
     return nd < 15 ? 15 : nd
+}
+
+// Floor of 15 s, and capped below the start confirmation: if the abandon window
+// were longer than onDelayMin, a blip would confirm into a cycle before the
+// abandon could fire, which is the opposite failure.
+private Integer cancelDelay() {
+    Integer cs = (startCancelSec ?: 60) as Integer
+    if (cs < 15) cs = 15
+    Integer confirm = delaySecs(onDelayMin, 180)
+    Integer cap = (int)(confirm * 0.75d)
+    return cs > cap ? cap : cs
 }
 
 private Integer delaySecs(def minutes, Integer fallback) {

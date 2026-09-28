@@ -197,7 +197,15 @@ class DetectorV030:
 
     def __init__(self, startWatts=10, onDelayMin=3, offDelayMin=3,
                  notifyEnable=True, notifyDelaySec=90, notifyMinMin=5,
-                 maxCycleMin=240, notifyMinPeakW=100):
+                 maxCycleMin=240, notifyMinPeakW=100, startCancelSec=60):
+        # v0.3.2: a start CANDIDATE is no longer killed by one sub-threshold
+        # sample. It must stay below for startCancelSec, on a timer, exactly
+        # as the END of a cycle must stay below for offDelayMin. Set to 0 to
+        # get the old single-sample behaviour back for comparison.
+        self.startCancelSec = startCancelSec
+        self.cancelSince = None
+        self.abortedCandidates = 0
+        self.recoveredCandidates = 0
         self.startWatts = startWatts
         self.onDelayMin, self.offDelayMin = onDelayMin, offDelayMin
         self.notifyEnable = notifyEnable
@@ -255,9 +263,21 @@ class DetectorV030:
     def startCycle(self, ms):
         self.open = {'startMs': self.pendingStartMs or ms}
         self.pendingStartMs = None
+        self.cancelSince = None
+        self.s.cancel('cancelStart')
         self.notified = False
         self._switch(True, ms, 'cycle confirmed')
         self.s.run_in(self.maxCycleMin * 60, 'stuckCycle', ms)
+
+    def cancelStart(self, ms):
+        """Power stayed below the threshold for the whole cancel window, so the
+        candidate really was a blip. Symmetric with endCycle()."""
+        if self.open is not None or self.pendingStartMs is None:
+            return
+        self.pendingStartMs = None
+        self.cancelSince = None
+        self.s.cancel('startCycle')
+        self.abortedCandidates += 1
 
     def notifyDone(self, ms):
         if self.open is None:
@@ -383,6 +403,12 @@ class DetectorV030:
                 self._reset_run()
                 self.pendingStartMs = ms
                 self.s.run_in(self.onDelayMin * 60, 'startCycle', ms)
+            elif self.cancelSince is not None:
+                # Back above threshold before the cancel window expired - the
+                # machine is running, that was just a trough. Keep the candidate.
+                self.cancelSince = None
+                self.s.cancel('cancelStart')
+                self.recoveredCandidates += 1
         else:
             if self.open:
                 if self.belowSince is None:
@@ -391,8 +417,15 @@ class DetectorV030:
                     if self.notifyEnable and not self.notified:
                         self.s.run_in(self.notifyDelaySec, 'notifyDone', ms)
             elif self.pendingStartMs is not None:
-                self.pendingStartMs = None
-                self.s.cancel('startCycle')
+                if self.startCancelSec <= 0:
+                    # old v0.3.1 behaviour: ONE sample kills the candidate
+                    self.pendingStartMs = None
+                    self.s.cancel('startCycle')
+                    self.abortedCandidates += 1
+                elif self.cancelSince is None:
+                    # start the cancel window rather than acting on one sample
+                    self.cancelSince = ms
+                    self.s.run_in(self.startCancelSec, 'cancelStart', ms)
 
     def finish(self, ms):
         self.advance_to(ms + 10 * MIN)
