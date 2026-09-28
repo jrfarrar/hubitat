@@ -65,9 +65,10 @@
  *                      SILENT one. If the plug dies or the plateau drifts, the
  *                      old app simply stopped alerting and said nothing:
  *                        - dead-meter liveness. No power event for deadMeterMin
- *                          (default 20 min = four missed periodic reports at
- *                          configParam171=5) means the plug or the mesh is down
- *                          and no alert will ever arrive. Reported ONCE to
+ *                          (default 120 min = 24 missed periodic reports at
+ *                          configParam171=5; deliberately slack, see v0.3.3)
+ *                          means the plug or the mesh is down and no alert will
+ *                          ever arrive. Reported ONCE to
  *                          healthDevices, which is deliberately a different
  *                          input from notifyDevices - the person who fixes the
  *                          plug is not the person waiting on the laundry.
@@ -177,12 +178,29 @@
  *                          survive is 11.2 s, so 60 s carries 5.4x margin.
  *                      A genuine one-off blip is still rejected: the cancel timer
  *                      fires at 60 s, well before the 3-minute confirmation.
+ *  v0.3.3  2026-09-28  deadMeterMin default 20 -> 120, to match what it was
+ *                      already set to on the live instance. No behaviour change
+ *                      there; this is the CODE catching up with the intent.
+ *
+ *                      The 09-27 check-in reported the stored 120 as a possible
+ *                      mistake because the code said 20. It was not a mistake:
+ *                      this check exists to reveal a dead plug or a broken mesh
+ *                      link, not to raise an alarm over a transient Z-Wave
+ *                      outage, and learning about it a few hours later is fine.
+ *                      Being woken at 20 minutes for something this uncritical
+ *                      would be the wrong trade.
+ *
+ *                      Recorded here because a default that disagrees with the
+ *                      deployed setting does not stay a harmless discrepancy -
+ *                      it reads as a fault to every later reader, gets
+ *                      re-reported, and regresses silently on any reinstall.
+ *                      Where a setting is deliberate, the code should say so.
  */
 
 import groovy.transform.Field
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "0.3.2"
+@Field static final String VERSION = "0.3.3"
 
 // Inputs removed from the page in earlier versions. Their stored rows are
 // deleted by retireSettings(). Append, never remove - a name that leaves this
@@ -295,7 +313,12 @@ def mainPage() {
             input "healthDevices", "capability.notification", title: "Send health warnings to these devices",
                   required: false, multiple: true
             input "deadMeterMin", "number", title: "Warn if no power report arrives for this many minutes",
-                  defaultValue: 20, required: true
+                  defaultValue: 120, required: true
+            paragraph "<i>Deliberately slack. The point is to find out that the meter is dead, not to " +
+                      "be paged about a transient Z-Wave outage — a few hours late is fine for this. " +
+                      "120 min is 24 missed periodic reports at <tt>configParam171 = 5</tt>. The warning " +
+                      "fires once, clears itself when reports resume, and stays visible on this page " +
+                      "meanwhile.</i>"
             input "maxCycleMin", "number", title: "Close a cycle still open after this many minutes",
                   defaultValue: 240, required: true
         }
@@ -808,7 +831,12 @@ private void pushCycle(Map rec) {
 def healthCheck() {
     if (state.lastEventSeen == null) return
 
-    Integer deadMin = (deadMeterMin ?: 20) as Integer
+    // 120, not 20, and deliberately so (J.R., 2026-09-28): this check exists to
+    // reveal a dead plug or a broken mesh link, NOT to raise an alarm over a
+    // transient Z-Wave outage. Finding out a few hours late is acceptable here.
+    // Keep the code default and the stored setting in agreement - when they
+    // disagree, the difference reads like a fault and gets re-reported.
+    Integer deadMin = (deadMeterMin ?: 120) as Integer
     Long ageMin = (long)((now() - (state.lastEventSeen as Long)) / 60000L)
     if (ageMin >= deadMin && state.healthAlert == null) {
         String m = "no power report from ${meter?.displayName} for ${ageMin} min " +
