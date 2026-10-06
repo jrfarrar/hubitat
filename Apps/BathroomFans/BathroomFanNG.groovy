@@ -57,7 +57,17 @@ preferences {
     page(name: "advancedPage")
 }
 
-String APP_VERSION() { return "2.8.2" }
+String APP_VERSION() { return "2.8.3" }
+
+/*  v2.8.3  2026-10-06 — INSTRUMENTATION ONLY (child v3.0.2). No control change.
+ *    1. An ADOPTED run now records the same three conditions-at-trigger fields as an auto run
+ *       (house dew, outdoor dew, outdoor temp). The first five upstairs runs were all adopted —
+ *       someone turns the fan on before getting in, which J.R. regards as fine — and all five
+ *       logged blank indoor/outdoor columns.
+ *    2. When excess mode falls back to dew point, the note/log now says WHY (refWhyNull(): no
+ *       device, no value, or lastActivity age vs refStaleMin), logged once per transition.
+ *       Master run 49 (2026-10-04) ended in fallback and could not be explained after the fact.
+ */
 
 /*  v2.4.0  2026-09-06 — RUN LOG, so the learner's key can be chosen with evidence
  *
@@ -899,6 +909,24 @@ private Integer refDp10() {
     return dewPoint10((t as BigDecimal) * 10 as Integer, (h as BigDecimal) * 10 as Integer)
 }
 
+/** v3.0.2 -- WHY is the reference unusable right now? One short string for the fallback note, so a
+ *  run that ended in dew-point mode can be explained afterwards (run 49, 2026-10-04, could not be:
+ *  the native Ecowitt stream was alive the whole run and the hub's own event history had rolled). */
+private String refWhyNull() {
+    if (!refHumiditySensor || !refTempSensor) return "no reference device selected"
+    def h = refHumiditySensor.currentValue("humidity")
+    def t = refTempSensor.currentValue("temperature")
+    if (h == null || t == null) return "reference has no ${h == null ? 'humidity' : 'temperature'} value"
+    Long la = null
+    try { la = refHumiditySensor.getLastActivity()?.getTime() } catch (ignored) { la = null }
+    if (la != null) {
+        long ageMin = (now() - la) / MINMS()
+        int mins = ((refStaleMin != null ? refStaleMin : 60) as int)
+        if (ageMin > mins) return "reference lastActivity ${ageMin} min ago > refStaleMin ${mins} (rh ${h}, t ${t})"
+    }
+    return "reference usable (lastActivity ${la != null ? ((now() - la) / MINMS()) : '?'} min ago)"
+}
+
 private Integer excessOf(Integer dp10) {
     if (dp10 == null) return null
     Integer r = refDp10()
@@ -1369,7 +1397,13 @@ private Map decide(long nowT, Integer rh10, Integer temp10, String source) {
     String metric = (triggerMetric ?: "rh")
     if (metric == "excess" && excessOf(dp10) == null) {
         metric = "dp"
-        state.note = "house reference missing or stale - excess mode fell back to dew point"
+        String why = (dp10 == null) ? "bathroom dew point unavailable" : refWhyNull()
+        String n = "excess mode fell back to dew point - ${why}"
+        if (state.note != n) {                 // log the transition once, not every sample
+            state.note = n
+            logWarn "${appName()}: ${n}"
+            pushLog(nowT, "FALLBACK", rh10, n)
+        }
     }
     boolean useDp = (metric == "dp")
     boolean useEx = (metric == "excess")
@@ -1442,6 +1476,14 @@ private Map decide(long nowT, Integer rh10, Integer temp10, String source) {
             state.runBucket = bucketKey(state.preDp10 as Integer)
             state.runOutBucket = outBucketKey()
             state.runDegraded = (dp10 == null || state.preDp10 == null)
+            // v3.0.2 -- conditions AT ADOPTION, same three fields the auto-trigger path records.
+            // Before this they were only written on auto-trigger, so every adopted run logged
+            // blank indoor/outdoor columns (all five first upstairs runs were adopted).
+            state.runIndoorDp10  = refDp10()
+            state.runOutdoorDp10 = outdoorDp10()
+            state.runOutdoorT10  = (outdoorTempSensor?.currentValue("temperature") != null)
+                                   ? (((outdoorTempSensor.currentValue("temperature")) as BigDecimal) * 10) as Integer
+                                   : null
             state.autoOn = true
             state.adoptedRun = true
             unschedule("endManualRun")          // the blunt cutoff must not fire mid-shower
