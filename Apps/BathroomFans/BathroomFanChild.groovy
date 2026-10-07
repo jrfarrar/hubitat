@@ -76,7 +76,13 @@ preferences {
     page(name: "advancedPage")
 }
 
-String APP_VERSION() { return "3.0.2" }
+String APP_VERSION() { return "3.0.3" }
+
+/*  v2.8.4  2026-10-07 — STATUS LINE ONLY (child v3.0.3). During an excess run the "drying" reason
+ *  now shows both live targets ("excess 3.2, need 5.2 | dp 59.6, need 57.4"); it used to show only
+ *  the dew-point one. The dew-point test as a co-equal second turn-off condition is now named in
+ *  decideTurnOff (J.R. 2026-10-07: keep it). No control change.
+ */
 
 /*  v2.8.3  2026-10-06 — INSTRUMENTATION ONLY (child v3.0.2). No control change.
  *    1. An ADOPTED run now records the same three conditions-at-trigger fields as an auto run
@@ -1313,6 +1319,14 @@ private Map offTests(long nowT, Integer rh10, Integer dp10) {
     // room may never reach because the entire house got wetter -- the app then leans on a slope
     // fallback. Excess sidesteps that: if the house rose too, the excess comes back down even
     // though absolute dew point does not.
+    //
+    // AND THE DEW-POINT TEST BELOW STILL RUNS (named 2026-10-07, J.R.: "keep it"). If the excess
+    // target is not met, control falls through to "dew point back to pre-shower + margin", so the
+    // two are co-equal: whichever says dry first ends the run. That fires when the HOUSE got drier
+    // during the run -- the room is back where it lives all day while its excess over the now-lower
+    // house is still above rest + margin. 3 of 52 master runs (2, 7, 49), 0 upstairs. Chasing the
+    // house downward in that case is the "too aggressive" failure, so the fall-through stays.
+    Integer exTgtShown = null, exShown = null
     if (state.runMetric == "excess") {
         Integer ex = excessOf(dp10)
         Integer rest = state.restExcess10 != null ? (state.restExcess10 as Integer) : null
@@ -1333,6 +1347,7 @@ private Map offTests(long nowT, Integer rh10, Integer dp10) {
             Integer restTgt = rest + cfgDryMargin10()
             Integer floorT  = cfgExcessFloor10()
             Integer tgt     = Math.max(restTgt, floorT)
+            exShown = ex; exTgtShown = tgt
             if (ex <= tgt) {
                 dry = true
                 why = (tgt == floorT && floorT > restTgt)
@@ -1370,7 +1385,11 @@ private Map offTests(long nowT, Integer rh10, Integer dp10) {
         state.stallSinceMs = 0L
         if (dp10 == null || pre == null)
             return [action: null, reason: "drying ${r1(dried)} min - no dew point reference", learn: false]
-        return [action: null, reason: "drying ${r1(dried)} min - dp ${fmt1(dp10)}, need ${fmt1(pre + cfgDryMargin10())}", learn: false]
+        // v3.0.3: in excess mode show BOTH live targets. The old line showed only the dew-point
+        // one, which read as if the run had fallen back to dew-point mode when it had not.
+        String exPart = (exShown != null && exTgtShown != null)
+            ? "excess ${fmt1(exShown)}, need ${fmt1(exTgtShown)} | " : ""
+        return [action: null, reason: "drying ${r1(dried)} min - ${exPart}dp ${fmt1(dp10)}, need ${fmt1(pre + cfgDryMargin10())}", learn: false]
     }
 
     if (!((state.stallSinceMs ?: 0L) as Long)) state.stallSinceMs = nowT

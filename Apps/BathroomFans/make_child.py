@@ -23,7 +23,7 @@ EDITS = [
      'name: "Bathroom Fan Child",\n    namespace: "jrfarrar",\n    parent: "jrfarrar:Bathroom Fan Parent",'),
     ('description: "Delayed-max humidity trigger, dew-point drying, learns seasonal run length.",',
      'description: "One bathroom: excess-over-house trigger with local confirmation, bounded turn-off target, run log. Child of Bathroom Fan Parent.",'),
-    ('String APP_VERSION() { return "2.8.3" }', 'String APP_VERSION() { return "3.0.2" }'),
+    ('String APP_VERSION() { return "2.8.4" }', 'String APP_VERSION() { return "3.0.3" }'),
     ('importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/BathroomFans/BathroomFanNG.groovy",',
      'importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/BathroomFans/BathroomFanChild.groovy",'),
     # --- input defaults -> production values ---------------------------------------------------
