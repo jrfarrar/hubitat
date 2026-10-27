@@ -23,7 +23,7 @@ EDITS = [
      'name: "Bathroom Fan Child",\n    namespace: "jrfarrar",\n    parent: "jrfarrar:Bathroom Fan Parent",'),
     ('description: "Delayed-max humidity trigger, dew-point drying, learns seasonal run length.",',
      'description: "One bathroom: excess-over-house trigger with local confirmation, bounded turn-off target, run log. Child of Bathroom Fan Parent.",'),
-    ('String APP_VERSION() { return "2.8.4" }', 'String APP_VERSION() { return "3.0.3" }'),
+    ('String APP_VERSION() { return "2.9.0" }', 'String APP_VERSION() { return "3.1.0" }'),
     ('importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/BathroomFans/BathroomFanNG.groovy",',
      'importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/BathroomFans/BathroomFanChild.groovy",'),
     # --- input defaults -> production values ---------------------------------------------------
@@ -44,7 +44,7 @@ EDITS = [
     ('title: "Dry when dew point is within this many F of its pre-shower value",\n                  defaultValue: 2.5, required: true',
      'title: "Dry when dew point is within this many F of its pre-shower value",\n                  defaultValue: 3.5, required: true'),
     ('title: "Warn when the sensor has sent <b>no events of any kind</b> for (minutes)",\n                  defaultValue: 90, required: true',
-     'title: "Warn when the sensor has sent <b>no events of any kind</b> for (minutes)",\n                  defaultValue: 75, required: true'),
+     'title: "Warn when the sensor has sent <b>no events of any kind</b> for (minutes)",\n                  defaultValue: 120, required: true'),
     # --- cfg null-fallbacks, same values ----------------------------------------------------------
     ('private BigDecimal cfgRise()   { return ((riseThreshold  != null ? riseThreshold  : 9)  as BigDecimal) }',
      'private BigDecimal cfgRise()   { return ((riseThreshold  != null ? riseThreshold  : 2.5) as BigDecimal) }'),
@@ -55,7 +55,7 @@ EDITS = [
     ('private int cfgManualMin()     { return ((manualOffMinutes != null ? manualOffMinutes : 30) as int) }',
      'private int cfgManualMin()     { return ((manualOffMinutes != null ? manualOffMinutes : 20) as int) }'),
     ('private int cfgStaleMin()      { return ((sensorStaleMin != null ? sensorStaleMin : 90) as int) }',
-     'private int cfgStaleMin()      { return ((sensorStaleMin != null ? sensorStaleMin : 75) as int) }'),
+     'private int cfgStaleMin()      { return ((sensorStaleMin != null ? sensorStaleMin : 120) as int) }'),
     ('private int cfgDryMargin10()   { return (((dryMarginF != null ? dryMarginF : 2.5) as BigDecimal) * 10) as int }',
      'private int cfgDryMargin10()   { return (((dryMarginF != null ? dryMarginF : 3.5) as BigDecimal) * 10) as int }'),
     ('private String  manualMode() { return (manualControlMode != null ? manualControlMode : "3") as String }',

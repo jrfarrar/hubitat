@@ -57,7 +57,24 @@ preferences {
     page(name: "advancedPage")
 }
 
-String APP_VERSION() { return "2.8.4" }
+String APP_VERSION() { return "2.9.0" }
+
+/*  v2.9.0  2026-10-27 — SECOND SHOWER RESTARTS THE DRYING CLOCK (child v3.1.0). CONTROL CHANGE.
+ *  J.R.: "a second shower should restart the 90-minute drying clock." Three of 74 master runs
+ *  (41, 56, 61) capped at 90 min because a second shower landed 50-60 min into the first; the
+ *  clock counted from the first trigger. Now: during an auto run the dew-point TROUGH since the
+ *  peak is tracked; a rise of riseThreshold above it, after a drop of >= 1.2 F from the peak, is a
+ *  second shower -> dryClockMs = now (both dryMaxMin and maxRunMin count from here), hard-cap timer
+ *  re-armed, peak/slope/stall reset, trough cleared. ONCE per run (MAX_CLOCK_RESTARTS = 1), so the
+ *  worst case is 2 x maxRunMin = 190 min; the external backstop rules were moved to 200 the same
+ *  day. The pre-shower reference and resting excess are NOT touched -- the room still has to get
+ *  back to where it started. Such a run never feeds the learner; its reason carries the total
+ *  time and where the clock restarted. Mirrored in fanng_core.py; sim_second_shower.py.
+ *  ALSO: sensor-health thresholds re-measured over 60 days on BOTH rooms (change-only Sonoffs):
+ *  humidityStaleMin default 240 -> 720 here; the child's sensorStaleMin default 75 -> 120
+ *  (make_child.py). Upstairs healthy any-event silences reach 89 min and humidity-flat stretches
+ *  652 min; the upstairs child had been logging RHSTALE almost continuously.
+ */
 
 /*  v2.8.4  2026-10-07 — STATUS LINE ONLY (child v3.0.3). During an excess run the "drying" reason
  *  now shows both live targets ("excess 3.2, need 5.2 | dp 59.6, need 57.4"); it used to show only
@@ -483,7 +500,7 @@ def advancedPage() {
             input "humidityStaleMin", "number",
                   title: "Also warn if the device is alive but has not reported <b>humidity</b> " +
                          "for (minutes)",
-                  defaultValue: 240, required: true
+                  defaultValue: 720, required: true
             paragraph "<small>Catches the opposite failure: a driver that stops parsing humidity " +
                       "while the radio keeps checking in would look perfectly healthy above. Keep " +
                       "this well clear of 128 min or it becomes the old false alarm again.</small>"
@@ -517,9 +534,13 @@ private int cfgMinOff()        { return ((minOffMin      != null ? minOffMin    
 private int cfgStallConfirm()  { return ((stallConfirmMin!= null ? stallConfirmMin: 10) as int) }
 private int cfgManualMin()     { return ((manualOffMinutes != null ? manualOffMinutes : 30) as int) }
 private int cfgStaleMin()      { return ((sensorStaleMin != null ? sensorStaleMin : 90) as int) }
-// Humidity-attribute backstop. Longest legitimate humidity gap measured on the Sonoff over 7 days
-// was 127.8 min (device alive throughout), so 240 leaves headroom and still catches a wedge.
-private int cfgHumStaleMin()   { return ((humidityStaleMin != null ? humidityStaleMin : 240) as int) }
+// Humidity-attribute backstop. Set 240 in September against a 127.8-min longest gap on the master.
+// Re-measured 2026-10-27 over 60 days on BOTH rooms: these Sonoffs report humidity on CHANGE only,
+// and a quiet room in autumn air sits flat for hours -- master 301 min, upstairs 652 min (27 gaps
+// over 240 in 30 days; the upstairs child's log ring was nothing but RHSTALE). 720 clears both with
+// margin; a genuinely wedged attribute is still reported within half a day, and rule 1 catches a
+// dead device long before that.
+private int cfgHumStaleMin()   { return ((humidityStaleMin != null ? humidityStaleMin : 720) as int) }
 private int cfgLowBatt()       { return ((lowBatteryPct  != null ? lowBatteryPct  : 20) as int) }
 private int cfgDryFallback()   { return 18 }
 private int cfgDryMargin10()   { return (((dryMarginF != null ? dryMarginF : 2.5) as BigDecimal) * 10) as int }
@@ -602,7 +623,7 @@ def initialize() {
     // Gating this on autoOn meant a hub restart during a manual run silently
     // dropped the only timer protecting it.
     if (state.fanOn) {
-        long started = (state.onAtMs ?: 0L) as Long
+        long started = runClockMs()          // v3.1.0: the restarted clock if a 2nd shower moved it
         long left = started ? (cfgMaxRun() * MINMS()) - (nowMs() - started) : cfgMaxRun() * MINMS()
         runIn(Math.max(60L, (left / 1000L)) as Integer, "endMaxRun", [overwrite: true])
         // v2.8.2: a MANUAL run in progress also gets its cutoff re-armed. updated() unschedules
@@ -630,6 +651,9 @@ private void clearRunContext() {
     state.peakDp10   = null
     state.peakSlope10 = 0.0
     state.stallSinceMs = 0L
+    state.troughDp10 = null          // v3.1.0 second-shower tracking
+    state.clockRestarts = 0
+    state.dryClockMs = null
     // NOTE: lastLearnBucket / lastLearnMin are deliberately NOT cleared here. They must outlive
     // the run so a rebound in the following minutes can still correct what that run taught.
     state.adoptedRun = false
@@ -1266,16 +1290,26 @@ private void learnRecord(String bucket, BigDecimal driedMin) {
 
 // ---- off tests ------------------------------------------------------------
 
+// v3.1.0 -- THE DRYING CLOCK. Normally fan-on. A SECOND SHOWER mid-run restarts it (once), so
+// both the dryMax give-up and the hard cap count from the second shower, not the first.
+private long runClockMs() {
+    Long c = state.dryClockMs as Long
+    return (c ?: ((state.onAtMs ?: 0L) as Long))
+}
+private int MAX_CLOCK_RESTARTS() { return 1 }       // worst case = 2 x maxRunMin; backstop rules sit above that
+private int TROUGH_MIN_DROP10()  { return 12 }      // 1.2 F below peak before a "trough" counts
+
 private Map offTests(long nowT, Integer rh10, Integer dp10) {
-    long onFor = nowT - ((state.onAtMs ?: 0L) as Long)
+    long onFor = nowT - runClockMs()
+    String tag = (state.clockRestarts ?: 0) ? " (clock restarted by 2nd shower at ${r1(((state.dryClockMs as Long) - ((state.onAtMs ?: 0L) as Long)) / (MINMS() as double))} min)" : ""
 
     if (onFor >= cfgMaxRun() * MINMS())
-        return [action: "OFF", reason: "hard max ${cfgMaxRun()} min reached", learn: false]
+        return [action: "OFF", reason: "hard max ${cfgMaxRun()} min reached${tag}", learn: false]
 
     BigDecimal dried = (onFor / (MINMS() as double)) as BigDecimal
 
     if (dried >= cfgDryMax())
-        return [action: "OFF", reason: "gave up waiting to dry after ${cfgDryMax()} min", learn: false]
+        return [action: "OFF", reason: "gave up waiting to dry after ${cfgDryMax()} min${tag}", learn: false]
 
     if (dried < cfgDryMin()) {
         state.stallSinceMs = 0L
@@ -1370,7 +1404,8 @@ private Map offTests(long nowT, Integer rh10, Integer dp10) {
         // one, which read as if the run had fallen back to dew-point mode when it had not.
         String exPart = (exShown != null && exTgtShown != null)
             ? "excess ${fmt1(exShown)}, need ${fmt1(exTgtShown)} | " : ""
-        return [action: null, reason: "drying ${r1(dried)} min - ${exPart}dp ${fmt1(dp10)}, need ${fmt1(pre + cfgDryMargin10())}", learn: false]
+        String pre2 = ((state.clockRestarts ?: 0) as Integer) ? "2nd shower - " : ""
+        return [action: null, reason: "${pre2}drying ${r1(dried)} min - ${exPart}dp ${fmt1(dp10)}, need ${fmt1(pre + cfgDryMargin10())}", learn: false]
     }
 
     if (!((state.stallSinceMs ?: 0L) as Long)) state.stallSinceMs = nowT
@@ -1386,8 +1421,15 @@ private Map offTests(long nowT, Integer rh10, Integer dp10) {
     BigDecimal needHold = cfgStallConfirm() as BigDecimal
     state.earlyGuard = null
 
-    if (held >= needHold)
+    if (held >= needHold) {
+        // A two-shower run is not a clean drying observation: the learner never sees it, and the
+        // reason carries the TOTAL fan-on time plus where the clock restarted.
+        if ((state.clockRestarts ?: 0) as Integer) {
+            BigDecimal total = ((nowT - ((state.onAtMs ?: 0L) as Long)) / (MINMS() as double)) as BigDecimal
+            return [action: "OFF", reason: "dried after ${r1(total)} min total - ${why}${tag}", learn: false]
+        }
         return [action: "OFF", reason: "dried after ${r1(dried)} min - ${why}", learn: true]
+    }
     return [action: null,
             reason: "drying ${r1(dried)} min - ${why}, holding ${r1(held)} of ${r1(needHold)}",
             learn: false]
@@ -1453,8 +1495,41 @@ private Map decide(long nowT, Integer rh10, Integer temp10, String source) {
     }
 
     if (state.fanOn && state.autoOn) {
-        if (dp10 != null && (state.peakDp10 == null || dp10 > (state.peakDp10 as Integer)))
-            state.peakDp10 = dp10
+        // v3.1.0 -- SECOND SHOWER DETECTION (J.R. 2026-10-27: "a second shower should restart the
+        // 90-minute drying clock"). Runs 41, 56 and 61 all capped because a second shower landed
+        // 50-60 min into the first run; the clock counted from the first trigger, so the cap was
+        // nearly guaranteed. Track the dew-point TROUGH since the peak; a rise of riseThreshold
+        // above that trough, after the room had come down at least TROUGH_MIN_DROP10 from the
+        // peak, is a second shower. Restart the clock ONCE per run; the pre-shower reference and
+        // resting excess stay as they were -- the room still has to get back to where it started.
+        if (dp10 != null) {
+            Integer pk = state.peakDp10 as Integer
+            Integer tr = state.troughDp10 as Integer
+            int restarts = (state.clockRestarts ?: 0) as Integer
+            if (pk != null && tr != null && restarts < MAX_CLOCK_RESTARTS()
+                    && (pk - tr) >= TROUGH_MIN_DROP10()
+                    && (dp10 - tr) >= (cfgRise() * 10)) {
+                state.clockRestarts = restarts + 1
+                state.dryClockMs = nowT
+                state.peakDp10 = dp10
+                state.peakSlope10 = 0.0
+                state.stallSinceMs = 0L
+                state.troughDp10 = null
+                armBackstop()                      // hard cap re-armed from now
+                BigDecimal at = ((nowT - ((state.onAtMs ?: 0L) as Long)) / (MINMS() as double)) as BigDecimal
+                String m = "SECOND SHOWER at ${r1(at)} min - dew ${fmt1(dp10)} is ${fmt1(dp10 - tr)}F above the " +
+                           "run's trough ${fmt1(tr)} - drying clock restarted (cap ${cfgDryMax()}/${cfgMaxRun()} min from now)"
+                logInfo "${appName()}: ${m}"
+                pushLog(nowT, "SHOWER2", rh10, m)
+            } else {
+                if (pk == null || dp10 > pk) {
+                    state.peakDp10 = dp10
+                    state.troughDp10 = null          // a new peak means no trough yet
+                } else if (tr == null || dp10 < tr) {
+                    state.troughDp10 = dp10
+                }
+            }
+        }
         Map r = offTests(nowT, rh10, dp10)
         state.pendingLearn = (r.learn == true)
         if (r.action == "OFF") state.lastOffReason = (r.reason ?: "").take(80)
@@ -1728,7 +1803,10 @@ private void applyBookkeeping(String action, long t, boolean auto = true) {
         Integer pr10 = (state.preDp10  != null) ? (state.preDp10  as Integer) : null
         Integer excur10 = (pk10 != null && pr10 != null) ? (pk10 - pr10) : null
         boolean bigEnough = (excur10 != null && excur10 >= MIN_LEARN_EXCURSION10())
-        if ((state.pendingLearn == true) && !(state.runDegraded == true) && !bigEnough) {
+        if (((state.clockRestarts ?: 0) as Integer) > 0) {
+            state.learnSkip = "two showers in one run - drying time is not a clean observation"
+            logInfo "${appName()}: learner skipped - ${state.learnSkip}"
+        } else if ((state.pendingLearn == true) && !(state.runDegraded == true) && !bigEnough) {
             state.learnSkip = "excursion ${excur10 == null ? 'unknown' : fmt1(excur10)}F < " +
                               "${fmt1(MIN_LEARN_EXCURSION10())}F - not a shower, not an observation"
             logWarn "${appName()}: learner SKIPPED - ${state.learnSkip}"
@@ -1966,7 +2044,7 @@ private void writeStatus(Integer rh10, String reason, String source, String tran
 
     String nextAction = null; Long nextAt = null
     if (state.fanOn && state.autoOn && state.onAtMs) {
-        nextAction = "endMaxRun"; nextAt = ((state.onAtMs as Long) + cfgMaxRun() * MINMS())
+        nextAction = "endMaxRun"; nextAt = (runClockMs() + cfgMaxRun() * MINMS())
     } else if (state.fanOn) {
         nextAction = "endManualRun"
     }
