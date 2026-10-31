@@ -24,6 +24,8 @@ class Dev {
 }
 class Garadget extends Dev {
     boolean powered = true; boolean bootWorks = true; String doorAfterBoot = null; int refreshes = 0
+    List sensorTimes = []
+    List statesSince(String attr, Date d, Map opts = [:]) { attr == "sensor" ? sensorTimes.findAll { it >= d.time } : [] }
     void refresh() { refreshes++ }
 }
 class Outlet extends Dev {
@@ -188,6 +190,23 @@ println "A9 recovery clears -> one 'back to normal'"
 setup()
 problem("commandFailed", "close not confirmed"); advance(A.clock + 3 * MIN)
 check "commandFailed cleared by boot -> back to normal sent", info.msgs.any { it.contains("back to normal") }, info.msgs.toString()
+
+println "A10 failed close, door stopped, reading MOVED (real obstruction)"
+setup()
+g.set("door", "stopped"); g.attrs.door.t = A.clock - 10 * MIN
+g.sensorTimes = [A.clock - 60 * SEC]
+problem("commandFailed", "'close' was not confirmed; door reports stopped")
+advance(A.clock + 2 * HOUR)
+check "no power cycle when the reading moved", o.offs == 0, "offs ${o.offs}"
+check "no extra alert (existing STOPPED alarm covers it)", alert.msgs.isEmpty(), alert.msgs.toString()
+
+println "A11 failed close, door 'stopped', reading never moved (live Door 2 2026-10-31: blind laser)"
+setup()
+g.set("door", "stopped"); g.attrs.door.t = A.clock - 10 * MIN
+g.sensorTimes = [A.clock - 30 * MIN]
+problem("commandFailed", "'close' at 08:31:16 was not confirmed; door reports stopped")
+advance(A.clock + 3 * MIN)
+check "blind unit IS power-cycled", o.offs == 1, "offs ${o.offs}"
 
 println "\nRESULT: ${pass} passed, ${fail} failed"
 if (fail) { println A.log.join("\n") }

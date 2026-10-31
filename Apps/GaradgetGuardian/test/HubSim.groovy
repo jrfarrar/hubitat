@@ -11,12 +11,13 @@ class Sim {
     static List<Map> published = []
     static Closure onPublish = null        // the modelled Garadget
     static Map settings = [:]
+    static Map data = [:]
     static StateMap state = new StateMap()
     static boolean mqttConnected = true
     static String label = "Garage Door 3"
 
     static void reset() {
-        jobs = []; attrs = [:]; events = []; logs = []; published = []; state = new StateMap()
+        jobs = []; attrs = [:]; events = []; logs = []; published = []; state = new StateMap(); data = [:]
         mqttConnected = true
     }
     static String fmt(long ms) { new Date(ms).format("MM-dd HH:mm:ss", TimeZone.getTimeZone("America/New_York")) }
@@ -36,9 +37,12 @@ class FakeDevice {
     String getLabel() { Sim.label }
     String getName() { "Garadget MQTT" }
     String getDeviceNetworkId() { "SIM-DNI" }
-    def currentValue(String n) { Sim.attrs[n]?.value }
+    static Set UNDECLARED = ["rdt","mtt","rlt","rlp","srt","mqip","mqpt","mqto"] as Set
+    def currentValue(String n) { UNDECLARED.contains(n) ? null : Sim.attrs[n]?.value }
     def currentState(String n) { def a = Sim.attrs[n]; a == null ? null : new FakeState(value: a.value, date: new Date(a.date as long)) }
     void updateSetting(String n, Map m) { Sim.settings[n] = m.value }
+    String getDataValue(String n) { Sim.data[n] }
+    void updateDataValue(String n, String v) { Sim.data[n] = v }
 }
 
 class FakeLog {
@@ -101,6 +105,7 @@ abstract class HubSim extends Script {
         Sim.jobs << [at: first, name: handler.toString(), period: periodMs]
     }
     void unschedule(Object h = null) {
-        if (h == null) Sim.jobs.clear() else Sim.jobs.removeAll { it.name == h.toString() }
+        // only the driver's own jobs: simulated device replies (fn jobs) are not the driver's to cancel
+        if (h == null) Sim.jobs.removeAll { it.name } else Sim.jobs.removeAll { it.name == h.toString() }
     }
 }

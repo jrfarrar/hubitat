@@ -6,8 +6,12 @@
  *  the sensor, power-cycles the Garadget's own switched outlet, proves the unit came back, and tells
  *  you what it now sees - above all whether the door is actually OPEN.
  *
- *  v1.0.1  2026-10-31  never power-cycle for a failed command when the door reports "stopped": the
- *                      unit saw the door move, so the failure is physical (first live event, Door 2).
+ *  v1.0.3  2026-10-31  first HPM release. Cancels the pending boot check once a restart has been seen.
+ *                      End-to-end tested on real hardware (3 Garadgets, Zigbee outlets via Hub Mesh).
+ *  v1.0.2  2026-10-31  "stopped" alone is not proof the unit works: Door 2 reported stopped while its
+ *                      laser was blind (read 0) and the door was really closed. Skip the power cycle only
+ *                      when the reflection reading actually moved around the failed command.
+ *  v1.0.1  2026-10-31  (superseded) never power-cycled a failed command while the door reported "stopped".
  *  v1.0.0  2026-10-31  first version.
  *
  *  Why: 2026-10-22 -> 10-30 Garage Door 3's sensor froze for 7 days while the unit stayed online and
@@ -38,7 +42,7 @@ definition(
 
 preferences { page(name: "mainPage") }
 
-String APP_VERSION() { return "1.0.1" }
+String APP_VERSION() { return "1.0.3" }
 
 def mainPage() {
     dynamicPage(name: "mainPage", title: "", install: true, uninstall: true) {
@@ -139,14 +143,15 @@ def considerRecovery() {
     String door = garadget.currentValue("door")
     Long doorAge = t - (garadget.currentState("door")?.date?.time ?: 0L)
 
-    //A door that reports "stopped" was SEEN to move by the Garadget, so the unit and its sensor are
-    //working: the close/open failed physically (obstruction, safety eyes, someone stopped it).
-    //A reboot cannot fix that, and your existing "door stopped" alarm already covers it.
-    //Measured live 2026-10-31 08:31 and 08:35: Door 2 auto-close stopped twice ~23 s in.
-    if (h == "commandFailed" && door == "stopped") {
+    //"stopped" is ambiguous. If the reflection reading MOVED around the failed command, the unit was
+    //watching a real door that did not finish (obstruction, safety eyes): a reboot cannot fix that and
+    //the existing "door stopped" alarm covers it. If the reading did NOT move, the unit itself is
+    //blind - exactly what happened live 2026-10-31: Door 2's laser read 0 from the moment it was
+    //re-plugged at 08:21, the door was really closed, and the Garadget reported opening/open/stopped.
+    if (h == "commandFailed" && door == "stopped" && readingMovedRecently()) {
         if (!state.notedPhysical) {
             state.notedPhysical = true
-            logInfo "${doorName()}: command not completed but the door reports STOPPED - physical problem, not a Garadget fault; not power-cycling"
+            logInfo "${doorName()}: command not completed, door reports STOPPED and the reading moved - physical problem, not a Garadget fault; not power-cycling"
         }
         return
     }
@@ -192,6 +197,18 @@ def considerRecovery() {
     }
 
     startCycle(h)
+}
+
+//Did the reflection reading change in the few minutes before this problem was raised?
+Boolean readingMovedRecently() {
+    Long since = ((state.problem?.since ?: now()) as Long) - 180000L
+    try {
+        def evts = garadget.statesSince("sensor", new Date(since), [max: 20])
+        return (evts && evts.size() > 0)
+    } catch (e) {
+        logWarn "could not read sensor history (${e.message}) - assuming the unit is at fault"
+        return false
+    }
 }
 
 /* ------------------------------------------------------------------ the power cycle */
@@ -243,6 +260,8 @@ def verifyBootFinal() {
 
 def recovered(String bootStr) {
     state.phase = null
+    unschedule("verifyBoot")
+    unschedule("verifyBootFinal")
     state.lastCycleOkAt = now()
     String door = garadget.currentValue("door")
     Long secs = Math.round((now() - (state.powerOnAt as Long)) / 1000)

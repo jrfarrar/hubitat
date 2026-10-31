@@ -3,6 +3,10 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.4.7 - 10/31/26 - The open/close threshold (srt) and travel time (mtt) are now taken from the unit's own
+ *                      config message and kept in device data (state loses them to a save race). 1.4.6 read them from attributes that are not declared, which the hub
+ *                      never keeps as current values, so it always fell back to 25 / 20 s instead of the
+ *                      unit's real values (15 on Doors 2 and 3, 10 on Door 1).
  * 1.4.6 - 10/31/26 - Health reporting. New attribute "health" (ok / offline / sensorFrozen / commandFailed)
  *                      with "healthReason", so a rule or app can alert on a Garadget that is wrong rather
  *                      than only on one that is silent. sensorFrozen: the reflection reading has not
@@ -112,7 +116,7 @@ metadata {
 
 void setVersion(){
     //state.name = "Garadget MQTT"
-    state.version = "1.4.6 - Garadget MQTT Device Handler version"
+    state.version = "1.4.7 - Garadget MQTT Device Handler version"
 }
 
 void installed() {
@@ -241,6 +245,7 @@ void getConfig(config) {
     //
     debuglog "mtt: " + config.mtt + " - door moving time in mS from completely opened to completely closed (1,000 - 120,000, default 10,000)"
     def mtt = config.mtt
+    if (mtt != null && device.getDataValue("mtt") != mtt.toString()) device.updateDataValue("mtt", mtt.toString())
     device.updateSetting("mtt", [value: "${mtt}", type: "number"])
     sendEvent(name: "mtt", value: mtt)
     //
@@ -256,6 +261,7 @@ void getConfig(config) {
     //
     debuglog "srt: " + config.srt + " - reflection threshold below which the door is considered open (1-80, default 25)"
     def srt = config.srt
+    if (srt != null && device.getDataValue("srt") != srt.toString()) device.updateDataValue("srt", srt.toString())
     device.updateSetting("srt", [value: "${srt}", type: "number"])
     sendEvent(name: "srt", value: srt)
     //
@@ -606,8 +612,12 @@ void mqttClientStatus(String message) {
 
 Long frozenMs()  { return ((frozenHours ?: 36) as Long) * 3600000L }
 Long offlineMs() { return (Math.max(((staleMinutes ?: 30) as Integer) * 2, 45) as Long) * 60000L }
-Integer srtNow() { def v = device.currentValue("srt"); return (v != null) ? (v as Integer) : 25 }
-Integer mttSecNow() { def v = device.currentValue("mtt"); return (v != null) ? Math.round((v as Integer) / 1000.0) as Integer : 20 }
+//srt/mtt come from the unit's config message (getConfig stores them); attributes are a fallback only
+//- they are not declared, so the hub does not keep them as current values.
+//Kept in device DATA, not state: a config reply usually lands while the refresh/poll that asked for it is
+//still running, and that thread then saves its older copy of state over it (measured 2026-10-31).
+Integer srtNow() { def v = device.getDataValue("srt"); return (v != null && v.toString().isNumber()) ? (v.toString() as Integer) : 25 }
+Integer mttSecNow() { def v = device.getDataValue("mtt"); return (v != null && v.toString().isNumber()) ? (Math.round((v.toString() as Integer) / 1000.0) as Integer) : 20 }
 
 //Called once per trusted status message, BEFORE the door/contact events are updated.
 void trackHealth(status) {

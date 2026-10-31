@@ -1,11 +1,11 @@
 {
   "packageName": "Garadget MQTT Driver",
   "author": "J.R. Farrar",
-  "version": "1.4.6",
+  "version": "1.4.7",
   "minimumHEVersion": "2.1.9",
   "communityLink": "https://community.hubitat.com/t/release-garadget-mqtt-device-handler/43377",
   "dateReleased": "2026-10-31",
-  "releaseNotes": "Health reporting. New 'health' attribute (ok / offline / sensorFrozen / commandFailed) with 'healthReason', so a rule or app can alert on a Garadget that is WRONG, not only on one that is silent. sensorFrozen: the reflection reading has not changed at all for N hours (default 36) while the unit still answers - a healthy unit jitters by 1-3 points many times a day even when the door never moves. commandFailed: an open/close the reflection sensor did not confirm by crossing the threshold within travel time + margin; a 'closed' status alone is not proof. offline: no answer for 2x the stale window. New attributes lastBoot (unit restarted, e.g. after a power cycle) and lastCommandResult; new command resetHealth. Health checks can be turned off in preferences.",
+  "releaseNotes": "1.4.7 - HEALTH REPORTING. A Garadget can be wrong without being silent: one unit's optical sensor froze for 7 days while it stayed online and kept reporting 'closed' - including a night the door was open. The old watchdog only catches a unit that stops answering. New attribute 'health' with 'healthReason':\n - sensorFrozen: the reflection reading has not changed AT ALL for N hours (default 36) while the unit still answers. A healthy unit jitters by 1-3 points dozens of times a day even when the door never moves (3 doors x 8 weeks: longest healthy gap 19.5 h; the frozen unit 176 h).\n - commandFailed: an open/close the reflection reading did not confirm by crossing the unit's own threshold in the right direction within travel time + margin. A 'closed' status string alone is not accepted as proof.\n - offline: no answer for twice the stale window.\nAlso new: 'lastBoot' (unit restarted, e.g. after a power cycle - read from the unit's own uptime), 'lastCommandResult', command 'resetHealth', and preferences for the checks (on by default; can be turned off). The threshold (srt) and travel time (mtt) are read from the unit's own config.\nNEW COMPANION APP: 'Garadget Guardian' (separate package in this repository) watches 'health' and power-cycles each Garadget through its own smart outlet when it is offline, frozen or fails a command, proves it restarted, and tells you what it then sees - ALERT if the door is actually open. After updating, open each Garadget device and click Save Preferences once so the 15-minute health check is scheduled.",
   "drivers": [
     {
       "id": "58801d01-51bd-4116-a271-2e7a7c9e24a0",

@@ -6,7 +6,13 @@
       "name": "Garadget MQTT Driver",
       "category": "Integrations",
       "location": "https://raw.githubusercontent.com/jrfarrar/hubitat/master/devicehandlers/garadgetMQTT/garadgetmqtt.json",
-      "description": "MQTT Device Handler for Garadget"
+      "description": "MQTT Device Handler for Garadget - local control, plus health reporting (frozen sensor, unconfirmed open/close, offline)"
+    },
+    {
+      "name": "Garadget Guardian",
+      "category": "Integrations",
+      "location": "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/GaradgetGuardian/garadgetguardian.json",
+      "description": "Watches Garadget health (driver 1.4.6+) and power-cycles a frozen, offline or failing Garadget through its own smart outlet, then tells you whether the door is really open"
     }
   ]
 }

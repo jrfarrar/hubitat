@@ -1,0 +1,30 @@
+{
+  "packageName": "Garadget Guardian",
+  "author": "J.R. Farrar",
+  "version": "1.0.3",
+  "minimumHEVersion": "2.1.9",
+  "dateReleased": "2026-10-31",
+  "communityLink": "https://community.hubitat.com/t/release-garadget-mqtt-device-handler/43377",
+  "documentationLink": "https://github.com/jrfarrar/hubitat/tree/master/Apps/GaradgetGuardian",
+  "releaseNotes": "1.0.3 - first release. Watches each Garadget's 'health' (needs Garadget MQTT Driver 1.4.6+) and, when a unit is offline, its sensor has frozen, or an open/close was not confirmed, power-cycles that Garadget through its own smart outlet, proves it restarted, and notifies what it now sees: ALERT if the door is actually open, INFO otherwise, and 'back to normal' when health clears. One child app per door.\nSafety: never moves a door (it only switches the Garadget's power); never acts while a door is moving or within 5 min of a move; at most 2 power cycles per 24 h and per problem, then a single 'NEEDS YOU' alert; never leaves the outlet off (restored on hub start, by timer and by a 30-minute check); a stopped door whose reading moved is treated as a physical problem and not power-cycled. Notify-only mode available. The outlet must power ONLY the Garadget, never the opener.",
+  "apps": [
+    {
+      "id": "6804ac5f-4a28-47cd-a010-bcbee9cd418f",
+      "name": "Garadget Guardian Parent",
+      "namespace": "jrfarrar",
+      "location": "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/GaradgetGuardian/GaradgetGuardianParent.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": true
+    },
+    {
+      "id": "654ee0d0-66e4-4661-b3e9-6dca2ab93bdd",
+      "name": "Garadget Guardian Child",
+      "namespace": "jrfarrar",
+      "location": "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/GaradgetGuardian/GaradgetGuardianChild.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": false
+    }
+  ]
+}

@@ -59,7 +59,7 @@ def move = { String target ->
     // physical travel: "opening"/"closing" then settled; reading crosses the threshold
     String mid = target == "open" ? "opening" : "closing"
     g.door = mid; g.changedAt = Sim.clock
-    if (!g.frozen) { g.base = target == "open" ? 1 : 97; g.sensorNow = target == "open" ? 2 : 5 }
+    if (!g.frozen) { g.base = target == "open" ? 1 : (g.base > 15 ? g.base : 97); g.sensorNow = target == "open" ? 2 : 5 }
     pubStatus()
     at(Sim.clock + g.mtt) { g.door = target; g.changedAt = Sim.clock; if (!g.frozen) g.sensorNow = g.base; pubStatus() }
 }
@@ -96,7 +96,7 @@ def start = { Map s = [:] ->
     Sim.attrs.srt = [value: 15, date: Sim.clock - 100 * HOUR]; Sim.attrs.mtt = [value: 23000, date: Sim.clock - 100 * HOUR]
     Sim.state.lastMessageReceived = Sim.clock - 10 * MIN
     call("updated")       // what saving the new driver version does
-    advance(Sim.clock + 2 * MIN)
+    advance(Sim.clock + 2 * MIN)    // the 15 s pollNow asks for config: srt/mtt arrive from the unit, as on the hub
 }
 def health = { Sim.attrs.health?.value }
 def healthEvents = { Sim.events.findAll { it.name == "health" }.collect { "${Sim.fmt(it.at)} ${it.value}" } }
@@ -257,6 +257,14 @@ if (mode == "scenarios") {
     start()
     call("close"); advance(Sim.clock + 3 * MIN)
     check "no failure for a no-op close", health() == "ok" && !Sim.state.cmdPending, "${health()}"
+
+    println "S13 unit threshold 15 (Door 2/3), barely-aimed laser reads 17 when closed"
+    start()
+    check "driver learned srt 15 from the unit's config", Sim.data.srt == "15", "${Sim.data.srt}"
+    call("open"); advance(Sim.clock + 2 * MIN)
+    g.base = 17
+    call("close"); advance(Sim.clock + 2 * MIN)
+    check "close to a reading of 17 is confirmed against srt 15", health() == "ok" && (Sim.attrs.lastCommandResult?.value ?: "").contains("confirmed by sensor"), "${health()} ${Sim.attrs.lastCommandResult?.value}"
 
     println "\nRESULT: ${pass} passed, ${fail} failed"
     System.exit(fail ? 1 : 0)
