@@ -1,11 +1,11 @@
 {
   "packageName": "Garadget MQTT Driver",
   "author": "J.R. Farrar",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "minimumHEVersion": "2.1.9",
-  "communityLink":"https://community.hubitat.com/t/release-garadget-mqtt-device-handler/43377",
-  "dateReleased": "2026-09-03",
-  "releaseNotes": "Fixes a device that has gone offline being reported as healthy. On subscribe the broker replays the RETAINED message for each topic, and 1.4.4 counted that replay as fresh data - so the watchdog would reconnect, the reconnect would trigger a replay, and the outage stayed hidden while every attribute sat frozen. Retained replays no longer reset the staleness clock. The watchdog now polls the device directly and waits for an answer before reconnecting, so an idle door with scheduled refresh turned off is no longer reconnected every cycle. Repeated failed reconnects escalate to log.error with what to check. Door commands no longer wait behind a watchdog reconnect, and the scheduled refresh polls before checking staleness.",
+  "communityLink": "https://community.hubitat.com/t/release-garadget-mqtt-device-handler/43377",
+  "dateReleased": "2026-10-31",
+  "releaseNotes": "Health reporting. New 'health' attribute (ok / offline / sensorFrozen / commandFailed) with 'healthReason', so a rule or app can alert on a Garadget that is WRONG, not only on one that is silent. sensorFrozen: the reflection reading has not changed at all for N hours (default 36) while the unit still answers - a healthy unit jitters by 1-3 points many times a day even when the door never moves. commandFailed: an open/close the reflection sensor did not confirm by crossing the threshold within travel time + margin; a 'closed' status alone is not proof. offline: no answer for 2x the stale window. New attributes lastBoot (unit restarted, e.g. after a power cycle) and lastCommandResult; new command resetHealth. Health checks can be turned off in preferences.",
   "drivers": [
     {
       "id": "58801d01-51bd-4116-a271-2e7a7c9e24a0",
@@ -16,6 +16,3 @@
     }
   ]
 }
-
-
-

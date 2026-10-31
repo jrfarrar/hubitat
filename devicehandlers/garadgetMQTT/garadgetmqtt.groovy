@@ -3,6 +3,16 @@
  *
  *  J.R. Farrar (jrfarrar)
  *
+ * 1.4.6 - 10/31/26 - Health reporting. New attribute "health" (ok / offline / sensorFrozen / commandFailed)
+ *                      with "healthReason", so a rule or app can alert on a Garadget that is wrong rather
+ *                      than only on one that is silent. sensorFrozen: the reflection reading has not
+ *                      changed at all for N hours (default 36) while the unit is still talking - on a
+ *                      healthy unit it jitters by 1-3 points many times a day even when the door never
+ *                      moves. commandFailed: an open/close that the reflection sensor did not confirm by
+ *                      crossing the threshold in the right direction within travel time + margin; a
+ *                      "closed" status string alone is not proof. offline: no answer for 2x the stale
+ *                      window. New attributes "lastBoot" (unit restarted, e.g. after a power cycle) and
+ *                      "lastCommandResult"; new command resetHealth.
  * 1.4.5 - 09/03/26 - Fixed false "healthy" reporting: a retained MQTT message replayed by the broker on
  *                      subscribe no longer counts as proof the device is alive, so a Garadget that has
  *                      stopped responding is now detected instead of being masked by the replay.
@@ -44,8 +54,13 @@ metadata {
         attribute "signal", "number"
         attribute "bright", "number"
         attribute "stopped", "enum", ["true","false"]
+        attribute "health", "enum", ["ok","offline","sensorFrozen","commandFailed"]
+        attribute "healthReason", "string"
+        attribute "lastBoot", "string"
+        attribute "lastCommandResult", "string"
 
         command "stop"
+        command "resetHealth"
     }
 
     preferences {
@@ -61,6 +76,9 @@ metadata {
             input name: "watchDogSched", type: "bool", title: "Check for connection to MQTT broker on a schedule?", defaultValue: false, required: true
             input name: "watchDogTime", type: "number", title: "Check MQTT broker connection interval", defaultValue: 15, range: "1..240", required: true, description: "1-59 = every X minutes, 60-240 = converted to hourly (e.g., 120 = every 2 hours)"
             input name: "staleMinutes", type: "number", title: "Minutes without data before forcing reconnect", defaultValue: 30, range: "5..120", required: true, description: "If no MQTT messages received within this time, force reconnect even if isConnected() says true"
+            input name: "healthChecks", type: "bool", title: "<b>Health checks</b> - report a frozen reflection sensor, unconfirmed open/close commands and offline units in the 'health' attribute", defaultValue: true, required: true
+            input name: "frozenHours", type: "number", title: "Hours with NO change at all in the reflection reading before the sensor is reported frozen", defaultValue: 36, range: "6..240", required: true, description: "A healthy unit's reading jitters by 1-3 points many times a day even when the door never moves"
+            input name: "commandMarginSec", type: "number", title: "Seconds beyond the door's travel time (mtt) to wait for the sensor to confirm an open/close", defaultValue: 30, range: "10..300", required: true
             input name: "logLevel",title: "IDE logging level",multiple: false,required: true,type: "enum", options: getLogLevels(), submitOnChange : false, defaultValue : "1"
             input name: "ShowAllPreferences", type: "bool", title: "<b>Show Garadget device settings?</b>These change settings on the device itself through MQTT", defaultValue: false
         }
@@ -94,7 +112,7 @@ metadata {
 
 void setVersion(){
     //state.name = "Garadget MQTT"
-    state.version = "1.4.5 - Garadget MQTT Device Handler version"
+    state.version = "1.4.6 - Garadget MQTT Device Handler version"
 }
 
 void installed() {
@@ -133,7 +151,8 @@ void parse(String description) {
     // reset the clock, and the outage stayed invisible. So only refresh the clock once we have
     // asked for data (see pollNow), or after enough time has passed that a replay is impossible.
     Long sinceSubscribe = now() - (state.lastSubscribeAt ?: 0L)
-    if (state.trustData || sinceSubscribe > trustTimeoutMs()) {
+    Boolean trusted = (state.trustData || sinceSubscribe > trustTimeoutMs())
+    if (trusted) {
         state.lastMessageReceived = now()
         state.reconnectAttempts = 0
     } else {
@@ -143,7 +162,7 @@ void parse(String description) {
     if (message) {
         def jsonVal = parseJson(message)
         if (topic[2] == "status") {
-            getStatus(jsonVal)
+            getStatus(jsonVal, trusted)
         } else if (topic[2] == "config") {
             getConfig(jsonVal)
         } else {
@@ -154,7 +173,12 @@ void parse(String description) {
     }
 }
 //Handle status update topic
-void getStatus(status) {
+void getStatus(status, Boolean trusted = true) {
+    //Health tracking only ever looks at data we asked for (or that is too late to be a retained
+    //replay). A replayed message is history and must not reset or advance any health clock.
+    if (trusted) {
+        try { trackHealth(status) } catch (e) { log.warn "${device.label?device.label:device.name}: health tracking error: ${e.message}" }
+    }
     if (status.status != device.currentValue("door")) {
         infolog status.status
         if (status.status == "closed") {
@@ -303,8 +327,11 @@ void updated() {
     unschedule()
     pauseExecution(1000)
     
-    // Set up all schedules (watchdog, refresh)
+    // Set up all schedules (watchdog, refresh, health)
     setupSchedules()
+
+    seedHealthClock()
+    runIn(30, evaluateHealth)
 }
 
 /**
@@ -326,6 +353,11 @@ void setupSchedules() {
         }
     }
     
+    // Health evaluation every 15 minutes, offset from refresh (:22s) and watchdog (:44s)
+    if (healthChecks != false) {
+        schedule("52 2/15 * ? * *", healthCheck)
+    }
+
     // If refresh set to true then set the schedule
     if (refreshStats) {
         if (refreshTime <= 59) {
@@ -372,6 +404,9 @@ void initialize() {
     //discard the broker's retained replay, and this is what restores it - scheduled after
     //unschedule() so it does not get cancelled.
     runIn(15, pollNow)
+
+    seedHealthClock()
+    runIn(90, evaluateHealth)
 
     //if logs are in "Need Help" turn down to "Running" after an hour
     def logL = logLevel ? logLevel.toInteger() : 1
@@ -480,10 +515,12 @@ void sendDoorCommand(String cmd) {
 
 void open() {
     infolog "Open command sent..."
+    armCommandCheck("open")
     sendDoorCommand("open")
 }
 void close() {
     infolog "Close command sent..."
+    armCommandCheck("close")
     sendDoorCommand("close")
 }
 void stop(){
@@ -551,6 +588,220 @@ void mqttClientStatus(String message) {
         infolog "Connection lost detected - scheduling reconnect in ${retryTime} seconds"
         runIn(retryTime ?: 300, reconnectMqtt)
     }
+}
+
+/* ============================================================================================
+ * HEALTH (1.4.6)
+ *
+ * Why this exists: on 2026-10-22 a Garadget's optical sensor froze. For 7 days the unit stayed on
+ * WiFi and MQTT, kept answering every poll and kept reporting "closed" - including a night the door
+ * was actually open. Nothing went silent, so the connection watchdog had nothing to see.
+ * The tell was that the reflection reading never changed once in 176 hours. On a healthy unit it
+ * jitters by 1-3 points dozens of times a day even when the door never moves (measured on three
+ * doors over eight weeks: longest healthy gap 19.5 h).
+ *
+ * health = ok | offline | sensorFrozen | commandFailed   (priority in that order after ok)
+ * Nothing here moves the door or touches the connection; it only reports.
+ * ============================================================================================ */
+
+Long frozenMs()  { return ((frozenHours ?: 36) as Long) * 3600000L }
+Long offlineMs() { return (Math.max(((staleMinutes ?: 30) as Integer) * 2, 45) as Long) * 60000L }
+Integer srtNow() { def v = device.currentValue("srt"); return (v != null) ? (v as Integer) : 25 }
+Integer mttSecNow() { def v = device.currentValue("mtt"); return (v != null) ? Math.round((v as Integer) / 1000.0) as Integer : 20 }
+
+//Called once per trusted status message, BEFORE the door/contact events are updated.
+void trackHealth(status) {
+    if (healthChecks == false) return
+    Long t = now()
+    String prevDoor = device.currentValue("door")
+    String newDoor = status.status?.toString()
+    Integer s = (status.sensor != null) ? (status.sensor as Integer) : null
+
+    //--- door transition bookkeeping (used to tell a boot from a real door change)
+    if (newDoor && newDoor != prevDoor) state.lastDoorChangeAt = t
+
+    //--- reflection-reading change clock
+    if (s != null) {
+        if (state.lastSensorValue == null) {
+            state.lastSensorValue = s
+            if (state.lastSensorChangeAt == null) state.lastSensorChangeAt = t
+        } else if (s != (state.lastSensorValue as Integer)) {
+            Integer prevS = state.lastSensorValue as Integer
+            state.lastSensorValue = s
+            state.lastSensorChangeAt = t
+            //A failed command is cleared by later physical proof that the door really moved:
+            //the reading crossed the threshold and the reported state agrees with it.
+            if (state.commandFailedAt && newDoor != prevDoor && crossedConsistently(prevS, s, newDoor)) {
+                infolog "door moved and the sensor confirmed it - clearing the earlier failed command"
+                state.commandFailedAt = null
+            }
+        }
+    }
+
+    //--- boot detection. The Garadget's "time since last change" restarts at power-up, so the
+    //first status after a reboot carries a few seconds (measured: 9 s and 10 s) with no motion
+    //(opening/closing) before it. A real door change is reported at 0 s and is preceded by the
+    //transition we have just recorded above, so it is excluded by the lastDoorChangeAt test.
+    Integer secs = timeToSeconds(status.time?.toString())
+    if (secs != null && secs >= 3 && secs <= 120 && (newDoor in ["open","closed"]) && !(prevDoor in ["opening","closing"]) && !state.cmdPending) {
+        Long sinceDoorChange = t - ((state.lastDoorChangeAt ?: 0L) as Long)
+        Boolean jumped = (newDoor != prevDoor)   //settled -> other settled state with no motion: only a boot does that
+        if (jumped || sinceDoorChange > (secs + 30) * 1000L) {
+            Long bootAt = t - secs * 1000L
+            if (!state.lastBootAt || bootAt - (state.lastBootAt as Long) > 300000L) {
+                state.lastBootAt = bootAt
+                String when = new Date(bootAt).format("yyyy-MM-dd HH:mm:ss", location.timeZone)
+                infolog "Garadget restarted at about ${when} (status ${newDoor}, time ${status.time})"
+                sendEvent(name: "lastBoot", value: when, descriptionText: "Garadget restarted, now reports ${newDoor}")
+                //a reboot is a clean slate for command verification
+                state.commandFailedAt = null
+            }
+        }
+    }
+
+    //--- command verification
+    if (state.cmdPending && s != null) checkCommandProof(newDoor, s)
+
+    //--- anything trusted means it is not offline; re-evaluate if we were reporting a problem
+    if (device.currentValue("health") in ["offline","commandFailed"] || (device.currentValue("health") == "sensorFrozen" && state.lastSensorChangeAt == t)) {
+        runIn(2, evaluateHealth)
+    }
+}
+
+Boolean crossedConsistently(Integer before, Integer after, String door) {
+    Integer thr = srtNow()
+    if (door == "closed") return before < thr && after >= thr
+    if (door == "open")   return before >= thr && after < thr
+    return false
+}
+
+Integer timeToSeconds(String tm) {
+    if (!tm) return null
+    def m = (tm =~ /^(\d+)s$/)
+    return m.matches() ? (m[0][1] as Integer) : null
+}
+
+//Seed the change clock from the platform's own record of when "sensor" last changed, so a driver
+//update or hub reboot never resets the clock to "now" and hides a freeze that is already under way.
+void seedHealthClock() {
+    if (state.lastSensorChangeAt == null) {
+        def st = device.currentState("sensor")
+        state.lastSensorChangeAt = st?.date?.time ?: now()
+        if (st?.value != null && st.value.toString().isNumber()) state.lastSensorValue = st.value.toString().toBigDecimal().intValue()
+        infolog "health clock seeded: reflection last changed ${new Date(state.lastSensorChangeAt as Long).format('yyyy-MM-dd HH:mm', location.timeZone)}"
+    }
+}
+
+void armCommandCheck(String cmd) {
+    if (healthChecks == false) return
+    String door = device.currentValue("door")
+    if ((cmd == "close" && door == "closed") || (cmd == "open" && door == "open")) {
+        debuglog "'${cmd}' sent while already ${door} - nothing to verify"
+        return
+    }
+    def cur = device.currentValue("sensor")
+    Integer s = (cur != null) ? (cur as Integer) : null
+    Integer thr = srtNow()
+    //"sawOpposite": the reading has been on the starting side of the threshold during this command,
+    //so a later reading on the far side is a genuine crossing, not a value that was always there.
+    Boolean sawOpposite = (s != null) && ((cmd == "close") ? (s < thr) : (s >= thr))
+    state.cmdPending = [cmd: cmd, at: now(), proven: false, sawOpposite: sawOpposite]
+    Integer wait = mttSecNow() + ((commandMarginSec ?: 30) as Integer)
+    debuglog "verifying '${cmd}' within ${wait}s (threshold ${thr}, reading now ${s})"
+    runIn(wait, commandVerify)
+}
+
+void checkCommandProof(String door, Integer s) {
+    def p = state.cmdPending
+    if (!p || p.proven) return
+    Integer thr = srtNow()
+    if (p.cmd == "close") {
+        if (s < thr) p.sawOpposite = true
+        if (door == "closed" && s >= thr && p.sawOpposite) p.proven = true
+    } else {
+        if (s >= thr) p.sawOpposite = true
+        if (door == "open" && s < thr && p.sawOpposite) p.proven = true
+    }
+    state.cmdPending = p
+    if (p.proven) finishCommand(true)
+}
+
+//Deadline reached without proof: ask the unit once more, then decide.
+void commandVerify() {
+    if (!state.cmdPending) return
+    if (state.cmdPending.proven) { finishCommand(true); return }
+    pollNow()
+    runIn(20, commandVerifyFinal)
+}
+void commandVerifyFinal() {
+    def p = state.cmdPending
+    if (!p) return
+    finishCommand(p.proven as Boolean)
+}
+
+void finishCommand(Boolean ok) {
+    def p = state.cmdPending
+    if (!p) return
+    unschedule("commandVerify")
+    unschedule("commandVerifyFinal")
+    state.cmdPending = null
+    String when = new Date(p.at as Long).format("HH:mm:ss", location.timeZone)
+    if (ok) {
+        state.commandFailedAt = null
+        sendEvent(name: "lastCommandResult", value: "${p.cmd} at ${when}: confirmed by sensor")
+        infolog "'${p.cmd}' confirmed by the reflection sensor"
+    } else {
+        state.commandFailedAt = now()
+        state.commandFailedCmd = p.cmd
+        state.commandFailedWhen = when
+        sendEvent(name: "lastCommandResult", value: "${p.cmd} at ${when}: NOT confirmed (door ${device.currentValue('door')}, reading ${device.currentValue('sensor')})")
+        log.warn "${device.label?device.label:device.name}: '${p.cmd}' at ${when} was NOT confirmed by the reflection sensor - door reports ${device.currentValue('door')}, reading ${device.currentValue('sensor')}"
+    }
+    evaluateHealth()
+}
+
+//Scheduled every 15 minutes. If scheduled refresh is off, poll first so silence means something.
+void healthCheck() {
+    if (healthChecks == false) return
+    if (!refreshStats) { pollNow(); runIn(30, evaluateHealth) }
+    else evaluateHealth()
+}
+
+void evaluateHealth() {
+    String h = "ok"
+    String reason = "all checks passing"
+    if (healthChecks != false) {
+        Long t = now()
+        Long lastMsg = (state.lastMessageReceived ?: 0L) as Long
+        Long sinceChange = t - ((state.lastSensorChangeAt ?: t) as Long)
+        if (lastMsg > 0 && t - lastMsg > offlineMs()) {
+            h = "offline"
+            reason = "no answer from the Garadget since ${new Date(lastMsg).format('yyyy-MM-dd HH:mm', location.timeZone)}"
+        } else if (state.commandFailedAt) {
+            h = "commandFailed"
+            reason = "'${state.commandFailedCmd}' at ${state.commandFailedWhen} was not confirmed by the reflection sensor; door reports ${device.currentValue('door')}"
+        } else if (sinceChange > frozenMs()) {
+            h = "sensorFrozen"
+            reason = "reflection reading stuck at ${state.lastSensorValue} since ${new Date(state.lastSensorChangeAt as Long).format('yyyy-MM-dd HH:mm', location.timeZone)} (brightness ${device.currentValue('bright')}); door reports ${device.currentValue('door')}"
+        }
+    }
+    String was = device.currentValue("health")
+    if (was != h) {
+        String msg = "health ${was ?: 'unset'} -> ${h}: ${reason}"
+        if (h == "ok") infolog msg else log.warn "${device.label?device.label:device.name}: ${msg}"
+        //reason first, so anything subscribed to "health" reads a reason that matches it
+        sendEvent(name: "healthReason", value: reason)
+        sendEvent(name: "health", value: h, descriptionText: reason)
+    }
+}
+
+//Manual reset: clears a failed command and restarts the frozen clock from now.
+void resetHealth() {
+    infolog "health reset by command"
+    state.cmdPending = null
+    state.commandFailedAt = null
+    state.lastSensorChangeAt = now()
+    evaluateHealth()
 }
 
 //Logging below here
