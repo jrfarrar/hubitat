@@ -41,7 +41,49 @@
  *  -- you get told, instead of quietly getting a bad forecast.
  *
  *  ---------------------------------------------------------------------------
+ *  WHAT THE FIRST MONTH ON REAL HARDWARE TAUGHT (2026-11-02)
+ *  ---------------------------------------------------------------------------
+ *  Two things the harness could not know, because they are belief bugs, not
+ *  logic bugs:
+ *
+ *  1. The sensor goes dark for a day or two at a time (fixed by re-seating its
+ *     battery). A poll of currentValue() on a dead device returns the LAST value
+ *     it ever sent, so v1.1 logged 96 "readings" on a day the device sent none.
+ *     The stale alert could therefore never fire while polling was on, and a
+ *     dead day sailed through the minReadingsPerDay gate. v1.2 only records a
+ *     poll when the driver's lastUpdate attribute has advanced since the last
+ *     poll -- that attribute moves on every report even when the distance does
+ *     not, and it crosses Hub Mesh.
+ *
+ *  2. The error is NOT purely one-sided. On 10-31 and 11-01 the sensor produced
+ *     three short bursts (15-35 min, 3-6 readings each) of 192-197 mm against a
+ *     settled 445 mm, then went straight back. That is an UNDER-report, and the
+ *     v1.1 refill rule (two readings 50 mm below the reference inside 6 h) took
+ *     it as a refill. A real refill is permanent; a burst is not. v1.2 therefore
+ *     QUARANTINES refill-sized drops: they are held aside as a PENDING refill,
+ *     the owner is asked to confirm, and the daily series is only rewritten to
+ *     the new level once the refill is confirmed (by the owner, or automatically
+ *     after the low readings have dominated three whole days). A pending refill
+ *     whose day ends with the old level still winning is discarded as bad data.
+ *     Nothing in the minimum estimator changed.
+ *
+ *  ---------------------------------------------------------------------------
  *  Author: J.R. Farrar
+ *
+ *  Version: 1.2.0  (2026-11-02)
+ *    - Polls are gated on the driver's lastUpdate attribute: a dead sensor no
+ *      longer produces readings, so the stale alert and the min-readings gate
+ *      work as designed.
+ *    - Refill detection is now two-stage. A refill-sized drop opens a PENDING
+ *      refill (notification + Yes/No buttons on the app page) and its readings
+ *      are quarantined until confirmed. Confirmed by the owner, or automatically
+ *      after 3 whole days at the new level; dismissed automatically if the old
+ *      level still dominates at the day's rollup. Quarantined readings never
+ *      touch the daily minima, everMin or the trend.
+ *    - "Undo last refill" button: reverts the refill, drops the daily rows it
+ *      produced (and the matching CSV rows), restores the previous reference.
+ *      Written for the false refill of 2026-10-31.
+ *    - state.refillHistory (newest last) so undo can restore the previous anchor.
  *
  *  Version: 1.1.0  (2026-09-21)
  *    - REMOVED regeneration tracking (vibration handler, septic-pump switch
@@ -83,6 +125,18 @@ def pageConfig() {
 
         section(getFormat("header-green", "Status")) {
             paragraph getStatusDashboardHtml()
+        }
+
+        if (state.pendingRefill) {
+            section(getFormat("header-green", "Was the tank refilled?")) {
+                paragraph getPendingRefillHtml()
+                input "btnRefillYes", "button", title: "Yes, I added salt"
+                input "btnRefillNo", "button", title: "No, that is bad data"
+                paragraph "<small style='color:#666;'>Until you answer, the low readings are held " +
+                          "aside and the trend keeps using the old level. If the low readings win " +
+                          "three whole days in a row the refill is confirmed automatically; if the old " +
+                          "level wins a day, the low readings are discarded as bad data.</small>"
+            }
         }
 
         section(getFormat("header-green", "Sensor")) {
@@ -142,6 +196,11 @@ def pageConfig() {
             input "btnMarkFilled", "button", title: "I just filled the tank"
             input "btnCaptureFull", "button", title: "Capture current reading as FULL"
             input "btnCaptureEmpty", "button", title: "Capture current reading as NEEDS SALT"
+            if (state.lastRefillDate) {
+                input "btnUndoRefill", "button",
+                        title: "Undo last refill (${state.lastRefillDate}) and drop its data"
+            }
+            if (state.undoResult) paragraph "<small><b>Last undo:</b> ${state.undoResult}</small>"
             paragraph "<small style='color:#666;'>You do not need these to start -- the app logs " +
                       "level and depletion rate regardless. They are what turn the trend into a " +
                       "percentage and a predicted date. If you do not know them yet, press " +
@@ -232,6 +291,7 @@ def getStatusDashboardHtml() {
     sb << "<br>Last reading: ${state.lastReadingAt ?: 'never'}"
     if (state.lastRefillDate) sb << "<br>Last refill: <b>${state.lastRefillDate}</b>"
     if (state.refillCount) sb << " (${state.refillCount} logged)"
+    if (state.badDataBursts) sb << "<br>Bad-data bursts discarded: <b>${state.badDataBursts}</b>"
     sb << "</div>"
 
     // The self-check, always visible.
@@ -249,6 +309,17 @@ def getStatusDashboardHtml() {
     }
     sb << "</div>"
     return sb.toString()
+}
+
+def getPendingRefillHtml() {
+    def p = state.pendingRefill
+    if (!p) return ""
+    def q = state.quarantine ?: []
+    return "<div style='background:#2980b9;color:#fff;padding:10px;border-radius:5px;'>" +
+           "<b>Possible refill since ${p.since}</b><br>" +
+           "The level was <b>${p.ref} mm</b> and the sensor has read as low as <b>${p.mm} mm</b> " +
+           "(${q.size()} low reading${q.size() == 1 ? '' : 's'} held aside, " +
+           "${p.lowDays ?: 0} whole day${(p.lowDays ?: 0) == 1 ? '' : 's'} at the new level so far).</div>"
 }
 
 def getCalibrationHtml() {
@@ -306,7 +377,7 @@ def updated() {
 }
 
 def initialize() {
-    infolog "initialize - v1.1.0"
+    infolog "initialize - v1.2.0"
 
     state.readings          = state.readings ?: []
     state.dailySeries       = state.dailySeries ?: []
@@ -314,6 +385,12 @@ def initialize() {
     state.refillCount       = state.refillCount ?: 0
     state.assumptionViolations = state.assumptionViolations ?: 0
     state.today             = state.today ?: todayKey()
+    // v1.2.0
+    state.quarantine        = state.quarantine ?: []
+    state.lowDays           = state.lowDays ?: [:]
+    state.todayQuarantined  = state.todayQuarantined ?: 0
+    state.badDataBursts     = state.badDataBursts ?: 0
+    state.refillHistory     = state.refillHistory ?: []
 
     // v1.1.0 removed regeneration tracking; drop its state so an app upgraded in
     // place does not carry dead keys forever.
@@ -340,6 +417,13 @@ def initialize() {
     else if (pm <= 30) runEvery30Minutes("pollSensor")
     else               runEvery1Hour("pollSensor")
 
+    // Seed the liveness mark from the device so a restart does not count the
+    // device's last-ever value as a fresh reading; the first real report after
+    // this point is the first reading.
+    if (saltSensor) {
+        def seed = saltSensor.currentValue("lastUpdate")?.toString()
+        if (seed) state.lastDeviceMark = seed
+    }
     pollSensor()
 
     infolog "subscribed to ${saltSensor?.displayName} [${settings.distAttr ?: 'rawDistance'}], " +
@@ -355,12 +439,42 @@ def distanceHandler(evt) {
     recordReading(mm, now())
 }
 
-/** Scheduled read of the current value -- see the note in initialize(). */
+/**
+ *  Scheduled read of the current value -- see the note in initialize().
+ *
+ *  Gated on liveness. currentValue() on a device that has stopped reporting
+ *  returns its last value forever, which v1.1 counted as a fresh reading (96
+ *  of them on 2026-10-29, a day the device sent nothing). The driver's
+ *  lastUpdate attribute advances on every report -- including reports where
+ *  the distance did not change, which rawDistance's own event date does not --
+ *  and it is carried across Hub Mesh. If it has not moved since the last poll,
+ *  the device has not spoken, and we record nothing.
+ */
 def pollSensor() {
     if (!saltSensor) return
     def v = saltSensor.currentValue(settings.distAttr ?: "rawDistance")
     if (v == null) return
+    if (!deviceSpokeSinceLastPoll()) {
+        debuglog "poll skipped: device has not reported since the last poll"
+        return
+    }
     recordReading(safeToBigDecimal(v).intValue(), now())
+}
+
+/** True if the device has reported since the previous poll (and remembers this one). */
+private boolean deviceSpokeSinceLastPoll() {
+    def mark = saltSensor.currentValue("lastUpdate")?.toString()
+    if (!mark) {
+        // Driver without a lastUpdate attribute: fall back to the hub's own
+        // last-activity stamp, which also moves on every report.
+        def la = null
+        try { la = saltSensor.getLastActivity() } catch (e) { la = null }
+        mark = la ? la.time.toString() : null
+    }
+    if (!mark) return true                         // no liveness signal at all: fail open
+    if (mark == state.lastDeviceMark) return false
+    state.lastDeviceMark = mark
+    return true
 }
 
 private void recordReading(Integer mm, Long t) {
@@ -376,13 +490,40 @@ private void recordReading(Integer mm, Long t) {
     def tk = todayKey()
     if (state.today && state.today != tk) rollupDay()
 
-    def buf = state.readings ?: []
-    buf << [t: t, mm: mm]
     // Keep a little more than the longest window we ever look back over -- both
     // windows are user-settable and either one can be the larger.
     long widest = Math.max((settings.minWindowHours ?: 24) as long,
                            (settings.refillWindowHours ?: 6) as long)
     long cutoff = t - (widest + 6L) * 3600000L
+
+    // Refill-sized drops are QUARANTINED, not recorded. A real refill is
+    // permanent and will be confirmed; a burst of under-reports (measured
+    // 2026-10-31: three bursts of 192-197 mm against 445) is not, and must
+    // never reach the daily minimum, everMin or the trend.
+    def thr = refillThreshold()
+    if (thr != null && mm <= thr) {
+        def q = state.quarantine ?: []
+        q << [t: t, mm: mm]
+        q = q.findAll { (it.t as long) >= cutoff }
+        if (q.size() > 400) q = q[-400..-1]
+        state.quarantine = q
+        state.todayQuarantined = (state.todayQuarantined ?: 0) + 1
+        // Per-day tally of the held readings, so a confirmation can rewrite every
+        // day of the pending period even after the raw buffer has aged out.
+        def ld = state.lowDays ?: [:]
+        def e = ld[tk] ?: [mm: mm, max: mm, n: 0]
+        e.mm = Math.min(e.mm as int, mm); e.max = Math.max(e.max as int, mm); e.n = (e.n as int) + 1
+        ld[tk] = e
+        state.lowDays = ld
+        state.lastReadingMs = t                     // the device IS alive
+        state.lastReadingAt = new Date(t).format("yyyy-MM-dd HH:mm:ss", location.timeZone)
+        debuglog "quarantined ${mm} mm (<= ${thr}); ${q.size()} held"
+        checkRefill()
+        return
+    }
+
+    def buf = state.readings ?: []
+    buf << [t: t, mm: mm]
     buf = buf.findAll { (it.t as long) >= cutoff }
     if (buf.size() > 400) buf = buf[-400..-1]
     state.readings = buf
@@ -396,12 +537,27 @@ private void recordReading(Integer mm, Long t) {
     state.lastReadingAt = new Date(t).format("yyyy-MM-dd HH:mm:ss", location.timeZone)
 
     debuglog "reading ${mm} mm (today min ${state.todayMin}, max ${state.todayMax}, n ${state.todayCount})"
+}
 
-    checkRefill()
+// ============================================================================
+//   REFILL DETECTION  (two-stage since v1.2.0)
+// ============================================================================
+
+/**
+ *  Readings at or below this are refill-sized drops; null until there is a
+ *  CLOSED day to measure from. A partial first day is not a reference: its
+ *  running minimum can itself be a far echo, and quarantining everything below
+ *  it would hold the true readings hostage (harness 1b caught exactly that --
+ *  first poll 351, every 241 after it quarantined, phantom refill three days on).
+ */
+private Integer refillThreshold() {
+    def series = sinceRefill()
+    if (!series) return null
+    return (series[-1].mm as int) - ((settings.refillDropMm ?: 50) as int)
 }
 
 /**
- *  Refill detection.
+ *  Stage 1 -- open a PENDING refill.
  *
  *  Deliberately built on the minimum over a window rather than on CONSECUTIVE
  *  readings: the sensor alternates between clusters, so a "3 in a row below X"
@@ -411,39 +567,174 @@ private void recordReading(Integer mm, Long t) {
  *  level -- not merely the number of readings in the window. Harness scenario 3
  *  caught that: one fluke reading of 120 mm alongside an ordinary 305 mm reading
  *  satisfied "2 readings in the window" and declared a refill that never happened.
+ *
+ *  Since v1.2.0 this no longer registers the refill. It opens a pending one, asks
+ *  the owner, and leaves the decision to confirmRefill() / dismissRefill() or to
+ *  the rollup's automatic rules.
  */
 private void checkRefill() {
+    if (state.pendingRefill) { updatePendingLow(); return }
     def floorRef = referenceLevel()
     if (floorRef == null) return
 
-    int drop = (settings.refillDropMm ?: 50) as int
     int need = (settings.refillConfirmReadings ?: 2) as int
-    int threshold = floorRef - drop
+    int threshold = refillThreshold()
 
-    def buf = state.readings ?: []
+    def q = state.quarantine ?: []
     long cutoff = now() - ((settings.refillWindowHours ?: 6) as long) * 3600000L
-    def confirming = buf.findAll { (it.t as long) >= cutoff && (it.mm as int) <= threshold }
+    def confirming = q.findAll { (it.t as long) >= cutoff && (it.mm as int) <= threshold }
     if (confirming.size() < need) return
 
     int newMm = confirming.collect { it.mm as int }.min()
-    registerRefill(newMm, "level rose ${floorRef - newMm} mm (${floorRef} -> ${newMm}), " +
-                          "confirmed by ${confirming.size()} readings at or below ${threshold} mm")
+    state.pendingRefill = [since: todayKey(), ref: floorRef as int, mm: newMm, lowDays: 0,
+                           openedMs: now()]
+    infolog "POSSIBLE REFILL: ${floorRef} -> ${newMm} mm, ${confirming.size()} readings at or " +
+            "below ${threshold} mm -- awaiting confirmation"
+    notifyOnce("refillq", "${appLabel()}: looks like the salt tank was refilled " +
+                          "(${floorRef} -> ${newMm} mm). Open the app and confirm Yes or No.")
 }
 
-private void registerRefill(Integer mm, String why) {
-    state.lastRefillDate = todayKey()
+private void updatePendingLow() {
+    def p = state.pendingRefill
+    def q = state.quarantine ?: []
+    if (!p || !q) return
+    int lowest = q.collect { it.mm as int }.min()
+    if (lowest < (p.mm as int)) { p.mm = lowest; state.pendingRefill = p }
+}
+
+/** Stage 2a -- the refill is real. Rewrite the quarantined days to the new level. */
+private void confirmRefill(String how) {
+    def p = state.pendingRefill
+    if (!p) return
+    def q = state.quarantine ?: []
+    def byDay = state.lowDays ?: [:]
+    if (!byDay) { state.pendingRefill = null; return }
+    def days = byDay.keySet().collect { it as String }.sort { dayNum(it) }
+    def firstDay = days[0]
+    int newMm = byDay[firstDay].mm as int
+
+    registerRefill(newMm, firstDay, "${how}: ${p.ref} -> ${newMm} mm")
+
+    // Days already rolled up while pending were recorded at the OLD level (only
+    // clean readings counted). Replace them with the quarantined minima.
+    def series = (state.dailySeries ?: []).findAll { !(it.d in days) || it.d == todayKey() }
+    days.each { d ->
+        if (d == todayKey()) return
+        def e = byDay[d]
+        series << [d: d, mm: e.mm, max: e.max, n: e.n, refill: (d == firstDay), violation: false]
+    }
+    series = series.sort { dayNum(it.d as String) ?: 0L }
+    if (series.size() > 400) series = series[-400..-1]
+    state.dailySeries = series
+
+    // Today's open tally absorbs its quarantined readings.
+    if (byDay[todayKey()]) {
+        def e = byDay[todayKey()]
+        state.todayMin   = (state.todayMin == null) ? e.mm : Math.min(state.todayMin as int, e.mm as int)
+        state.todayMax   = (state.todayMax == null) ? e.max : Math.max(state.todayMax as int, e.max as int)
+        state.todayCount = (state.todayCount ?: 0) + (e.n as int)
+        state.refillFlagToday = (firstDay == todayKey())
+    }
+    def buf = (state.readings ?: []) + q
+    state.readings = buf.sort { it.t as long }
+    state.everMin = (state.everMin == null) ? newMm : Math.min(state.everMin as int, newMm)
+
+    state.quarantine = []
+    state.lowDays = [:]
+    state.todayQuarantined = 0
+    state.pendingRefill = null
+    if (settings.enableCsvLogging) rewriteCsvDays(days.findAll { it != todayKey() }, series)
+}
+
+/** Stage 2b -- bad data. Drop the quarantined readings and forget the question. */
+private void dismissRefill(String how) {
+    def p = state.pendingRefill
+    int n = (state.quarantine ?: []).size()
+    state.quarantine = []
+    state.lowDays = [:]
+    state.todayQuarantined = 0
+    state.pendingRefill = null
+    state.badDataBursts = (state.badDataBursts ?: 0) + 1
+    def sent = state.notifiedOn ?: [:]; sent.remove("refillq"); state.notifiedOn = sent
+    infolog "possible refill DISMISSED (${how}): ${n} reading(s) at/below ${p?.mm} mm discarded as bad data"
+}
+
+private void registerRefill(Integer mm, String onDate, String why) {
+    // Remember the previous anchor so an undo can restore it.
+    def hist = state.refillHistory ?: []
+    hist << [date: onDate, mm: mm, prevDate: state.lastRefillDate, prevMm: state.lastRefillMm,
+             prevRef: referenceLevel()]
+    if (hist.size() > 20) hist = hist[-20..-1]
+    state.refillHistory = hist
+
+    state.lastRefillDate = onDate
     state.lastRefillMm = mm
     state.refillCount = (state.refillCount ?: 0) + 1
     state.trendAnchorMm = mm
-    state.refillFlagToday = true
+    if (onDate == todayKey()) state.refillFlagToday = true
     // Everything before a refill describes a different tank-load; the regression
     // must start over or it will average across the step and predict nonsense.
-    infolog "REFILL ${why}"
-    if (state.dailySeries) {
-        def last = state.dailySeries[-1]
-        if (last.d == todayKey()) last.refill = true
-    }
+    infolog "REFILL on ${onDate}: ${why}"
+    def series = state.dailySeries ?: []
+    def row = series.find { it.d == onDate }
+    if (row) row.refill = true
+    state.dailySeries = series
+    def sent = state.notifiedOn ?: [:]; sent.remove("refillq"); state.notifiedOn = sent
     clearLowAlert()
+}
+
+/**
+ *  Undo the most recent refill. Reverts the anchor to what it was, drops every
+ *  daily row since the refill date that sits at the refill level (they describe
+ *  the phantom tank-load), purges such readings from the live buffer, rewrites
+ *  the CSV, and recomputes everMin. Written for the false refill of 2026-10-31.
+ */
+private String undoLastRefill() {
+    if (!state.lastRefillDate) return "no refill to undo"
+    String date = state.lastRefillDate
+    int drop = (settings.refillDropMm ?: 50) as int
+    def hist = state.refillHistory ?: []
+    def h = hist ? hist[-1] : null
+    Long anchor = dayNum(date)
+
+    // The level before the refill: from history if we have it, else the last
+    // series row before the refill date.
+    Integer prevRef = h?.prevRef != null ? (h.prevRef as int) : null
+    if (prevRef == null) {
+        def before = (state.dailySeries ?: []).findAll { def n = dayNum(it.d as String); n != null && n < anchor }
+        prevRef = before ? (before[-1].mm as int) : null
+    }
+    if (prevRef == null) return "cannot undo: no level before ${date} to restore"
+    int thr = prevRef - drop
+
+    def series = state.dailySeries ?: []
+    def dropped = series.findAll { def n = dayNum(it.d as String); n != null && n >= anchor && (it.mm as int) <= thr }
+    series = series.findAll { !(it in dropped) }
+    series.each { if (it.d == date) it.refill = false }
+    state.dailySeries = series
+
+    state.readings = (state.readings ?: []).findAll { (it.mm as int) > thr }
+    def tq = (state.readings ?: []).findAll {
+        new Date(it.t as long).format("yyyy-MM-dd", location.timeZone) == todayKey() }
+    state.todayMin = tq ? tq.collect { it.mm as int }.min() : null
+    state.todayMax = tq ? tq.collect { it.mm as int }.max() : null
+    state.todayCount = tq.size()
+    state.refillFlagToday = false
+
+    state.lastRefillDate = h ? h.prevDate : null
+    state.lastRefillMm   = h ? h.prevMm : null
+    state.trendAnchorMm  = h ? h.prevMm : null
+    state.refillCount = Math.max(0, ((state.refillCount ?: 1) as int) - 1)
+    if (hist) { hist = hist[0..<(hist.size() - 1)]; state.refillHistory = hist }
+
+    def allMins = series.collect { it.mm as int } + (state.todayMin != null ? [state.todayMin as int] : [])
+    state.everMin = allMins ? allMins.min() : null
+
+    if (settings.enableCsvLogging && dropped) rewriteCsvDays(dropped.collect { it.d as String }, series)
+    def msg = "undid refill of ${date}: dropped ${dropped.size()} day(s) at or below ${thr} mm " +
+              "(${dropped.collect { it.d[5..-1] + '=' + it.mm }.join(', ')}), reference back to ${prevRef} mm"
+    log.warn "${appLabel()}: ${msg}"
+    return msg
 }
 
 /**
@@ -502,6 +793,43 @@ def rollupDay() {
     def closing = state.today ?: todayKey()
     int minReads = (settings.minReadingsPerDay ?: 3) as int
 
+    // A pending refill is judged on the whole day before the day is closed.
+    // Real refill: the low readings own the day (and will own the next ones).
+    // Burst: the old level still wins the day -> bad data, discard.
+    if (state.pendingRefill) {
+        int lowN = (state.todayQuarantined ?: 0) as int
+        int oldN = (state.todayCount ?: 0) as int
+        if (lowN + oldN >= minReads) {
+            if (lowN > oldN) {
+                def p = state.pendingRefill
+                p.lowDays = ((p.lowDays ?: 0) as int) + 1
+                state.pendingRefill = p
+                if ((p.lowDays as int) >= 3) {
+                    confirmRefill("automatic after ${p.lowDays} whole days at the new level")
+                } else {
+                    notifyOnce("refillq", "${appLabel()}: still looks refilled (${p.ref} -> ${p.mm} mm, " +
+                                          "${p.lowDays} day${p.lowDays == 1 ? '' : 's'}). Confirm Yes or No in the app.")
+                }
+            } else {
+                dismissRefill("old level ${oldN} vs ${lowN} low readings on ${closing}")
+            }
+        }
+    }
+
+    // confirmRefill() may already have written this day's row from the
+    // quarantined readings; the clean readings that day were the OLD level and
+    // must not overwrite it.
+    if ((state.dailySeries ?: []).any { it.d == closing }) {
+        debuglog "rollup ${closing}: row already written by refill confirmation"
+        state.today = todayKey()
+        state.todayMin = null
+        state.todayMax = null
+        state.todayCount = 0
+        state.todayQuarantined = 0
+        state.refillFlagToday = false
+        return
+    }
+
     if (state.todayMin == null || (state.todayCount ?: 0) < minReads) {
         // Not enough samples to trust a minimum. Record nothing rather than a
         // guess: with one or two samples the "minimum" can simply BE a far echo,
@@ -541,10 +869,17 @@ def rollupDay() {
         if (settings.enableCsvLogging) logDayToCsv(entry)
     }
 
+    // Lone flukes that never became a pending refill: forget their day tallies.
+    if (!state.pendingRefill && state.lowDays) {
+        Long c = dayNum(closing)
+        state.lowDays = (state.lowDays as Map).findAll { k, v -> def n = dayNum(k as String); n != null && n >= c }
+    }
+
     state.today = todayKey()
     state.todayMin = null
     state.todayMax = null
     state.todayCount = 0
+    state.todayQuarantined = 0
     state.refillFlagToday = false
 }
 
@@ -701,6 +1036,37 @@ private void appendCsv(String fileName, String header, String line) {
 }
 
 /**
+ *  Replace the CSV rows for the given dates with whatever the series now holds
+ *  for them (nothing, if the day was dropped). Download-filter-append-upload per
+ *  year file, same mechanics as appendCsv().
+ */
+private void rewriteCsvDays(List dates, List series) {
+    if (!dates) return
+    def years = dates.collect { it.toString()[0..3] }.unique()
+    years.each { y ->
+        def fname = getLevelFileName(y)
+        def content = ""
+        try { def b = downloadHubFile(fname); if (b) content = new String(b) } catch (e) { return }
+        if (!content) return
+        def kept = content.split("\n").findAll { l ->
+            def d = l?.split(",", -1)?.getAt(0)?.trim()
+            !(d in dates)
+        }
+        def out = new StringBuilder(kept.join("\n").trim() + "\n")
+        series.findAll { it.d in dates && it.d.toString().startsWith(y) }.each { e ->
+            out << "${e.d},${e.mm},${e.max ?: ''},${e.n ?: ''},${e.refill ? 'YES' : 'NO'}," +
+                   "${e.violation ? 'YES' : 'NO'},,,\n"
+        }
+        try {
+            uploadHubFile(fname, out.toString().getBytes("UTF-8"))
+            infolog "rewrote ${fname}: ${dates} replaced"
+        } catch (e) {
+            log.error "${appLabel()}: CSV rewrite failed (${fname}): ${e.message}"
+        }
+    }
+}
+
+/**
  *  Rebuild the daily series, refills and violation count from this app's own
  *  CSVs. State only holds whatever accumulated while the app was running; the
  *  CSV is the complete record. Uses the same rules as rollupDay() so the
@@ -784,8 +1150,23 @@ def rebuildFromCsv() {
 def appButtonHandler(btn) {
     switch (btn) {
         case "btnMarkFilled":
-            def cur = currentSaltMm()
-            registerRefill(cur, "marked by hand")
+            if (state.pendingRefill) {
+                confirmRefill("marked filled by hand")
+            } else {
+                registerRefill(currentSaltMm(), todayKey(), "marked by hand")
+            }
+            break
+
+        case "btnRefillYes":
+            confirmRefill("confirmed by owner")
+            break
+
+        case "btnRefillNo":
+            dismissRefill("owner said no")
+            break
+
+        case "btnUndoRefill":
+            state.undoResult = undoLastRefill()
             break
 
         case "btnCaptureFull":
@@ -821,6 +1202,15 @@ def appButtonHandler(btn) {
             state.todayMin = null
             state.todayMax = null
             state.todayCount = 0
+            state.quarantine = []
+            state.lowDays = [:]
+            state.todayQuarantined = 0
+            state.pendingRefill = null
+            state.badDataBursts = 0
+            state.refillHistory = []
+            state.lastRefillMm = null
+            state.trendAnchorMm = null
+            state.undoResult = null
             break
 
         case "btnRefresh":
