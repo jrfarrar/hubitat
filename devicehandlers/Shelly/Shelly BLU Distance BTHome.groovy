@@ -28,6 +28,8 @@
  *  Reports: distance (in/cm/mm), battery %, rssi, vibration (+acceleration), button.
  *
  *  Author: J.R. Farrar
+ *  Version: 1.6  (thresholdTimer emits only on change -- it was 2 events per
+ *                 reading, 11.5k in 31 days, all identical)
  *  Version: 1.5  (adds an upper validity limit to drop out-of-range far-echo readings)
  */
 
@@ -274,14 +276,14 @@ private void evaluateThreshold(BigDecimal mm) {
             state.pendingOn = true
             int secs = (((settings.timeDelayMinutes as BigDecimal)) * 60).intValue()
             runIn(secs, "thresholdDelayElapsed", [overwrite: true])
-            sendEvent(name: "thresholdTimer", value: "ON in ${settings.timeDelayMinutes} min if still over")
+            setThresholdTimer("ON in ${settings.timeDelayMinutes} min if still over")
             if (logEnable) log.debug "threshold met; scheduling ON in ${secs}s"
         } else {
             setThresholdSwitch("on")
         }
     } else {
         if (state.pendingOn) { unschedule("thresholdDelayElapsed"); state.pendingOn = false }
-        sendEvent(name: "thresholdTimer", value: "idle")
+        setThresholdTimer("idle")
         setThresholdSwitch("off")
     }
 }
@@ -292,12 +294,25 @@ void thresholdDelayElapsed() {
     if (mm != null && thresholdMet(mm as BigDecimal)) {
         setThresholdSwitch("on")
     } else {
-        sendEvent(name: "thresholdTimer", value: "idle")
+        setThresholdTimer("idle")
+    }
+}
+
+// thresholdTimer is a status string, not a measurement. evaluateThreshold() runs on
+// EVERY inbound reading, and the not-met branch emitted "idle" TWICE per reading --
+// once directly and once inside setThresholdSwitch() -- so a sensor reporting every
+// ~5 min produced 11,532 thresholdTimer events in 31 days (measured 2026-11-03 in
+// hubitat-tsdb), exactly 2x the sensor's own report rate, every one of them the same
+// value. That fills this device's hub event history with nothing, which is why its
+// useful event depth was only ~1 day. Emit only on an actual change.
+private void setThresholdTimer(String v) {
+    if (device.currentValue("thresholdTimer") != v) {
+        sendEvent(name: "thresholdTimer", value: v)
     }
 }
 
 private void setThresholdSwitch(String val) {
-    sendEvent(name: "thresholdTimer", value: "idle")
+    setThresholdTimer("idle")
     if (device.currentValue("switch") != val) {
         sendEvent(name: "switch", value: val,
                   descriptionText: "${device.displayName} switch ${val} (threshold)")
@@ -313,7 +328,7 @@ void off() { sendEvent(name: "switch", value: "off", descriptionText: "${device.
 void resetThresholdTimer() {
     unschedule("thresholdDelayElapsed")
     state.pendingOn = false
-    sendEvent(name: "thresholdTimer", value: "idle")
+    setThresholdTimer("idle")
     if (txtEnable) log.info "${device.displayName} threshold timer reset"
 }
 
