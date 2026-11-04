@@ -8,7 +8,7 @@ before any rewrite goes near the hub.
 
 Precedent: running a harness on the garden-moisture app found six production
 bugs a careful read-through had missed. The Salt Monitor followed the same
-pattern (Apps/Softener/harness.py).
+pattern (Apps/SaltTank/harness.py).
 
 WHY THIS ONE IS DIFFERENT: this app is TIMER driven, not reading driven. The
 end of a cycle is decided by a runIn() that fires on wall-clock time, and is

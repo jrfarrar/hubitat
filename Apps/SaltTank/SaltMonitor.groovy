@@ -109,7 +109,7 @@ definition(
     iconUrl: "",
     iconX2Url: "",
     iconX3Url: "",
-    importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/Softener/SaltMonitor.groovy"
+    importUrl: "https://raw.githubusercontent.com/jrfarrar/hubitat/master/Apps/SaltTank/SaltMonitor.groovy"
 )
 
 preferences {
