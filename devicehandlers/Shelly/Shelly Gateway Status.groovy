@@ -10,6 +10,10 @@
  * 1.3.0 - 01/07/26 - Added MQTT command to request immediate status updates, WiFi monitoring, fixed script tracking for deleted scripts
  * 1.3.1 - 02/04/26 - Fixed connection recovery: watchdog survives reboots, detects stale connections,
  *                      non-blocking reconnect, explicit disconnect before reconnect, fixed cron for >59 min
+ * 1.3.2 - 11/12/26 - Silence is not an outage: the gateway only publishes when something changes, so after
+ *                      offlineTimeout minutes of quiet the driver now ASKS it for status and marks it offline
+ *                      (and reconnects) only if nothing answers within 30 seconds. Before this it flipped
+ *                      offline/online and reconnected 50-120 times a day on a healthy gateway.
  */
 
 metadata {
@@ -61,7 +65,7 @@ metadata {
 
 def setVersion(){
     state.name = "Shelly Gateway Status MQTT"
-    state.version = "1.3.1 - Shelly Gateway Status MQTT Device Handler"   
+    state.version = "1.3.2 - Shelly Gateway Status MQTT Device Handler"   
 }
 
 void installed() {
@@ -391,13 +395,10 @@ void checkOffline() {
     def currentTime = now()
     
     if (currentTime - lastSeen > timeoutMillis) {
-        def minsSince = Math.round((currentTime - lastSeen) / 60000)
-        log.warn "No updates received for ${minsSince} minutes - marking gateway offline"
-        setOnlineStatus("false")
-        
-        // Connection may be stale even if isConnected() says true - force reconnect
-        infolog "No data in ${minsSince} minutes - forcing MQTT reconnect"
-        reconnectMqtt()
+        // 1.3.2: silence alone is not an outage - the gateway only publishes when something changes.
+        // Ask it for its status and let verifyProbe() decide. Online/presence and the connection are
+        // left alone until then.
+        probeGateway()
     } else {
         // This is a safety catch. If we are here, but time hasn't elapsed, 
         // it means we got an update recently. Reschedule the check.
@@ -405,6 +406,49 @@ void checkOffline() {
         if (timeRemaining > 0) runIn(timeRemaining.toInteger(), checkOffline)
     }
 }
+
+/**
+ * 1.3.2 - After a quiet period, ask the gateway for its status; verifyProbe() decides probeWaitSecs() later.
+ * A healthy gateway answers within about a second (measured 2026-11-12), and the answer goes through parse(),
+ * which moves lastSeenMillis and re-arms the offline timer.
+ */
+void probeGateway() {
+    def minsSince = Math.round((now() - (state.lastSeenMillis ?: 0)) / 60000)
+    state.probeSentMillis = now()
+    if (gatewayName && interfaces.mqtt.isConnected()) {
+        debuglog "No data in ${minsSince} minutes - asking the gateway for status, deciding in ${probeWaitSecs()} seconds"
+        try {
+            interfaces.mqtt.publish("${gatewayName}/command", "status_update")
+        } catch (e) {
+            log.warn "Status request failed: ${e.message}"
+        }
+    } else {
+        log.warn "No data in ${minsSince} minutes and MQTT is not connected - reconnecting, deciding in ${probeWaitSecs()} seconds"
+        reconnectMqtt()
+    }
+    runIn(probeWaitSecs(), verifyProbe)
+}
+
+/**
+ * 1.3.2 - Did anything arrive since the status request? If so the gateway is fine and nothing changes.
+ * If not, this is the old 1.3.1 behaviour: mark it offline and force a reconnect (the connection may be
+ * stale even when isConnected() says true).
+ */
+void verifyProbe() {
+    def lastSeen = state.lastSeenMillis ?: 0
+    def probeSent = state.probeSentMillis ?: 0
+    if (probeSent > 0 && lastSeen >= probeSent) {
+        debuglog "Gateway answered the status request - still online"
+        return
+    }
+    def minsSince = Math.round((now() - lastSeen) / 60000)
+    log.warn "No updates received for ${minsSince} minutes and no answer to a status request in ${probeWaitSecs()} seconds - marking gateway offline"
+    setOnlineStatus("false")
+    infolog "Forcing MQTT reconnect"
+    reconnectMqtt()
+}
+
+Integer probeWaitSecs() { return 30 }
 
 void refresh(){
     watchDog()
