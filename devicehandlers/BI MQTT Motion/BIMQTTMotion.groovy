@@ -49,7 +49,16 @@
  *                     - New optional topic {topicName}/ai carrying Blue Iris &MEMO -> aiLabel, aiConfidence, aiSummary
  *                     - Uptime arithmetic fixed (36 h showed as "2d 12h"); uptime event hourly, not every 5 min
  *                     - Duplicate "connection lost" messages no longer count toward the emergency brake
+ *  1.4.1 - 11/14/26 - A retained 'active' that the broker replays when the driver (re)subscribes no longer raises
+ *                      motion: a stale value left at the broker fired rules at every reconnect. Hubitat does not
+ *                      expose the MQTT retained flag, so anything arriving within 5 s of subscribing counts as a
+ *                      replay. 'inactive', type and ai are still taken from the replay.
+ *                     - Blue Iris sends the literal "(empty)" when an alert has no AI finding -> aiLabel "none"
  */
+
+import groovy.transform.Field
+
+@Field static final long REPLAY_WINDOW_MS = 5000   // see isReplay()
 
 metadata {
     definition (name: "BI MQTT Motion",
@@ -103,7 +112,7 @@ metadata {
 
 void setVersion() {
     state.name = "BI MQTT Motion"
-    state.version = "1.4.0"
+    state.version = "1.4.1"
 }
 
 // ---------------------------------------------------------------- lifecycle
@@ -206,7 +215,7 @@ void parse(String description) {
     debuglog "Topic: ${topic}, Message: ${payload}"
 
     if (kind == "motion") {
-        handleMotion(payload)
+        handleMotion(payload, isReplay())
     } else if (kind == "type") {
         if (payload) {
             infolog "Type: ${payload}"
@@ -219,8 +228,18 @@ void parse(String description) {
     }
 }
 
-private void handleMotion(String payload) {
-    if (payload == "active") {
+// True for the first seconds after subscribing: what arrives then is the broker replaying retained values,
+// not something that just happened. (interfaces.mqtt.parseMessage gives topic and payload only - no retained flag.)
+private boolean isReplay() {
+    if (!state.subscribedAt) return false
+    return (now() - (state.subscribedAt as long)) < REPLAY_WINDOW_MS
+}
+
+private void handleMotion(String payload, boolean replay = false) {
+    if (payload == "active" && replay) {
+        // Only a live 'active' is motion. A replayed one may be hours old (Blue Iris missed its 'inactive').
+        infolog "Ignoring retained 'active' replayed at connect - motion stays ${device.currentValue('motion')}"
+    } else if (payload == "active") {
         infolog "Motion detected - active"
         sendEvent(name: "motion", value: "active", descriptionText: "${dName()} motion is active")
         sendEvent(name: "lastMotionTime", value: new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone))
@@ -245,6 +264,13 @@ private void handleAi(String payload) {
     if (!payload) return
     infolog "AI: ${payload}"
     sendEvent(name: "aiSummary", value: payload)
+
+    // Blue Iris sends the literal text "(empty)" when the alert has no AI finding
+    if (payload.equalsIgnoreCase("(empty)")) {
+        sendEvent(name: "aiLabel", value: "none")
+        sendEvent(name: "aiConfidence", value: 0, unit: "%")
+        return
+    }
 
     String bestLabel = null
     Integer bestConf = -1
@@ -327,6 +353,7 @@ boolean connectMqtt() {
             return false
         }
 
+        state.subscribedAt = now()       // start of the replay window - see isReplay()
         interfaces.mqtt.subscribe("${doorName}/motion")
         interfaces.mqtt.subscribe("${doorName}/type")
         interfaces.mqtt.subscribe("${doorName}/ai")
