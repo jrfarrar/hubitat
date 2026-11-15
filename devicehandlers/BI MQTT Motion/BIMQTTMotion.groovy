@@ -24,7 +24,8 @@
  *  - Emergency brake prevents reconnection loops
  *  - Manual reset available via "Reset Connection" command
  *  - Optional scheduled watchdog for connection health monitoring
- *  - Quiet-connection check: reconnect (and re-read retained state) if no data within configured time
+ *  - Quiet-connection check: after the configured quiet time, probe the link (publish to an own topic and
+ *    wait for the echo); reconnect only if the probe does not come back
  *
  *  Version History:
  *  1.1.0 - 08/20/22 - Initial Release
@@ -54,11 +55,19 @@
  *                      expose the MQTT retained flag, so anything arriving within 5 s of subscribing counts as a
  *                      replay. 'inactive', type and ai are still taken from the replay.
  *                     - Blue Iris sends the literal "(empty)" when an alert has no AI finding -> aiLabel "none"
+ *  1.4.2 - 11/15/26 - One motion event per episode: Blue Iris publishes 'active' for every alert (2-4 within
+ *                      seconds); only the first one of an episode is posted, the rest just restart the timeout.
+ *                      A repeated 'inactive' is not posted either.
+ *                     - Health check: silence is not an outage. After the quiet time the driver publishes a probe
+ *                      to its own topic and reconnects only if the probe does not come back within 30 s
+ *                      (was: reconnect, with a warning, every time a camera had been quiet).
+ *                     - "nothing found" on /ai -> aiLabel "none"
  */
 
 import groovy.transform.Field
 
 @Field static final long REPLAY_WINDOW_MS = 5000   // see isReplay()
+@Field static final int PROBE_WAIT_SECONDS = 30    // see probeLink()
 
 metadata {
     definition (name: "BI MQTT Motion",
@@ -102,7 +111,7 @@ metadata {
             input name: "retryTime", type: "number", title: "Seconds between reconnection attempts", defaultValue: 300, range: "60..3600", required: true
             input name: "watchDogSched", type: "bool", title: "Enable scheduled connection health checks?", defaultValue: false, required: true
             input name: "watchDogTime", type: "number", title: "Minutes between health checks", defaultValue: 15, range: "1..240", required: true, description: "1-59 = every X minutes, 60-240 = converted to hourly (e.g., 120 = every 2 hours)"
-            input name: "staleMinutes", type: "number", title: "Minutes without data before forcing reconnect", defaultValue: 60, range: "5..1440", required: true, description: "If no MQTT messages received within this time, the health check reconnects. A quiet camera looks the same as a dead link, so set this higher for low-traffic cameras."
+            input name: "staleMinutes", type: "number", title: "Minutes without data before the health check probes the link", defaultValue: 60, range: "5..1440", required: true, description: "After this much silence the health check publishes a probe to its own topic. It reconnects only if the probe does not come back within 30 seconds - a quiet camera is left alone."
         }
         section("<b>Logging</b>") {
             input name: "logLevel", title: "IDE logging level", multiple: false, required: true, type: "enum", options: getLogLevels(), submitOnChange: false, defaultValue: "1"
@@ -112,7 +121,7 @@ metadata {
 
 void setVersion() {
     state.name = "BI MQTT Motion"
-    state.version = "1.4.1"
+    state.version = "1.4.2"
 }
 
 // ---------------------------------------------------------------- lifecycle
@@ -159,6 +168,10 @@ void initialize() {
     }
 
     if (!connectMqtt()) connectionLost()
+
+    // unschedule() above also dropped a running motion timeout - put it back if motion is active
+    Integer mins = autoInactiveMins()
+    if (mins > 0 && device.currentValue("motion", true) == "active") runIn(mins * 60, autoInactive)
 
     // If logs are in "Need Help" turn down to "Running" after an hour
     if (currentLogLevel() == 2) runIn(3600, logsOff)
@@ -214,7 +227,14 @@ void parse(String description) {
     String kind = levels ? levels.last() : ""
     debuglog "Topic: ${topic}, Message: ${payload}"
 
-    if (kind == "motion") {
+    if (topic == probeTopic()) {
+        // Our own probe coming back: the link is alive. (A stray or old probe just counts as traffic.)
+        if (state.probeNonce && payload == state.probeNonce) {
+            state.probeNonce = null
+            state.probeAnsweredAt = now()
+            debuglog "Probe echoed - link is alive"
+        }
+    } else if (kind == "motion") {
         handleMotion(payload, isReplay())
     } else if (kind == "type") {
         if (payload) {
@@ -240,16 +260,26 @@ private void handleMotion(String payload, boolean replay = false) {
         // Only a live 'active' is motion. A replayed one may be hours old (Blue Iris missed its 'inactive').
         infolog "Ignoring retained 'active' replayed at connect - motion stays ${device.currentValue('motion')}"
     } else if (payload == "active") {
-        infolog "Motion detected - active"
-        sendEvent(name: "motion", value: "active", descriptionText: "${dName()} motion is active")
-        sendEvent(name: "lastMotionTime", value: new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone))
+        // Blue Iris publishes 'active' for every alert of a trigger. One event per episode: post the first,
+        // let the others only restart the timeout.
+        if (device.currentValue("motion", true) != "active") {
+            infolog "Motion detected - active"
+            sendEvent(name: "motion", value: "active", descriptionText: "${dName()} motion is active")
+            sendEvent(name: "lastMotionTime", value: new Date().format("yyyy-MM-dd HH:mm:ss", location.timeZone))
+        } else {
+            debuglog "Another 'active' in the same episode - timeout restarted"
+        }
         state.lastMotion = now()
         Integer mins = autoInactiveMins()
-        if (mins > 0) runIn(mins * 60, autoInactive)      // a new 'active' restarts the timer
+        if (mins > 0) runIn(mins * 60, autoInactive)      // every 'active' restarts the timer
     } else if (payload == "inactive") {
-        infolog "Motion cleared - inactive"
         unschedule(autoInactive)
-        sendEvent(name: "motion", value: "inactive", descriptionText: "${dName()} motion is inactive")
+        if (device.currentValue("motion", true) != "inactive") {
+            infolog "Motion cleared - inactive"
+            sendEvent(name: "motion", value: "inactive", descriptionText: "${dName()} motion is inactive")
+        } else {
+            debuglog "'inactive' while already inactive - nothing to post"
+        }
     } else {
         warnUnusable("motion payload '${payload}' (expected active or inactive)")
     }
@@ -265,8 +295,9 @@ private void handleAi(String payload) {
     infolog "AI: ${payload}"
     sendEvent(name: "aiSummary", value: payload)
 
-    // Blue Iris sends the literal text "(empty)" when the alert has no AI finding
-    if (payload.equalsIgnoreCase("(empty)")) {
+    // Blue Iris sends the literal text "(empty)" when the alert carries no AI result, and "nothing found"
+    // when the AI ran and found nothing
+    if (payload.equalsIgnoreCase("(empty)") || payload.equalsIgnoreCase("nothing found")) {
         sendEvent(name: "aiLabel", value: "none")
         sendEvent(name: "aiConfidence", value: 0, unit: "%")
         return
@@ -357,6 +388,8 @@ boolean connectMqtt() {
         interfaces.mqtt.subscribe("${doorName}/motion")
         interfaces.mqtt.subscribe("${doorName}/type")
         interfaces.mqtt.subscribe("${doorName}/ai")
+        interfaces.mqtt.subscribe(probeTopic())
+        state.probeNonce = null
         infolog "Connected to ${broker}, subscribed to ${doorName}/motion, /type and /ai"
 
         state.reconnecting = false
@@ -423,23 +456,59 @@ void watchDog() {
     }
 
     boolean connected = interfaces.mqtt.isConnected()
-    long lastMsg = (state.lastMessageReceived ?: 0) as long
-    long elapsed = lastMsg > 0 ? now() - lastMsg : -1
-    long staleThreshold = ((staleMinutes ?: 60) as long) * 60 * 1000
+    // Silence is counted from the last message, or from the connect if nothing has arrived since
+    long lastSeen = Math.max((state.lastMessageReceived ?: 0) as long, (state.connectionEstablished ?: 0) as long)
+    long elapsed = lastSeen > 0 ? now() - lastSeen : -1
+    long quietThreshold = ((staleMinutes ?: 60) as long) * 60 * 1000
 
     if (!connected) {
         log.warn "${dName()}: Watchdog: MQTT disconnected - triggering reconnection"
         connectionLost()
-    } else if (lastMsg > 0 && elapsed > staleThreshold) {
-        // Connected but silent: either a quiet camera or a dead link - they look the same from here.
-        // Reconnecting is cheap and re-reads Blue Iris's retained motion/type.
-        long minsSince = elapsed.intdiv(60000)
-        log.warn "${dName()}: Watchdog: connected but no data in ${minsSince} minutes (quiet camera or dead link) - reconnecting"
-        sendEvent(name: "connectionStatus", value: "Stale - reconnecting")
-        if (!reconnectMqtt()) connectionLost()
+    } else if (state.probeNonce) {
+        debuglog "Watchdog: a probe is already out, waiting for it"
+    } else if (elapsed > quietThreshold) {
+        // Connected but silent: a quiet camera or a dead link. Ask the link itself before touching it.
+        debuglog "Watchdog: no data in ${elapsed.intdiv(60000)} minutes - probing the link"
+        probeLink()
     } else {
         debuglog "Watchdog: MQTT OK (connected: ${connected}, last data: ${elapsed >= 0 ? elapsed.intdiv(60000) + ' min ago' : 'never'})"
     }
+}
+
+// The driver's own echo topic. The device network id keeps devices apart; the payload is a one-time value,
+// so another device or hub using the same topic cannot answer for this one.
+private String probeTopic() {
+    return "hubitat/bimqttmotion/${device.deviceNetworkId.toString().replaceAll(/[^A-Za-z0-9_-]/, '_')}/probe"
+}
+
+/**
+ * Publish a one-time value to our own topic. If the link is alive the broker sends it straight back
+ * (parse() clears state.probeNonce); verifyProbe() looks PROBE_WAIT_SECONDS later.
+ */
+private void probeLink() {
+    String nonce = "${now()}-${new Random().nextInt(1000000)}"
+    state.probeNonce = nonce
+    state.probeSentAt = now()
+    try {
+        interfaces.mqtt.publish(probeTopic(), nonce)
+        runIn(PROBE_WAIT_SECONDS, verifyProbe)
+    } catch (e) {
+        state.probeNonce = null
+        log.warn "${dName()}: Watchdog: probe could not be published (${e.message}) - reconnecting"
+        sendEvent(name: "connectionStatus", value: "Stale - reconnecting")
+        if (!reconnectMqtt()) connectionLost()
+    }
+}
+
+void verifyProbe() {
+    if (!state.probeNonce) {
+        debuglog "Probe was answered - nothing to do"
+        return
+    }
+    state.probeNonce = null
+    log.warn "${dName()}: Watchdog: probe not echoed within ${PROBE_WAIT_SECONDS} s - the link is dead, reconnecting"
+    sendEvent(name: "connectionStatus", value: "Stale - reconnecting")
+    if (!reconnectMqtt()) connectionLost()
 }
 
 void mqttClientStatus(String message) {
