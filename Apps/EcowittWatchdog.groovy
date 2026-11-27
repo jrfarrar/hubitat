@@ -33,6 +33,8 @@
 definition(
     name: "Ecowitt Watchdog",
     namespace: "jrfarrar",
+    singleThreaded: true,   // REQUIRED: handlers do read-modify-write on state.orphans
+                            // and a gateway blip fires every sensor in the same second.
     author: "J.R. Farrar",
     description: "Alerts when an Ecowitt gateway stops reporting, or when an individual RF sensor goes orphaned, using debounced thresholds.",
     category: "Convenience",
@@ -195,6 +197,29 @@ def checkStatus() {
     // --- sensor orphans ---
     def orphans = state.orphans ?: [:]
     def limit = (orphanConfirmMinutes ?: 120) as Integer
+
+    // Reconcile against the live attribute before judging anything.
+    // An event-only record can go stale two ways: a lost state write when
+    // several sensors change in the same second, or a missed event across a
+    // hub restart. The attribute is the truth; this makes the app self-healing.
+    def byId = [:]
+    sensors?.each { byId[it.id?.toString()] = it }
+    orphans.keySet().toList().each { id ->
+        def dev = byId[id]
+        if (dev == null) {
+            orphans.remove(id)
+            log.info "Ecowitt Watchdog: dropped orphan record for unselected device ${id}"
+            return
+        }
+        if ("${dev.currentValue('orphaned')}" != "true") {
+            def rec = orphans.remove(id)
+            log.info "Ecowitt Watchdog: cleared stale orphan record for ${rec?.name ?: id} - it reports orphaned=${dev.currentValue('orphaned')}"
+            if (rec?.alerted) {
+                sendNotify("${rec.name} is reporting again (was recorded orphaned for ${friendlyDuration(nowMs - (rec.since as Long))}).", true)
+            }
+        }
+    }
+
     orphans.each { id, rec ->
         def ageMin = (nowMs - (rec.since as Long)) / 60000L
         if (!rec.alerted && ageMin >= limit) {
